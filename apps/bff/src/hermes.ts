@@ -108,8 +108,12 @@ export const hermes = {
   },
 };
 
-/** Reachability probe used by the health route and status strips. */
+/** Reachability probe used by the health route and status strips.
+ * The full agent server exposes /health; the OpenAI-compatible `hermes proxy`
+ * exposes /v1/models instead. Treat either as reachable. */
 export async function hermesReachable(): Promise<boolean> {
-  const r = await hermes.health();
-  return r.ok;
+  const h = await hermes.health();
+  if (h.ok) return true;
+  const m = await hermes.models();
+  return m.ok;
 }
