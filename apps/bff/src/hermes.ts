@@ -16,6 +16,8 @@ const dashMode = !!(config.hermes.dashUser && config.hermes.dashPass);
 
 let sessionCookie = "";
 let loginInFlight: Promise<boolean> | null = null;
+// Last login attempt details, surfaced by diagnose() (no secrets).
+let lastLogin: Record<string, unknown> = {};
 
 function parseSetCookie(h: string | string[] | undefined): string {
   if (!h) return "";
@@ -24,36 +26,75 @@ function parseSetCookie(h: string | string[] | undefined): string {
   return arr.map((c) => c.split(";")[0]).filter(Boolean).join("; ");
 }
 
+// Merge two "a=1; b=2" cookie strings; later values win (login cookie overrides
+// the pre-login state cookie of the same name).
+function mergeCookies(a: string, b: string): string {
+  const jar = new Map<string, string>();
+  for (const part of `${a}; ${b}`.split(";")) {
+    const s = part.trim();
+    if (!s) continue;
+    const i = s.indexOf("=");
+    if (i <= 0) continue;
+    jar.set(s.slice(0, i), s.slice(i + 1));
+  }
+  return [...jar].map(([k, v]) => `${k}=${v}`).join("; ");
+}
+
 async function doLogin(): Promise<boolean> {
+  const loginPath = config.hermes.loginPath;
   try {
-    // Collect any pre-login cookie, then POST credentials.
+    // 1. GET /login to pick up any pre-login/CSRF state cookie.
     const g = await request(`${base}/login`, { method: "GET", maxRedirections: 0 });
-    const gc = parseSetCookie(g.headers["set-cookie"] as any);
+    const stateCookie = parseSetCookie(g.headers["set-cookie"] as any);
     await g.body.dump();
+
+    // 2. POST credentials to the JS form's real submit endpoint (/auth/basic),
+    //    carrying the state cookie. A successful login sets a session cookie;
+    //    a failure redirects back to /login with no new cookie.
     const form = new URLSearchParams({
       username: config.hermes.dashUser ?? "",
       password: config.hermes.dashPass ?? "",
       next: "",
     }).toString();
-    const p = await request(`${base}/login`, {
+    const p = await request(`${base}${loginPath}`, {
       method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded", ...(gc ? { cookie: gc } : {}) },
+      headers: { "content-type": "application/x-www-form-urlencoded", ...(stateCookie ? { cookie: stateCookie } : {}) },
       body: form,
       maxRedirections: 0,
     });
-    const pc = parseSetCookie(p.headers["set-cookie"] as any);
+    const loginCookie = parseSetCookie(p.headers["set-cookie"] as any);
+    const location = (p.headers["location"] as string | undefined) ?? "";
+    const status = p.statusCode;
     await p.body.dump();
-    sessionCookie = pc || gc;
-    return !!sessionCookie;
-  } catch {
+
+    // Success signal: the login set a session cookie AND didn't bounce us back
+    // to the login page. Keep the merged jar either way for the follow-up call.
+    const bouncedToLogin = /\/login(\?|$)/.test(location);
+    const ok = !!loginCookie && !bouncedToLogin;
+    sessionCookie = mergeCookies(stateCookie, loginCookie);
+
+    lastLogin = {
+      endpoint: loginPath,
+      status,
+      location,
+      gotStateCookie: !!stateCookie,
+      gotLoginCookie: !!loginCookie,
+      bouncedToLogin,
+      success: ok,
+    };
+    return ok;
+  } catch (err) {
+    lastLogin = { endpoint: loginPath, error: err instanceof Error ? err.message : String(err) };
     return false;
   }
 }
 
+let authed = false;
+
 async function ensureSession(): Promise<void> {
-  if (!dashMode || sessionCookie) return;
+  if (!dashMode || authed) return;
   if (!loginInFlight) loginInFlight = doLogin().finally(() => (loginInFlight = null));
-  await loginInFlight;
+  authed = await loginInFlight;
 }
 
 function headers(sessionKey?: string, extra: Record<string, string> = {}): Record<string, string> {
@@ -93,6 +134,7 @@ async function call<T>(method: string, path: string, body?: unknown, sessionKey?
     if (dashMode && isRedirectToLogin(res.statusCode)) {
       await res.body.dump();
       sessionCookie = "";
+      authed = false;
       await ensureSession();
       res = await send();
     }
@@ -150,6 +192,7 @@ export const hermes = {
       if (dashMode && isRedirectToLogin(res.statusCode)) {
         await res.body.dump();
         sessionCookie = "";
+        authed = false;
         await ensureSession();
         res = await send();
       }
@@ -192,12 +235,16 @@ export async function diagnose(): Promise<Record<string, unknown>> {
     dashPassSet: !!config.hermes.dashPass,
     bearerKeySet: !!config.hermes.apiKey && config.hermes.apiKey !== "change-me",
     model: config.hermes.model,
+    loginPath: config.hermes.loginPath,
   };
 
   if (dashMode) {
     sessionCookie = "";
+    authed = false;
     const loggedIn = await doLogin();
-    out.login = { attempted: true, gotCookie: loggedIn };
+    authed = loggedIn;
+    // lastLogin carries the full picture: endpoint, status, location, cookies.
+    out.login = { success: loggedIn, ...lastLogin };
   }
 
   // Probe the endpoints the chat path depends on.

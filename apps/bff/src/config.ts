@@ -52,6 +52,10 @@ export const config = {
     // When these are set, the BFF logs in and authenticates /v1/* with the cookie.
     dashUser: process.env.HERMES_DASH_USER,
     dashPass: process.env.HERMES_DASH_PASS,
+    // The dashboard's login-submit endpoint. The Hostinger template's login form
+    // is JS-driven (data-provider="basic") and posts to /auth/basic — NOT /login
+    // (which is 405 for POST). Overridable in case the template changes.
+    loginPath: process.env.HERMES_LOGIN_PATH ?? "/auth/basic",
   },
 
   db: {
