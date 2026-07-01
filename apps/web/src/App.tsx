@@ -12,6 +12,12 @@ import KnowledgeBase from "./screens/KnowledgeBase";
 import ToolsSkills from "./screens/ToolsSkills";
 import Workflows from "./screens/Workflows";
 import SystemMonitor from "./screens/SystemMonitor";
+import HireAgent from "./screens/HireAgent";
+import ApprovalsInbox from "./screens/ApprovalsInbox";
+import Permissions from "./screens/Permissions";
+import Spend from "./screens/Spend";
+import Ledger from "./screens/Ledger";
+import Integrations from "./screens/Integrations";
 
 export function App() {
   const [view, setView] = useState<ViewId>("command");
@@ -28,6 +34,24 @@ export function App() {
       break;
     case "agents":
       body = <Agents />;
+      break;
+    case "hire":
+      body = <HireAgent />;
+      break;
+    case "approvals":
+      body = <ApprovalsInbox />;
+      break;
+    case "permissions":
+      body = <Permissions />;
+      break;
+    case "spend":
+      body = <Spend />;
+      break;
+    case "ledger":
+      body = <Ledger />;
+      break;
+    case "integrations":
+      body = <Integrations />;
       break;
     case "tasks":
       body = <TasksKanban />;

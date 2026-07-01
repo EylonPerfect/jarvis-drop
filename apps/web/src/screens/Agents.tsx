@@ -3,6 +3,7 @@ import { Panel, Badge, Button, Icon, StatTile } from "../ds";
 import { useApi } from "../api/hooks";
 import { api } from "../api/client";
 import type { Agent, AgentRun, RuntimeStats, NewAgent } from "@jarvis/shared";
+import AgentCockpit from "./AgentCockpit";
 
 const ROSTER_SEED: Agent[] = [
   { id: "ag_coding", icon: "code", name: "Coding Agent", role: "Writing code", status: "optimal", statusLabel: "Active" },
@@ -20,10 +21,13 @@ const RUNS_SEED: AgentRun[] = [
   { id: "run4", query: "Generate release notes for the 2026.6 desktop build and check the MSIX version", ts: "10 jun, 4:48 pm", okCount: 2, errCount: 0, steps: [] },
 ];
 
-function AgentCard({ a }: { a: Agent }) {
+function AgentCard({ a, onClick }: { a: Agent; onClick?: () => void }) {
   const c = a.status === "optimal" ? "var(--jv-green)" : "var(--jv-violet)";
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "13px 14px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)" }}>
+    <div
+      onClick={onClick}
+      style={{ display: "flex", alignItems: "center", gap: 12, padding: "13px 14px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)", cursor: onClick ? "pointer" : "default" }}
+    >
       <span
         style={{
           width: 38,
@@ -47,7 +51,61 @@ function AgentCard({ a }: { a: Agent }) {
         <span style={{ width: 5, height: 5, borderRadius: "50%", background: c, boxShadow: `0 0 6px ${c}` }} />
         {a.statusLabel}
       </span>
+      {onClick && <Icon name="chevron-right" size={15} color="var(--jv-text-faint)" />}
     </div>
+  );
+}
+
+// Delegation — parent agents spawning permission-narrowed sub-agents.
+const DELEGATIONS: { parent: string; ic: string; task: string; subs: [string, string, string, string][] }[] = [
+  {
+    parent: "Research Agent",
+    ic: "search",
+    task: "Benchmark the top 3 STT engines",
+    subs: [
+      ["globe", "Browser sub-agent", "read-only web", "fetched 3 vendor docs → parent"],
+      ["code", "Coding sub-agent", "sandbox only", "ran latency harness → parent"],
+    ],
+  },
+  {
+    parent: "AR Clerk",
+    ic: "credit-card",
+    task: "Close the June books",
+    subs: [["table", "Data sub-agent", "sheet read", "pulled 92 invoices → parent"]],
+  },
+];
+
+function Delegation() {
+  return (
+    <Panel title="Delegation" eyebrow action={<span style={{ font: "var(--fw-medium) 11.5px var(--font-body)", color: "var(--jv-text-muted)" }}>Sub-agents inherit narrower rights</span>}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        {DELEGATIONS.map((d, i) => (
+          <div key={i}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+              <span style={{ width: 32, height: 32, display: "grid", placeItems: "center", borderRadius: "var(--r-sm)", color: "var(--jv-cyan)", background: "rgba(41,211,245,0.08)", border: "1px solid var(--jv-border-cyan)" }}>
+                <Icon name={d.ic} size={16} />
+              </span>
+              <div>
+                <span style={{ font: "var(--fw-bold) 13px var(--font-body)", color: "var(--jv-text)" }}>{d.parent}</span>
+                <span style={{ font: "12px var(--font-body)", color: "var(--jv-text-muted)", marginLeft: 8 }}>
+                  spawned {d.subs.length} sub-agent{d.subs.length > 1 ? "s" : ""} · {d.task}
+                </span>
+              </div>
+            </div>
+            <div style={{ marginLeft: 15, borderLeft: "1px dashed var(--jv-border)", paddingLeft: 18, display: "flex", flexDirection: "column", gap: 8 }}>
+              {d.subs.map((s, j) => (
+                <div key={j} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderRadius: "var(--r-sm)", background: "var(--jv-void)", border: "1px solid var(--jv-border-soft)" }}>
+                  <Icon name={s[0]} size={14} color="var(--jv-violet)" />
+                  <span style={{ font: "var(--fw-semibold) 12px var(--font-body)", color: "var(--jv-text-soft)" }}>{s[1]}</span>
+                  <span style={{ padding: "2px 7px", borderRadius: 3, font: "var(--fw-medium) 9px var(--font-hud)", letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--jv-violet)", background: "color-mix(in srgb, var(--jv-violet) 13%, transparent)", border: "1px solid color-mix(in srgb, var(--jv-violet) 30%, transparent)" }}>{s[2]}</span>
+                  <span style={{ flex: 1, textAlign: "right", font: "11px var(--font-mono)", color: "var(--jv-text-muted)" }}>{s[3]}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </Panel>
   );
 }
 
@@ -290,6 +348,7 @@ function AgentBuilder({ onClose, onCreate }: { onClose: () => void; onCreate: (a
 
 export default function Agents() {
   const [building, setBuilding] = useState(false);
+  const [cockpit, setCockpit] = useState<string | null>(null);
   const { data: rosterData, reload } = useApi<Agent[]>("/api/agents");
   const { data: runsData } = useApi<AgentRun[]>("/api/agents/runs");
   const { data: runtime } = useApi<RuntimeStats>("/api/agents/runtime");
@@ -306,6 +365,8 @@ export default function Agents() {
     }
     setBuilding(false);
   };
+
+  if (cockpit) return <AgentCockpit agentName={cockpit} onExit={() => setCockpit(null)} />;
 
   return (
     <Fragment>
@@ -339,7 +400,7 @@ export default function Agents() {
             bodyStyle={{ display: "flex", flexDirection: "column", gap: 8 }}
           >
             {roster.map((a) => (
-              <AgentCard key={a.id} a={a} />
+              <AgentCard key={a.id} a={a} onClick={() => setCockpit(a.name)} />
             ))}
           </Panel>
           <Panel title="Runtime" eyebrow>
@@ -359,6 +420,9 @@ export default function Agents() {
             ))}
           </div>
         </Panel>
+      </div>
+      <div style={{ marginTop: 16 }}>
+        <Delegation />
       </div>
       {building && <AgentBuilder onClose={() => setBuilding(false)} onCreate={create} />}
     </Fragment>
