@@ -16,6 +16,8 @@ export interface Speech {
   level: number; // 0..1 mic amplitude (drives the visualizer)
   start: () => void;
   stop: () => void;
+  pause: () => void; // temporarily ignore input (e.g. while JARVIS is speaking)
+  resume: () => void; // re-arm after pause() if still listening
 }
 
 /**
@@ -36,6 +38,7 @@ export function useSpeech(onFinal: (text: string) => void): Speech {
   const recRef = useRef<any>(null);
   const listeningRef = useRef(false);
   listeningRef.current = listening;
+  const pausedRef = useRef(false);
   const onFinalRef = useRef(onFinal);
   onFinalRef.current = onFinal;
   const audioRef = useRef<{ ctx: AudioContext; stream: MediaStream; raf: number } | null>(null);
@@ -54,6 +57,7 @@ export function useSpeech(onFinal: (text: string) => void): Speech {
   const stop = useCallback(() => {
     setListening(false);
     listeningRef.current = false;
+    pausedRef.current = false;
     try {
       recRef.current?.stop();
     } catch {
@@ -61,6 +65,28 @@ export function useSpeech(onFinal: (text: string) => void): Speech {
     }
     stopAudio();
   }, [stopAudio]);
+
+  // Pause/resume recognition without tearing down the session. Used to mute the
+  // mic while JARVIS speaks so its own voice isn't transcribed as a new query.
+  const pause = useCallback(() => {
+    pausedRef.current = true;
+    try {
+      recRef.current?.stop();
+    } catch {
+      /* noop */
+    }
+  }, []);
+
+  const resume = useCallback(() => {
+    pausedRef.current = false;
+    if (listeningRef.current) {
+      try {
+        recRef.current?.start();
+      } catch {
+        /* noop */
+      }
+    }
+  }, []);
 
   const start = useCallback(async () => {
     if (!supported || !SR) return;
@@ -95,6 +121,7 @@ export function useSpeech(onFinal: (text: string) => void): Speech {
     rec.interimResults = true;
     rec.lang = "en-US";
     rec.onresult = (e: any) => {
+      if (pausedRef.current) return; // ignore captured audio while paused (TTS playing)
       let itr = "";
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const r = e.results[i];
@@ -110,8 +137,9 @@ export function useSpeech(onFinal: (text: string) => void): Speech {
     };
     rec.onerror = () => {};
     rec.onend = () => {
-      // Chrome auto-stops; restart while the user still wants to listen.
-      if (recRef.current === rec && listeningRef.current) {
+      // Chrome auto-stops; restart while the user still wants to listen and
+      // we're not deliberately paused (JARVIS speaking).
+      if (recRef.current === rec && listeningRef.current && !pausedRef.current) {
         try {
           rec.start();
         } catch {
@@ -141,5 +169,84 @@ export function useSpeech(onFinal: (text: string) => void): Speech {
     [stopAudio],
   );
 
-  return { supported, secure, listening, interim, level, start, stop };
+  return { supported, secure, listening, interim, level, start, stop, pause, resume };
+}
+
+// ---------------------------------------------------------------------------
+// Voice output (text-to-speech). Speaks JARVIS's replies aloud via the Web
+// Speech Synthesis API. Prefers a natural English voice, cancels on demand,
+// and reports `speaking` so the caller can duck the mic to avoid feedback.
+// ---------------------------------------------------------------------------
+export interface VoiceOut {
+  supported: boolean;
+  speaking: boolean;
+  speak: (text: string, opts?: { onStart?: () => void; onEnd?: () => void }) => void;
+  cancel: () => void;
+}
+
+function pickVoice(synth: SpeechSynthesis): SpeechSynthesisVoice | null {
+  const voices = synth.getVoices();
+  if (!voices.length) return null;
+  const byName = (re: RegExp) => voices.find((v) => re.test(v.name));
+  // Prefer a crisp English voice; fall back to any en-* then the first voice.
+  return (
+    byName(/Google UK English Male/i) ||
+    byName(/Daniel|Arthur|Oliver/i) ||
+    byName(/Google US English/i) ||
+    voices.find((v) => /^en(-|_)?GB/i.test(v.lang)) ||
+    voices.find((v) => /^en/i.test(v.lang)) ||
+    voices[0]
+  );
+}
+
+export function useVoiceOutput(): VoiceOut {
+  const synth = typeof window !== "undefined" ? window.speechSynthesis : undefined;
+  const supported = !!synth;
+  const [speaking, setSpeaking] = useState(false);
+
+  // Voices load async in some browsers; warm the list so pickVoice() has data.
+  useEffect(() => {
+    if (!synth) return;
+    const warm = () => synth.getVoices();
+    warm();
+    synth.addEventListener?.("voiceschanged", warm);
+    return () => synth.removeEventListener?.("voiceschanged", warm);
+  }, [synth]);
+
+  const cancel = useCallback(() => {
+    if (!synth) return;
+    synth.cancel();
+    setSpeaking(false);
+  }, [synth]);
+
+  const speak = useCallback(
+    (text: string, opts?: { onStart?: () => void; onEnd?: () => void }) => {
+      if (!synth) return;
+      const clean = text.replace(/\s+/g, " ").trim();
+      if (!clean) return;
+      synth.cancel(); // never queue — always speak the latest reply
+      const u = new SpeechSynthesisUtterance(clean);
+      const v = pickVoice(synth);
+      if (v) {
+        u.voice = v;
+        u.lang = v.lang;
+      }
+      u.rate = 1.02;
+      u.pitch = 1.0;
+      u.onstart = () => {
+        setSpeaking(true);
+        opts?.onStart?.();
+      };
+      const done = () => {
+        setSpeaking(false);
+        opts?.onEnd?.();
+      };
+      u.onend = done;
+      u.onerror = done;
+      synth.speak(u);
+    },
+    [synth],
+  );
+
+  return { supported, speaking, speak, cancel };
 }

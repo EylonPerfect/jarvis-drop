@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
-import { hermes } from "../hermes.js";
+import { hermes, diagnose } from "../hermes.js";
 import { config } from "../config.js";
 import type { ChatRequest } from "@jarvis/shared";
 
@@ -42,6 +42,12 @@ async function streamFallback(reply: FastifyReply, mode: string | null | undefin
 }
 
 export default async function chatRoutes(app: FastifyInstance) {
+  // Connectivity diagnosis — pins down WHY live chat is falling back. Gated by
+  // the same BFF auth as everything else; returns no secrets.
+  app.get("/api/chat/diag", async () => {
+    return diagnose();
+  });
+
   app.post("/api/chat/stream", async (req, reply) => {
     const b = req.body as ChatRequest;
     const message = (b?.message ?? "").trim();

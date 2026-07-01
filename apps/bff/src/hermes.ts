@@ -172,3 +172,54 @@ export async function hermesReachable(): Promise<boolean> {
   const m = await hermes.models();
   return m.ok;
 }
+
+const snippet = (v: unknown, n = 240): string => {
+  const s = typeof v === "string" ? v : JSON.stringify(v);
+  return (s ?? "").slice(0, n);
+};
+
+/**
+ * Structured connectivity diagnosis (no secrets). Reports how the BFF is
+ * configured to reach hermes and the result of probing each candidate
+ * endpoint, so a live "gateway offline" can be pinned to a specific cause
+ * (wrong base URL, login failing, endpoint missing, model rejected, …).
+ */
+export async function diagnose(): Promise<Record<string, unknown>> {
+  const out: Record<string, unknown> = {
+    baseUrl: base,
+    authMode: dashMode ? "dashboard-session-cookie" : "bearer",
+    dashUserSet: !!config.hermes.dashUser,
+    dashPassSet: !!config.hermes.dashPass,
+    bearerKeySet: !!config.hermes.apiKey && config.hermes.apiKey !== "change-me",
+    model: config.hermes.model,
+  };
+
+  if (dashMode) {
+    sessionCookie = "";
+    const loggedIn = await doLogin();
+    out.login = { attempted: true, gotCookie: loggedIn };
+  }
+
+  // Probe the endpoints the chat path depends on.
+  const models = await hermes.models();
+  out.probe_models = { path: HERMES_ENDPOINTS.models, ok: models.ok, status: models.status, body: snippet(models.data), error: models.error };
+
+  const health = await hermes.health();
+  out.probe_health = { path: HERMES_ENDPOINTS.health, ok: health.ok, status: health.status, body: snippet(health.data), error: health.error };
+
+  // The actual thing the UI calls: a tiny non-streaming completion.
+  const chat = await hermes.post<any>(HERMES_ENDPOINTS.chatCompletions, {
+    model: config.hermes.model,
+    messages: [{ role: "user", content: "ping" }],
+    stream: false,
+  });
+  out.probe_chat = {
+    path: HERMES_ENDPOINTS.chatCompletions,
+    ok: chat.ok,
+    status: chat.status,
+    replyPreview: snippet(chat.data?.choices?.[0]?.message?.content ?? chat.data),
+    error: chat.error,
+  };
+
+  return out;
+}

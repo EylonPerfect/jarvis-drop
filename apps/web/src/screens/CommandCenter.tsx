@@ -1,8 +1,8 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Panel, Badge, Button, Icon } from "../ds";
 import { useApi } from "../api/hooks";
 import { streamChat } from "../api/client";
-import { useSpeech } from "../hooks/useSpeech";
+import { useSpeech, useVoiceOutput } from "../hooks/useSpeech";
 import type { ViewId } from "../components/AppShell";
 import type { Agent, FeedItem, SystemHealth, StatusStripItem } from "@jarvis/shared";
 
@@ -56,34 +56,73 @@ function VoiceCore() {
   const [reply, setReply] = useState("");
   const [busy, setBusy] = useState(false);
   const [draft, setDraft] = useState("");
+  // Voice output on by default; the operator can mute it. Persist the choice.
+  const [voiceOut, setVoiceOut] = useState(() => localStorage.getItem("jv.voiceOut") !== "off");
 
-  const send = useCallback(
-    async (text: string) => {
-      const t = text.trim();
-      if (!t) return;
-      setYouText(t);
-      setReply("");
-      setBusy(true);
-      try {
-        await streamChat({ message: t, mode: null }, (d) => setReply((r) => r + d));
-      } catch {
-        setReply("I couldn't reach the agent gateway just now.");
-      } finally {
-        setBusy(false);
+  const out = useVoiceOutput();
+  // Refs so the streaming callback + effects always see current controls
+  // without re-creating `send` (which would restart recognition mid-session).
+  const speechRef = useRef<ReturnType<typeof useSpeech> | null>(null);
+  const outRef = useRef(out);
+  outRef.current = out;
+  const voiceOutRef = useRef(voiceOut);
+  voiceOutRef.current = voiceOut;
+
+  const send = useCallback(async (text: string) => {
+    const t = text.trim();
+    if (!t) return;
+    outRef.current.cancel(); // stop any in-flight speech
+    setYouText(t);
+    setReply("");
+    setBusy(true);
+    let full = "";
+    try {
+      await streamChat({ message: t, mode: null }, (d) => {
+        full += d;
+        setReply((r) => r + d);
+      });
+    } catch {
+      full = "I couldn't reach the agent gateway just now.";
+      setReply(full);
+    } finally {
+      setBusy(false);
+      // Speak the finished reply aloud, ducking the mic so JARVIS doesn't
+      // transcribe its own voice; resume listening when it's done.
+      if (voiceOutRef.current && full.trim()) {
+        speechRef.current?.pause();
+        outRef.current.speak(full, { onEnd: () => speechRef.current?.resume() });
       }
-    },
-    [],
-  );
+    }
+  }, []);
 
   const speech = useSpeech(send);
+  speechRef.current = speech;
   const listening = speech.listening;
-  const active = listening || busy;
+  const active = listening || busy || out.speaking;
   const displayedYou = speech.interim || youText;
+
+  // Auto-open the mic when the Command Center loads (if the browser allows it).
+  const autostarted = useRef(false);
+  useEffect(() => {
+    if (autostarted.current || !speech.supported) return;
+    autostarted.current = true;
+    speech.start();
+  }, [speech]);
 
   const toggle = () => {
     if (!speech.supported) return;
+    outRef.current.cancel();
     if (listening) speech.stop();
     else speech.start();
+  };
+
+  const toggleVoiceOut = () => {
+    setVoiceOut((v) => {
+      const next = !v;
+      localStorage.setItem("jv.voiceOut", next ? "on" : "off");
+      if (!next) outRef.current.cancel();
+      return next;
+    });
   };
 
   const submitDraft = () => {
@@ -93,7 +132,15 @@ function VoiceCore() {
     send(t);
   };
 
-  const status = listening ? "I am listening…" : busy ? "Thinking…" : speech.supported ? "Tap the core to speak" : "Type to talk to JARVIS";
+  const status = out.speaking
+    ? "Speaking…"
+    : listening
+      ? "I am listening…"
+      : busy
+        ? "Thinking…"
+        : speech.supported
+          ? "Tap the core to speak"
+          : "Type to talk to JARVIS";
 
   return (
     <div style={{ position: "relative", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", minHeight: 480 }}>
@@ -103,15 +150,27 @@ function VoiceCore() {
         <div style={{ font: "var(--fw-medium) 11px/1 var(--font-hud)", letterSpacing: "0.44em", color: "var(--jv-cyan-100)", marginTop: 10 }}>AI CORE · v3.0.0</div>
       </div>
       <RadialVoiceViz active={active} level={speech.level} bars={96} size={300} color={ACCENT} onClick={toggle} />
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 24, font: "var(--fw-semibold) 12px var(--font-hud)", letterSpacing: "0.16em", textTransform: "uppercase", color: active ? ACCENT : "var(--jv-text-muted)" }}>
-        {listening ? (
-          <>
-            <span style={{ width: 7, height: 7, borderRadius: "50%", background: ACCENT, boxShadow: `0 0 8px ${ACCENT}`, animation: "jv-pulse 2s ease-out infinite" }} /> {status}
-          </>
-        ) : (
-          <>
-            <Icon name={busy ? "loader" : speech.supported ? "mic" : "keyboard"} size={14} /> {status}
-          </>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 24 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, font: "var(--fw-semibold) 12px var(--font-hud)", letterSpacing: "0.16em", textTransform: "uppercase", color: active ? ACCENT : "var(--jv-text-muted)" }}>
+          {listening && !out.speaking ? (
+            <>
+              <span style={{ width: 7, height: 7, borderRadius: "50%", background: ACCENT, boxShadow: `0 0 8px ${ACCENT}`, animation: "jv-pulse 2s ease-out infinite" }} /> {status}
+            </>
+          ) : (
+            <>
+              <Icon name={out.speaking ? "volume-2" : busy ? "loader" : speech.supported ? "mic" : "keyboard"} size={14} /> {status}
+            </>
+          )}
+        </div>
+        {out.supported && (
+          <button
+            onClick={toggleVoiceOut}
+            aria-label={voiceOut ? "Mute JARVIS voice" : "Unmute JARVIS voice"}
+            title={voiceOut ? "JARVIS voice on" : "JARVIS voice muted"}
+            style={{ display: "grid", placeItems: "center", width: 28, height: 28, borderRadius: "50%", cursor: "pointer", background: voiceOut ? "var(--grad-cyan-soft)" : "var(--jv-surface-3)", border: `1px solid ${voiceOut ? "var(--jv-border-cyan)" : "var(--jv-border-soft)"}`, color: voiceOut ? ACCENT : "var(--jv-text-muted)" }}
+          >
+            <Icon name={voiceOut ? "volume-2" : "volume-x"} size={14} />
+          </button>
         )}
       </div>
 
