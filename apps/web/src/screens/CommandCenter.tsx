@@ -1,28 +1,32 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { Panel, Badge, Button, Icon } from "../ds";
 import { useApi } from "../api/hooks";
+import { streamChat } from "../api/client";
+import { useSpeech } from "../hooks/useSpeech";
 import type { ViewId } from "../components/AppShell";
 import type { Agent, FeedItem, SystemHealth, StatusStripItem } from "@jarvis/shared";
 
 const ACCENT = "var(--jv-cyan)";
 
-// RadialVoiceViz — concentric rings + circular waveform (no mic icon).
-function RadialVoiceViz({ active = true, bars = 96, size = 300, color = ACCENT, showBars = true, onClick }: { active?: boolean; bars?: number; size?: number; color?: string; showBars?: boolean; onClick?: () => void }) {
+// RadialVoiceViz — concentric rings + circular waveform. `level` (0..1) is the
+// live mic amplitude and makes the core visibly react to your voice.
+function RadialVoiceViz({ active = true, level = 0, bars = 96, size = 300, color = ACCENT, showBars = true, onClick }: { active?: boolean; level?: number; bars?: number; size?: number; color?: string; showBars?: boolean; onClick?: () => void }) {
   const seeds = useMemo(() => Array.from({ length: bars }, (_, i) => 0.32 + 0.68 * Math.abs(Math.sin(i * 2.3) * Math.cos(i * 0.7))), [bars]);
   const c = size / 2;
   const inner = size * 0.305;
   const maxLen = size * 0.15;
+  const amp = active ? 0.85 + level * 0.9 : 1; // scale bar amplitude by mic level
   return (
-    <button onClick={onClick} aria-label="Toggle listening" style={{ position: "relative", width: size, height: size, border: "none", background: "transparent", cursor: "pointer", padding: 0 }}>
+    <button onClick={onClick} aria-label="Toggle listening" style={{ position: "relative", width: size, height: size, border: "none", background: "transparent", cursor: "pointer", padding: 0, transform: `scale(${1 + level * 0.14})`, transition: "transform 90ms linear" }}>
       <span style={{ position: "absolute", inset: 0, borderRadius: "50%", border: `1px dashed ${color}`, opacity: 0.22, animation: active ? "jv-glow-breathe 2.6s ease-out infinite" : "none" }} />
       <span style={{ position: "absolute", inset: size * 0.13, borderRadius: "50%", border: `1px solid ${color}`, opacity: 0.16 }} />
       <span style={{ position: "absolute", inset: size * 0.3, borderRadius: "50%", background: `radial-gradient(circle at 50% 45%, color-mix(in srgb, ${color} 30%, transparent), transparent 72%)`, animation: active ? "jv-pulse 2.6s ease-out infinite" : "none" }} />
-      <span style={{ position: "absolute", top: "50%", left: "50%", width: 16, height: 16, marginLeft: -8, marginTop: -8, borderRadius: "50%", background: color, boxShadow: `0 0 18px ${color}` }} />
+      <span style={{ position: "absolute", top: "50%", left: "50%", width: 16, height: 16, marginLeft: -8, marginTop: -8, borderRadius: "50%", background: color, boxShadow: `0 0 ${18 + level * 46}px ${color}` }} />
       {showBars && (
         <svg viewBox={`0 0 ${size} ${size}`} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", filter: `drop-shadow(0 0 4px color-mix(in srgb, ${color} 55%, transparent))` }}>
           {seeds.map((s, i) => {
             const ang = (i / bars) * 360;
-            const len = maxLen * (active ? s : 0.42);
+            const len = maxLen * (active ? s * amp : 0.42);
             return (
               <g key={i} transform={`rotate(${ang} ${c} ${c})`}>
                 <rect
@@ -43,21 +47,54 @@ function RadialVoiceViz({ active = true, bars = 96, size = 300, color = ACCENT, 
   );
 }
 
-const EXCHANGES = [
-  { you: "JARVIS, what's my system status?", jarvis: "All systems optimal, Commander. CPU at 15%, two agents running, memory at 3,380 vectors." },
-  { you: "Draft the v3.0.0 release notes.", jarvis: "On it. Pulling 14 merged PRs since the last tag — I'll have a draft in the Compose panel shortly." },
-  { you: "Anything overdue today?", jarvis: "Two tasks: “Polish voice pipeline” and the MSIX capability audit. Want me to reschedule them?" },
-];
-
+// VoiceCore — real voice interaction: mic transcription (when the browser
+// allows it — HTTPS/localhost + Chromium), a live transcript, an audio-reactive
+// orb, and streamed replies from JARVIS. Falls back to a text composer so it
+// works everywhere (e.g. plain-HTTP deployments where the mic is blocked).
 function VoiceCore() {
-  const [listening, setListening] = useState(true);
-  const [i, setI] = useState(0);
-  useEffect(() => {
-    if (!listening) return;
-    const id = setInterval(() => setI((n) => (n + 1) % EXCHANGES.length), 5200);
-    return () => clearInterval(id);
-  }, [listening]);
-  const ex = EXCHANGES[i];
+  const [youText, setYouText] = useState("");
+  const [reply, setReply] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [draft, setDraft] = useState("");
+
+  const send = useCallback(
+    async (text: string) => {
+      const t = text.trim();
+      if (!t) return;
+      setYouText(t);
+      setReply("");
+      setBusy(true);
+      try {
+        await streamChat({ message: t, mode: null }, (d) => setReply((r) => r + d));
+      } catch {
+        setReply("I couldn't reach the agent gateway just now.");
+      } finally {
+        setBusy(false);
+      }
+    },
+    [],
+  );
+
+  const speech = useSpeech(send);
+  const listening = speech.listening;
+  const active = listening || busy;
+  const displayedYou = speech.interim || youText;
+
+  const toggle = () => {
+    if (!speech.supported) return;
+    if (listening) speech.stop();
+    else speech.start();
+  };
+
+  const submitDraft = () => {
+    const t = draft.trim();
+    if (!t || busy) return;
+    setDraft("");
+    send(t);
+  };
+
+  const status = listening ? "I am listening…" : busy ? "Thinking…" : speech.supported ? "Tap the core to speak" : "Type to talk to JARVIS";
+
   return (
     <div style={{ position: "relative", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", minHeight: 480 }}>
       <div style={{ position: "absolute", width: 580, height: 580, borderRadius: "50%", background: `radial-gradient(circle at 50% 45%, color-mix(in srgb, ${ACCENT} 12%, transparent), transparent 62%)`, pointerEvents: "none" }} />
@@ -65,30 +102,58 @@ function VoiceCore() {
         <div style={{ font: "var(--fw-bold) 42px/1 var(--font-display)", letterSpacing: "0.34em", color: ACCENT, textShadow: "var(--glow-cyan-lg)" }}>JARVIS</div>
         <div style={{ font: "var(--fw-medium) 11px/1 var(--font-hud)", letterSpacing: "0.44em", color: "var(--jv-cyan-100)", marginTop: 10 }}>AI CORE · v3.0.0</div>
       </div>
-      <RadialVoiceViz active={listening} bars={96} size={300} color={ACCENT} onClick={() => setListening((v) => !v)} />
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 24, font: "var(--fw-semibold) 12px var(--font-hud)", letterSpacing: "0.16em", textTransform: "uppercase", color: listening ? ACCENT : "var(--jv-text-muted)" }}>
+      <RadialVoiceViz active={active} level={speech.level} bars={96} size={300} color={ACCENT} onClick={toggle} />
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 24, font: "var(--fw-semibold) 12px var(--font-hud)", letterSpacing: "0.16em", textTransform: "uppercase", color: active ? ACCENT : "var(--jv-text-muted)" }}>
         {listening ? (
           <>
-            <span style={{ width: 7, height: 7, borderRadius: "50%", background: ACCENT, boxShadow: `0 0 8px ${ACCENT}`, animation: "jv-pulse 2s ease-out infinite" }} /> I am listening…
+            <span style={{ width: 7, height: 7, borderRadius: "50%", background: ACCENT, boxShadow: `0 0 8px ${ACCENT}`, animation: "jv-pulse 2s ease-out infinite" }} /> {status}
           </>
         ) : (
           <>
-            <Icon name="hand" size={14} /> Tap to speak
+            <Icon name={busy ? "loader" : speech.supported ? "mic" : "keyboard"} size={14} /> {status}
           </>
         )}
       </div>
-      <div style={{ position: "relative", width: "100%", maxWidth: 460, marginTop: 22, display: "flex", flexDirection: "column", gap: 8 }}>
-        <div style={{ alignSelf: "flex-end", maxWidth: "82%", padding: "9px 13px", borderRadius: "12px 12px 3px 12px", background: "var(--grad-cyan-soft)", border: "1px solid var(--jv-border-cyan)", font: "var(--fw-medium) 12.5px/1.45 var(--font-body)", color: "var(--jv-text)" }}>
-          {ex.you}
-        </div>
-        <div style={{ alignSelf: "flex-start", maxWidth: "88%", display: "flex", gap: 9 }}>
-          <span style={{ flex: "0 0 26px", width: 26, height: 26, marginTop: 1, borderRadius: "50%", display: "grid", placeItems: "center", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-cyan)", color: ACCENT }}>
-            <Icon name="sparkles" size={13} />
-          </span>
-          <div style={{ padding: "9px 13px", borderRadius: "12px 12px 12px 3px", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)", font: "var(--fw-regular) 12.5px/1.5 var(--font-body)", color: "var(--jv-text-soft)" }}>
-            {ex.jarvis}
+
+      <div style={{ position: "relative", width: "100%", maxWidth: 460, marginTop: 22, display: "flex", flexDirection: "column", gap: 8, minHeight: 92 }}>
+        {displayedYou && (
+          <div style={{ alignSelf: "flex-end", maxWidth: "82%", padding: "9px 13px", borderRadius: "12px 12px 3px 12px", background: "var(--grad-cyan-soft)", border: "1px solid var(--jv-border-cyan)", font: "var(--fw-medium) 12.5px/1.45 var(--font-body)", color: "var(--jv-text)" }}>
+            {displayedYou}
           </div>
-        </div>
+        )}
+        {(reply || busy) && (
+          <div style={{ alignSelf: "flex-start", maxWidth: "88%", display: "flex", gap: 9 }}>
+            <span style={{ flex: "0 0 26px", width: 26, height: 26, marginTop: 1, borderRadius: "50%", display: "grid", placeItems: "center", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-cyan)", color: ACCENT }}>
+              <Icon name="sparkles" size={13} />
+            </span>
+            <div style={{ padding: "9px 13px", borderRadius: "12px 12px 12px 3px", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)", font: "var(--fw-regular) 12.5px/1.5 var(--font-body)", color: "var(--jv-text-soft)" }}>
+              {reply || <span style={{ opacity: 0.5 }}>…</span>}
+            </div>
+          </div>
+        )}
+        {!displayedYou && !reply && !busy && (
+          <div style={{ textAlign: "center", font: "var(--fw-regular) 12.5px/1.5 var(--font-body)", color: "var(--jv-text-faint)" }}>
+            {speech.supported ? "Tap the core and speak, or type below." : "Speak needs HTTPS + a Chromium browser — type below to talk to JARVIS."}
+          </div>
+        )}
+      </div>
+
+      {/* composer — always available so the core works even where the mic is blocked */}
+      <div style={{ width: "100%", maxWidth: 460, marginTop: 16, display: "flex", alignItems: "center", gap: 10, padding: "8px 10px 8px 16px", borderRadius: "var(--r-md)", background: "var(--jv-void)", border: "1px solid var(--jv-border-cyan)", boxShadow: "0 0 20px rgba(41,211,245,0.08)" }}>
+        <input
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && submitDraft()}
+          placeholder="Ask JARVIS anything…"
+          style={{ flex: 1, background: "none", border: "none", outline: "none", color: "var(--jv-text)", font: "var(--fw-medium) 13.5px var(--font-body)" }}
+        />
+        <button
+          onClick={submitDraft}
+          disabled={busy || !draft.trim()}
+          style={{ width: 36, height: 36, flex: "0 0 36px", display: "grid", placeItems: "center", borderRadius: "50%", background: draft.trim() ? "var(--jv-cyan)" : "var(--jv-surface-3)", border: "none", color: draft.trim() ? "var(--accent-contrast)" : "var(--jv-text-muted)", cursor: busy ? "default" : "pointer", boxShadow: draft.trim() ? "var(--glow-cyan)" : "none" }}
+        >
+          <Icon name={busy ? "loader" : "arrow-up"} size={17} />
+        </button>
       </div>
     </div>
   );
