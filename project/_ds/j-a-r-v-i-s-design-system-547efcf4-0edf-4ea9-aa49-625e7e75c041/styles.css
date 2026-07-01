@@ -1,0 +1,11 @@
+/* ============================================================
+   J.A.R.V.I.S. Design System — global entry point
+   Consumers link THIS file. It only @imports; no rules here.
+   ============================================================ */
+
+@import url("tokens/fonts.css");
+@import url("tokens/colors.css");
+@import url("tokens/typography.css");
+@import url("tokens/spacing.css");
+@import url("tokens/effects.css");
+@import url("tokens/base.css");

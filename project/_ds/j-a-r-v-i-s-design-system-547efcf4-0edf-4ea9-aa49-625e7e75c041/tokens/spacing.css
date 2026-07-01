@@ -1,0 +1,44 @@
+/* ============================================================
+   J.A.R.V.I.S. — Spacing, sizing & radii
+   Tight, panel-dense HUD layout. 4px base unit.
+   ============================================================ */
+
+:root {
+  /* ---- Space scale (4px base) ---- */
+  --sp-0:   0; /* @kind spacing */
+  --sp-1:   4px;
+  --sp-2:   8px;
+  --sp-3:   12px;
+  --sp-4:   16px;
+  --sp-5:   20px;
+  --sp-6:   24px;
+  --sp-8:   32px;
+  --sp-10:  40px;
+  --sp-12:  48px;
+  --sp-16:  64px;
+
+  /* ---- Layout constants (from the desktop HUD) ---- */
+  --rail-w:        260px;   /* left nav rail */
+  --topbar-h:      64px;
+  --dock-h:        72px;    /* "TALK TO JARVIS" bottom dock */
+  --panel-gap:     16px;
+  --panel-pad:     20px;
+
+  /* ---- Radii (HUD = small radii + clipped corners) ---- */
+  --r-xs:   3px;
+  --r-sm:   6px;
+  --r-md:   10px;
+  --r-lg:   14px;
+  --r-xl:   20px;
+  --r-pill: 999px;
+
+  /* chamfer depth for clipped HUD corners (use with clip-path) */
+  --chamfer:    10px;
+  --chamfer-lg: 16px;
+
+  /* ---- Control sizing ---- */
+  --control-h-sm:  28px;
+  --control-h:     36px;
+  --control-h-lg:  44px;
+  --hit-min:       44px;   /* min touch/click target */
+}

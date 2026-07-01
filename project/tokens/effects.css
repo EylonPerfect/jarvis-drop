@@ -1,0 +1,79 @@
+/* ============================================================
+   J.A.R.V.I.S. — Effects: shadows, glows, blurs, gradients,
+   chamfer clip-paths, scanlines & motion.
+   The HUD look lives here.
+   ============================================================ */
+
+:root {
+  /* ---- Elevation shadows (cool, deep) ---- */
+  --shadow-sm:  0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md:  0 8px 24px rgba(0, 0, 0, 0.45);
+  --shadow-lg:  0 20px 60px rgba(0, 0, 0, 0.55);
+
+  /* ---- Glows (the signature) ---- */
+  --glow-cyan-sm:  0 0 8px var(--jv-glow-cyan-sm);
+  --glow-cyan:     0 0 16px var(--jv-glow-cyan);
+  --glow-cyan-lg:  0 0 32px var(--jv-glow-cyan), 0 0 64px var(--jv-glow-cyan-sm);
+  --glow-green:    0 0 14px var(--jv-glow-green);
+  --glow-amber:    0 0 14px var(--jv-glow-amber);
+  --glow-red:      0 0 14px var(--jv-glow-red);
+  --glow-violet:   0 0 14px var(--jv-glow-violet);
+
+  /* inner edge-light used on panels */
+  --inner-top:   inset 0 1px 0 rgba(120, 200, 230, 0.06); /* @kind shadow */
+  --inner-edge:  inset 0 0 0 1px var(--jv-border);
+  --inner-cyan:  inset 0 0 0 1px var(--jv-border-cyan), inset 0 0 18px rgba(41, 211, 245, 0.06);
+
+  /* ---- Panel composites ---- */
+  --panel-shadow:        var(--shadow-md), var(--inner-edge), var(--inner-top);
+  --panel-shadow-active: var(--shadow-md), var(--inner-cyan), 0 0 24px rgba(41, 211, 245, 0.10);
+
+  /* ---- Surface gradients ---- */
+  --grad-panel:   linear-gradient(160deg, var(--jv-surface) 0%, var(--jv-surface-2) 100%);
+  --grad-app:     radial-gradient(140% 100% at 50% -10%, #0c1a2e 0%, var(--jv-bg) 45%, var(--jv-void) 100%);
+  --grad-cyan:    linear-gradient(135deg, var(--jv-cyan-300) 0%, var(--jv-cyan-500) 100%);
+  --grad-cyan-soft: linear-gradient(135deg, rgba(41,211,245,0.18) 0%, rgba(20,184,216,0.06) 100%); /* @kind other */
+  --grad-edge-top: linear-gradient(180deg, rgba(41,211,245,0.10) 0%, transparent 100%); /* @kind other */
+
+  /* ---- Blur ---- */
+  --blur-panel: blur(14px); /* @kind other */
+  --blur-modal: blur(22px); /* @kind other */
+
+  /* ---- Chamfer clip-paths (cut top-right + bottom-left, HUD style) ---- */
+  --clip-chamfer: polygon(
+     var(--chamfer) 0, 100% 0, 100% calc(100% - var(--chamfer)),
+     calc(100% - var(--chamfer)) 100%, 0 100%, 0 var(--chamfer)); /* @kind other */
+  --clip-chamfer-tr: polygon(
+     0 0, calc(100% - var(--chamfer)) 0, 100% var(--chamfer),
+     100% 100%, 0 100%); /* @kind other */
+
+  /* ---- Motion ---- */
+  --ease-out:   cubic-bezier(0.22, 1, 0.36, 1); /* @kind other */
+  --ease-hud:   cubic-bezier(0.16, 1, 0.3, 1);  /* @kind other */
+  --dur-fast:   120ms; /* @kind other */
+  --dur:        200ms; /* @kind other */
+  --dur-slow:   400ms; /* @kind other */
+  --t-fast:     var(--dur-fast) var(--ease-out); /* @kind other */
+  --t:          var(--dur) var(--ease-out);      /* @kind other */
+}
+
+/* ---- Keyframes used across the system ---- */
+@keyframes jv-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.45; }
+}
+@keyframes jv-glow-breathe {
+  0%, 100% { box-shadow: var(--glow-cyan); }
+  50%      { box-shadow: var(--glow-cyan-lg); }
+}
+@keyframes jv-spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes jv-scan {
+  0%   { transform: translateY(-100%); }
+  100% { transform: translateY(100%); }
+}
+@keyframes jv-equalize {
+  0%, 100% { transform: scaleY(0.35); }
+  50%      { transform: scaleY(1); }
+}
