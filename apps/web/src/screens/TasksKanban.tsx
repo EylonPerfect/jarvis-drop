@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Panel, Tag, StatTile, Button, Input, Icon } from "../ds";
+import { Panel, Tag, StatTile, Button, Input, Icon, IconButton, EmptyState, ConfirmDialog } from "../ds";
 import { useApi } from "../api/hooks";
 import { api } from "../api/client";
 import type { Task, TaskColumn, Priority } from "@jarvis/shared";
@@ -14,30 +14,16 @@ const COL_META: { id: TaskColumn; label: string; icon: string; tone: "info" | "w
 const toneVar = (t: string) =>
   t === "info" ? "cyan" : t === "warn" ? "amber" : t === "critical" ? "red" : "green";
 
-const SEED: Task[] = [
-  { id: "t1", title: "Design holographic onboarding tour", column: "todo", priority: "high", tags: ["ux", "onboarding", "hud"], link: "Unblocks 1" },
-  { id: "t2", title: "Write voice pipeline integration tests", column: "todo", priority: "medium", tags: ["voice", "testing"], link: null },
-  { id: "t3", title: "Audit MSIX capability manifest for mic + camera", column: "todo", priority: "critical", tags: ["msix", "security", "store"], link: "Unblocks 2" },
-  { id: "t4", title: "Refactor command-center weather provider failover", column: "todo", priority: "low", tags: ["command-center", "weather"], link: null },
-  { id: "t5", title: "Build unified /command_center/today endpoint", column: "progress", priority: "critical", tags: ["command-center", "api", "flagship"], link: "Unblocks 3" },
-  { id: "t6", title: "Wire Kokoro + edge-tts cascading TTS fallback", column: "progress", priority: "high", tags: ["voice", "tts"], link: "Unblocks 1" },
-  { id: "t7", title: "Reduce Electron cold-boot below 7 seconds", column: "progress", priority: "medium", tags: ["performance", "electron", "boot"], link: null },
-  { id: "t8", title: "Enable email verification in auth-api", column: "blocked", priority: "high", tags: ["auth", "email", "verification"], link: "Waiting on 2" },
-  { id: "t9", title: "Ship Store trial + license enforcement gate", column: "blocked", priority: "critical", tags: ["store", "licensing", "billing"], link: "Waiting on 1" },
-  { id: "t10", title: "Fix mic permission handler in Electron + MSIX", column: "done", priority: "critical", tags: ["voice", "permissions", "electron"], link: null },
-  { id: "t11", title: "Split system.py god object into 8 modules", column: "done", priority: "high", tags: ["refactor", "architecture"], link: null },
-  { id: "t12", title: "Reorganize core/ into 7 domain subpackages", column: "done", priority: "medium", tags: ["refactor", "core"], link: null },
-  { id: "t13", title: "Add admin error-reporting dashboard pipeline", column: "done", priority: "high", tags: ["admin", "observability"], link: null },
-  { id: "t14", title: "Migrate task schema to Alembic revision", column: "done", priority: "low", tags: ["database", "alembic", "tasks"], link: null },
-];
-
-function Card({ task }: { task: Task }) {
+function Card({ task, onDelete }: { task: Task; onDelete: () => void }) {
   const link = task.link;
   return (
     <div style={{ padding: 12, borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)", display: "flex", flexDirection: "column", gap: 8 }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
         <span style={{ font: "var(--fw-semibold) 12.5px/1.35 var(--font-body)", color: "var(--jv-text)" }}>{task.title}</span>
-        <Tag priority={task.priority} />
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 6, flex: "0 0 auto" }}>
+          <Tag priority={task.priority} />
+          <IconButton icon="trash-2" tone="danger" title="Delete" size={24} onClick={onDelete} />
+        </div>
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
         {task.tags.map((t) => (
@@ -56,8 +42,9 @@ function Card({ task }: { task: Task }) {
 
 export default function TasksKanban() {
   const { data, reload } = useApi<Task[]>("/api/tasks");
-  const tasks = data ?? SEED;
+  const tasks = data ?? [];
   const [filter, setFilter] = useState("");
+  const [confirmClear, setConfirmClear] = useState(false);
 
   const filtered = useMemo(() => {
     const q = filter.trim().toLowerCase();
@@ -79,12 +66,36 @@ export default function TasksKanban() {
     }
   };
 
+  const removeTask = async (id: string) => {
+    try {
+      await api.del(`/api/tasks/${id}`);
+      reload();
+    } catch {
+      /* offline — ignore */
+    }
+  };
+
+  const clearBoard = async () => {
+    try {
+      await api.del("/api/tasks");
+      reload();
+    } catch {
+      /* offline — ignore */
+    }
+    setConfirmClear(false);
+  };
+
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1fr 300px", gap: 16, alignItems: "start" }}>
       <Panel
         title="Tasks Kanban"
         action={
           <div style={{ display: "flex", gap: 8 }}>
+            {tasks.length > 0 && (
+              <Button size="sm" variant="danger" glow={false} icon={<Icon name="trash-2" size={14} />} onClick={() => setConfirmClear(true)}>
+                Clear board
+              </Button>
+            )}
             <Button size="sm" variant="secondary" icon={<Icon name="plus" size={14} />} onClick={addTask}>
               New Task
             </Button>
@@ -97,6 +108,7 @@ export default function TasksKanban() {
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
           {COL_META.map((c) => {
             const cv = toneVar(c.tone);
+            const cards = byCol(c.id);
             return (
               <div key={c.id}>
                 <div
@@ -116,9 +128,11 @@ export default function TasksKanban() {
                   <span style={{ font: "var(--fw-bold) 11px var(--font-mono)", color: "var(--jv-text-muted)" }}>{count(c.id)}</span>
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                  {byCol(c.id).map((t) => (
-                    <Card key={t.id} task={t} />
-                  ))}
+                  {cards.length === 0 ? (
+                    <EmptyState compact icon={c.icon} title="Nothing here" hint={null} />
+                  ) : (
+                    cards.map((t) => <Card key={t.id} task={t} onDelete={() => removeTask(t.id)} />)
+                  )}
                 </div>
               </div>
             );
@@ -134,6 +148,16 @@ export default function TasksKanban() {
           <StatTile value={count("done")} label="Done" tone="optimal" />
         </div>
       </Panel>
+
+      <ConfirmDialog
+        open={confirmClear}
+        danger
+        title="Clear the board?"
+        message="This permanently deletes every task in every column. This cannot be undone."
+        confirmLabel="Clear board"
+        onConfirm={clearBoard}
+        onCancel={() => setConfirmClear(false)}
+      />
     </div>
   );
 }

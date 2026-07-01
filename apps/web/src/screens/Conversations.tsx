@@ -1,15 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { Icon, Input } from "../ds";
+import { Icon, Input, EmptyState } from "../ds";
 import { useApi } from "../api/hooks";
 import { streamChat } from "../api/client";
 import type { Conversation, ChatMessage } from "@jarvis/shared";
-
-const LIST_SEED = [
-  "Command Center V1 design pass", "Voice pipeline latency debugging", "MSIX Store submission checklist",
-  "Refactor loop.py god object", "pgvector migration plan", "Q3 roadmap brainstorm",
-  "Hubstaff integration spec", "Onboarding wizard copy review", "Accessibility audit of the HUD",
-  "Email verification failover chain", "Trial + license enforcement design", "Architecture audit follow-ups",
-];
 
 const MODES: [string, string, string, string][] = [
   ["code", "Compose", "Write and create", "var(--jv-cyan)"],
@@ -47,9 +40,9 @@ function ModeCard({ ic, name, sub, color, active, onClick }: { ic: string; name:
 
 export default function Conversations() {
   const { data } = useApi<Conversation[]>("/api/memory/conversations");
-  const list = (data && data.length ? data.map((c) => c.title) : LIST_SEED) as string[];
   const sessions = data ?? [];
 
+  const [query, setQuery] = useState("");
   const [sel, setSel] = useState<number | null>(null);
   const [mode, setMode] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
@@ -65,7 +58,11 @@ export default function Conversations() {
     endRef.current?.scrollIntoView({ block: "end" });
   }, [thread]);
 
-  const sessionId = sel != null ? sessions[sel]?.sessionId ?? null : null;
+  const filtered = query.trim()
+    ? sessions.filter((c) => c.title.toLowerCase().includes(query.trim().toLowerCase()))
+    : sessions;
+
+  const sessionId = sel != null ? filtered[sel]?.sessionId ?? null : null;
 
   const send = async () => {
     const text = draft.trim();
@@ -103,7 +100,15 @@ export default function Conversations() {
       <div style={{ display: "flex", flexDirection: "column", background: "var(--grad-panel)", borderRadius: "var(--r-md)", border: "1px solid var(--jv-border)", boxShadow: "var(--panel-shadow)", overflow: "hidden" }}>
         <div style={{ display: "flex", gap: 8, padding: 12, borderBottom: "1px solid var(--jv-hairline)" }}>
           <div style={{ flex: 1 }}>
-            <Input icon={<Icon name="search" size={15} />} placeholder="Search conversations" />
+            <Input
+              icon={<Icon name="search" size={15} />}
+              placeholder="Search conversations"
+              value={query}
+              onChange={(e) => {
+                setQuery(e.target.value);
+                setSel(null);
+              }}
+            />
           </div>
           <button
             disabled={busy}
@@ -118,31 +123,40 @@ export default function Conversations() {
           </button>
         </div>
         <div style={{ flex: 1, overflowY: "auto" }}>
-          {list.map((c, i) => (
-            <button
-              key={i}
-              disabled={busy}
-              onClick={() => {
-                turnRef.current++; // invalidate any in-flight stream
-                setSel(i);
-                setThread([{ who: "jarvis", text: "Reopened “" + c + "”. Where would you like to pick up?" }]);
-              }}
-              style={{
-                width: "100%",
-                textAlign: "left",
-                padding: "11px 16px",
-                background: sel === i ? "var(--grad-cyan-soft)" : "none",
-                borderLeft: sel === i ? "2px solid var(--jv-cyan)" : "2px solid transparent",
-                border: "none",
-                borderBottom: "1px solid var(--jv-hairline)",
-                cursor: "pointer",
-                font: "var(--fw-medium) 12.5px var(--font-body)",
-                color: sel === i ? "var(--jv-text)" : "var(--jv-text-soft)",
-              }}
-            >
-              {c}
-            </button>
-          ))}
+          {filtered.length === 0 ? (
+            <EmptyState
+              compact
+              icon="message-square"
+              title={query.trim() ? "No matches" : "No conversations yet"}
+              hint={query.trim() ? "No conversations match your search." : "Start a new chat to begin talking with JARVIS."}
+            />
+          ) : (
+            filtered.map((c, i) => (
+              <button
+                key={c.id}
+                disabled={busy}
+                onClick={() => {
+                  turnRef.current++; // invalidate any in-flight stream
+                  setSel(i);
+                  setThread([]);
+                }}
+                style={{
+                  width: "100%",
+                  textAlign: "left",
+                  padding: "11px 16px",
+                  background: sel === i ? "var(--grad-cyan-soft)" : "none",
+                  borderLeft: sel === i ? "2px solid var(--jv-cyan)" : "2px solid transparent",
+                  border: "none",
+                  borderBottom: "1px solid var(--jv-hairline)",
+                  cursor: "pointer",
+                  font: "var(--fw-medium) 12.5px var(--font-body)",
+                  color: sel === i ? "var(--jv-text)" : "var(--jv-text-soft)",
+                }}
+              >
+                {c.title}
+              </button>
+            ))
+          )}
         </div>
       </div>
 

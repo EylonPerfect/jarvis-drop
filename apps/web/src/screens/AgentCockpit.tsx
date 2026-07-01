@@ -2,38 +2,25 @@
 // list. Center: a live view of the browser/app it is driving (mock streaming
 // frame) with Take control / Hand back. Right: its permissions, budget, and
 // recent ledger. Pause and Kill controls in the header.
-import { useEffect, useState } from "react";
-import { Panel, Badge, Button, Icon } from "../ds";
+import { useState } from "react";
+import { Panel, Badge, Button, Icon, EmptyState } from "../ds";
 import { usePersistentState } from "../api/hooks";
 
 type PlanState = "done" | "active" | "pending";
 
-const PLAN: [PlanState, string][] = [
-  ["done", "Open the CRM and filter the Warm — Enterprise segment"],
-  ["done", "Pull the 42 matching accounts and last-contact dates"],
-  ["active", "Draft a personalized opener per account"],
-  ["pending", "Queue drafts for operator approval (no send grant)"],
-  ["pending", "Log outcomes to the ledger"],
-];
+interface CockpitState {
+  plan: [PlanState, string][];
+  ledger: [string, string, string][];
+  grants: [string, string][];
+}
+
+const EMPTY_COCKPIT: CockpitState = { plan: [], ledger: [], grants: [] };
 const STATE_C: Record<PlanState, string> = { done: "var(--jv-green)", active: "var(--jv-cyan)", pending: "var(--jv-text-faint)" };
 
-const LEDGER: [string, string, string][] = [
-  ["07:41:22", "Drafted opener for Northwind Hosting", "$0.04"],
-  ["07:41:09", "Read last-contact date (CRM)", "$0.00"],
-  ["07:40:55", "Filtered Warm — Enterprise (42)", "$0.01"],
-];
-const GRANTS: [string, string][] = [["Draft email", "may"], ["Send email", "may not"], ["Read CRM", "may"], ["Share externally", "may not"]];
-
 export default function AgentCockpit({ agentName = "SDR Agent", onExit }: { agentName: string; onExit: () => void }) {
-  const [cp] = usePersistentState("cockpit", { plan: PLAN, ledger: LEDGER, grants: GRANTS });
+  const [cp, setCp] = usePersistentState<CockpitState>("cockpit", EMPTY_COCKPIT);
   const [controlled, setControlled] = useState(false);
   const [paused, setPaused] = useState(false);
-  const [tick, setTick] = useState(0);
-  useEffect(() => {
-    if (paused || controlled) return;
-    const id = setInterval(() => setTick((t) => (t + 1) % 4), 900);
-    return () => clearInterval(id);
-  }, [paused, controlled]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14, height: "100%" }}>
@@ -47,13 +34,14 @@ export default function AgentCockpit({ agentName = "SDR Agent", onExit }: { agen
         </div>
         <Badge status={paused ? "warn" : controlled ? "info" : "live"} solid>{paused ? "Paused" : controlled ? "Operator" : "Running"}</Badge>
         <button onClick={() => setPaused((p) => !p)} style={{ display: "flex", alignItems: "center", gap: 6, padding: "0 13px", height: 34, borderRadius: "var(--r-sm)", border: "1px solid var(--jv-border)", background: "transparent", color: "var(--jv-text-soft)", font: "var(--fw-semibold) 11px var(--font-hud)", letterSpacing: "0.06em", textTransform: "uppercase", cursor: "pointer" }}><Icon name={paused ? "play" : "pause"} size={14} />{paused ? "Resume" : "Pause"}</button>
-        <button style={{ display: "flex", alignItems: "center", gap: 6, padding: "0 13px", height: 34, borderRadius: "var(--r-sm)", border: "1px solid color-mix(in srgb, var(--jv-red) 40%, transparent)", background: "color-mix(in srgb, var(--jv-red) 12%, transparent)", color: "var(--jv-red)", font: "var(--fw-semibold) 11px var(--font-hud)", letterSpacing: "0.06em", textTransform: "uppercase", cursor: "pointer" }}><Icon name="octagon-x" size={14} />Kill</button>
+        <button onClick={() => { setCp(EMPTY_COCKPIT); setPaused(false); setControlled(false); }} style={{ display: "flex", alignItems: "center", gap: 6, padding: "0 13px", height: 34, borderRadius: "var(--r-sm)", border: "1px solid color-mix(in srgb, var(--jv-red) 40%, transparent)", background: "color-mix(in srgb, var(--jv-red) 12%, transparent)", color: "var(--jv-red)", font: "var(--fw-semibold) 11px var(--font-hud)", letterSpacing: "0.06em", textTransform: "uppercase", cursor: "pointer" }}><Icon name="octagon-x" size={14} />Kill</button>
       </div>
 
       {/* body */}
       <div style={{ flex: 1, display: "grid", gridTemplateColumns: "280px 1fr 280px", gap: 14, minHeight: 0 }}>
         {/* plan */}
         <Panel title="Plan" eyebrow style={{ height: "100%" }} bodyStyle={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          {cp.plan.length === 0 && <EmptyState compact icon="list-checks" title="No plan yet" hint="The agent's steps appear here once it starts a task." />}
           {cp.plan.map(([st, text], i) => (
             <div key={i} style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "10px 8px", borderBottom: i < cp.plan.length - 1 ? "1px solid var(--jv-hairline)" : "none" }}>
               <span style={{ flex: "0 0 18px", marginTop: 1 }}>
@@ -71,23 +59,12 @@ export default function AgentCockpit({ agentName = "SDR Agent", onExit }: { agen
           {/* browser chrome */}
           <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 13px", borderBottom: "1px solid var(--jv-hairline)", background: "rgba(10,22,38,0.6)" }}>
             <div style={{ display: "flex", gap: 5 }}>{["#fb5b6e", "#fbbf24", "#34d399"].map((c) => <span key={c} style={{ width: 9, height: 9, borderRadius: "50%", background: c }} />)}</div>
-            <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 7, padding: "5px 11px", borderRadius: "var(--r-pill)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)", font: "11px var(--font-mono)", color: "var(--jv-text-muted)" }}><Icon name="lock" size={11} color="var(--jv-green)" />app.salesforce.com/warm-enterprise</div>
-            <span style={{ display: "flex", alignItems: "center", gap: 5, font: "var(--fw-medium) 10px var(--font-hud)", letterSpacing: "0.06em", textTransform: "uppercase", color: controlled ? "var(--jv-cyan-300)" : "var(--jv-green)" }}><span style={{ width: 6, height: 6, borderRadius: "50%", background: "currentColor", boxShadow: "0 0 6px currentColor" }} />{controlled ? "You" : "Agent"} driving</span>
+            <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 7, padding: "5px 11px", borderRadius: "var(--r-pill)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)", font: "11px var(--font-mono)", color: "var(--jv-text-faint)" }}><Icon name="lock" size={11} color="var(--jv-text-faint)" />about:blank</div>
+            <span style={{ display: "flex", alignItems: "center", gap: 5, font: "var(--fw-medium) 10px var(--font-hud)", letterSpacing: "0.06em", textTransform: "uppercase", color: controlled ? "var(--jv-cyan-300)" : "var(--jv-text-faint)" }}><span style={{ width: 6, height: 6, borderRadius: "50%", background: "currentColor", boxShadow: "0 0 6px currentColor" }} />{controlled ? "You" : "Agent"} driving</span>
           </div>
-          {/* mock page being driven */}
-          <div style={{ flex: 1, position: "relative", padding: 16, overflow: "hidden" }}>
-            <div style={{ font: "var(--fw-bold) 15px var(--font-body)", color: "var(--jv-text)", marginBottom: 12 }}>Warm — Enterprise · 42 accounts</div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
-              {["Northwind Hosting", "Acme Robotics", "Vertex Labs", "Helios Freight", "Orbital Systems"].map((n, i) => (
-                <div key={n} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: "var(--r-sm)", background: i === tick % 5 && !controlled && !paused ? "var(--grad-cyan-soft)" : "var(--jv-surface-2)", border: `1px solid ${i === tick % 5 && !controlled && !paused ? "var(--jv-border-cyan)" : "var(--jv-border-soft)"}`, transition: "all .3s" }}>
-                  <span style={{ width: 26, height: 26, borderRadius: "50%", display: "grid", placeItems: "center", background: "var(--jv-surface-3)", font: "var(--fw-bold) 11px var(--font-body)", color: "var(--jv-cyan-300)" }}>{n[0]}</span>
-                  <span style={{ flex: 1, font: "var(--fw-medium) 12.5px var(--font-body)", color: "var(--jv-text)" }}>{n}</span>
-                  {i === tick % 5 && !controlled && !paused && <span style={{ font: "10px var(--font-hud)", letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--jv-cyan-300)" }}>drafting…</span>}
-                </div>
-              ))}
-            </div>
-            {/* fake cursor */}
-            {!controlled && !paused && <span style={{ position: "absolute", left: 120 + (tick * 60) % 300, top: 120 + (tick % 5) * 44, transition: "all .8s var(--ease-hud)", color: "var(--jv-cyan-300)", filter: "drop-shadow(0 0 4px var(--jv-glow-cyan))" }}><Icon name="mouse-pointer-2" size={18} /></span>}
+          {/* live session viewport */}
+          <div style={{ flex: 1, display: "grid", placeItems: "center", padding: 16, overflow: "hidden" }}>
+            <EmptyState icon="monitor" title="No agent session running" hint="When an agent starts a task, its live session streams here." />
           </div>
           {/* control bar */}
           <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 14px", borderTop: "1px solid var(--jv-hairline)", background: "rgba(10,22,38,0.6)" }}>
@@ -101,13 +78,10 @@ export default function AgentCockpit({ agentName = "SDR Agent", onExit }: { agen
         {/* right rail: permissions, budget, ledger */}
         <div style={{ display: "flex", flexDirection: "column", gap: 14, minHeight: 0 }}>
           <Panel title="Budget" eyebrow>
-            <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
-              <span style={{ font: "var(--fw-bold) 24px var(--font-display)", color: "var(--jv-text)" }}>$459</span>
-              <span style={{ font: "12px var(--font-mono)", color: "var(--jv-text-faint)" }}>/ $500 mo</span>
-            </div>
-            <div style={{ marginTop: 8, height: 7, borderRadius: 4, background: "var(--jv-void)", overflow: "hidden", border: "1px solid var(--jv-border-soft)" }}><div style={{ width: "92%", height: "100%", background: "var(--jv-amber)", boxShadow: "0 0 8px color-mix(in srgb, var(--jv-amber) 60%, transparent)" }} /></div>
+            <EmptyState compact icon="wallet" title="No budget set" hint="Set a spend cap when this agent runs a task." />
           </Panel>
           <Panel title="Permissions" eyebrow bodyStyle={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {cp.grants.length === 0 && <EmptyState compact icon="shield" title="No permissions granted" hint="Grant capabilities before this agent acts." />}
             {cp.grants.map(([l, s], i) => {
               const allow = s === "may";
               return (
@@ -119,6 +93,7 @@ export default function AgentCockpit({ agentName = "SDR Agent", onExit }: { agen
             })}
           </Panel>
           <Panel title="Recent ledger" eyebrow style={{ flex: 1, minHeight: 0 }} bodyStyle={{ display: "flex", flexDirection: "column", gap: 6, overflowY: "auto" }}>
+            {cp.ledger.length === 0 && <EmptyState compact icon="receipt" title="No activity yet" hint="The agent's actions and costs will be logged here." />}
             {cp.ledger.map((e, i) => (
               <div key={i} style={{ padding: "8px 10px", borderRadius: "var(--r-sm)", background: "var(--jv-void)", border: "1px solid var(--jv-border-soft)" }}>
                 <div style={{ font: "var(--fw-medium) 12px var(--font-body)", color: "var(--jv-text-soft)" }}>{e[1]}</div>

@@ -61,6 +61,12 @@ export default async function tasksRoutes(app: FastifyInstance) {
     return rowToTask(await one(`SELECT * FROM tasks WHERE id = $1`, [id]));
   });
 
+  // Clear the whole board.
+  app.delete("/api/tasks", async () => {
+    await query(`DELETE FROM tasks`);
+    return { ok: true };
+  });
+
   app.delete("/api/tasks/:id", async (req) => {
     const { id } = req.params as { id: string };
     await query(`DELETE FROM tasks WHERE id = $1`, [id]);

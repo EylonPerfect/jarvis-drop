@@ -30,6 +30,12 @@ export default async function knowledgeRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
+  // Clear all knowledge sources.
+  app.delete("/api/knowledge/sources", async () => {
+    await query(`DELETE FROM knowledge_sources`);
+    return { ok: true };
+  });
+
   app.get("/api/knowledge/collections", async () => {
     const rows = await query(`SELECT * FROM collections ORDER BY sort`);
     return rows.map((r: any): Collection => ({ id: r.id, name: r.name, count: r.count, color: r.color }));

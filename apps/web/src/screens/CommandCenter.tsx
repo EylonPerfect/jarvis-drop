@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Panel, Badge, Button, Icon } from "../ds";
+import { Panel, Badge, Button, Icon, EmptyState } from "../ds";
 import { useApi } from "../api/hooks";
 import { streamChat } from "../api/client";
 import { useSpeech, useVoiceOutput } from "../hooks/useSpeech";
 import type { ViewId } from "../components/AppShell";
-import type { Agent, FeedItem, SystemHealth, StatusStripItem } from "@jarvis/shared";
+import type { Agent, FeedItem, SystemHealth } from "@jarvis/shared";
 
 const ACCENT = "var(--jv-cyan)";
 
@@ -226,18 +226,13 @@ function ViewAll({ children = "View All", onClick }: { children?: React.ReactNod
   );
 }
 
-const FEED_SEED: FeedItem[] = [
-  { icon: "calendar", tone: "info", title: "Design review with the product team", sub: "Meeting", tag: "INFO" },
-  { icon: "alert-triangle", tone: "warn", title: '2 tasks are overdue — "Polish voic…"', sub: "Overdue", tag: "WARN" },
-  { icon: "git-pull-request", tone: "info", title: "3 pull requests are awaiting your revi…", sub: "Github", tag: "TIP" },
-  { icon: "lightbulb", tone: "info", title: "Your deep-work block is 2–4 PM. Noti…", sub: "Focus", tag: "TIP" },
-  { icon: "activity", tone: "optimal", title: "CPU usage at 15%", sub: "System load nominal", tag: "LIVE" },
-];
-
 function Feed() {
   const { data } = useApi<FeedItem[]>("/api/command/feed");
-  const items = data ?? FEED_SEED;
+  const items = data ?? [];
   const tone: Record<string, "info" | "warn" | "optimal"> = { INFO: "info", WARN: "warn", TIP: "info", LIVE: "optimal" };
+  if (items.length === 0) {
+    return <EmptyState compact icon="radar" title="No intelligence yet" hint="Signals from your agents and integrations will show up here." />;
+  }
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
       {items.map((it, i) => (
@@ -256,22 +251,16 @@ function Feed() {
   );
 }
 
-const STRIP_SEED: StatusStripItem[] = [
-  { icon: "cpu", name: "AI Core", status: "Active", tone: "optimal" },
-  { icon: "database", name: "Memory", status: "3,380", tone: "info" },
-  { icon: "mic", name: "Voice", status: "Online", tone: "optimal" },
-  { icon: "bot", name: "Agents", status: "2 Running", tone: "standby" },
-  { icon: "boxes", name: "LLMs", status: "4 Connected", tone: "optimal" },
-  { icon: "shield-check", name: "System", status: "Optimal", tone: "optimal" },
-];
-
 function StatusStrip() {
   const { data } = useApi<SystemHealth>("/api/system/health");
-  const items = data?.strip ?? STRIP_SEED;
+  const items = data?.strip ?? [];
   const col = (t: string) => (t === "optimal" ? "var(--jv-green)" : t === "standby" ? "var(--jv-violet)" : t === "warn" ? "var(--jv-amber)" : "var(--jv-cyan)");
   return (
     <div style={{ display: "flex", alignItems: "center", padding: "9px 16px", borderRadius: "var(--r-md)", background: "rgba(10,22,38,0.5)", border: "1px solid var(--jv-border-soft)", flex: 1, minWidth: 0, overflowX: "auto" }}>
       <span style={{ font: "var(--fw-semibold) 10px var(--font-hud)", letterSpacing: "0.16em", color: "var(--jv-cyan-300)", marginRight: 4, whiteSpace: "nowrap" }}>SYSTEM STATUS</span>
+      {items.length === 0 && (
+        <span style={{ font: "var(--fw-medium) 11px var(--font-hud)", letterSpacing: "0.06em", color: "var(--jv-text-faint)", marginLeft: 16, whiteSpace: "nowrap" }}>—</span>
+      )}
       {items.map((it, i) => (
         <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 16px", borderLeft: "1px solid var(--jv-hairline)", marginLeft: 12, whiteSpace: "nowrap" }}>
           <Icon name={it.icon} size={15} color={col(it.tone)} />
@@ -304,18 +293,9 @@ function QuickBar({ onNav }: { onNav: (v: ViewId) => void }) {
   );
 }
 
-const AGENTS_SEED: Agent[] = [
-  { id: "ag_coding", icon: "code", name: "Coding Agent", role: "Writing code", status: "optimal", statusLabel: "Active" },
-  { id: "ag_research", icon: "search", name: "Research Agent", role: "Deep analysis", status: "optimal", statusLabel: "Active" },
-  { id: "ag_memory", icon: "database", name: "Memory Agent", role: "Idle", status: "standby", statusLabel: "Standby" },
-  { id: "ag_browser", icon: "globe", name: "Browser Agent", role: "Idle", status: "standby", statusLabel: "Standby" },
-  { id: "ag_task", icon: "list-checks", name: "Task Agent", role: "Idle", status: "standby", statusLabel: "Standby" },
-  { id: "ag_system", icon: "shield-check", name: "System Agent", role: "Monitoring", status: "optimal", statusLabel: "Active" },
-];
-
 function AgentsList({ onNav }: { onNav: (v: ViewId) => void }) {
   const { data } = useApi<Agent[]>("/api/agents");
-  const agents = data ?? AGENTS_SEED;
+  const agents = data ?? [];
   return (
     <Panel
       title="Your Team"
@@ -348,6 +328,19 @@ function AgentsList({ onNav }: { onNav: (v: ViewId) => void }) {
       style={{ height: "100%" }}
       bodyStyle={{ display: "flex", flexDirection: "column", gap: 8 }}
     >
+      {agents.length === 0 && (
+        <EmptyState
+          compact
+          icon="bot"
+          title="No agents yet"
+          hint="Hire an agent and it will join your team here."
+          action={
+            <Button size="sm" variant="primary" icon={<Icon name="plus" size={14} />} onClick={() => onNav("agents")}>
+              New Agent
+            </Button>
+          }
+        />
+      )}
       {agents.map((a) => {
         const c = a.status === "optimal" ? "var(--jv-green)" : "var(--jv-violet)";
         return (

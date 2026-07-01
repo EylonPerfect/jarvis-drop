@@ -8,17 +8,17 @@ export const NAV = [
   { id: "aicore", icon: "cpu", label: "AI Core" },
   { id: "agents", icon: "bot", label: "Agents" },
   { id: "hire", icon: "user-plus", label: "Hire an Agent" },
-  { id: "approvals", icon: "inbox", label: "Approvals", count: 5 },
+  { id: "approvals", icon: "inbox", label: "Approvals" },
   { id: "permissions", icon: "shield", label: "Permissions" },
   { id: "spend", icon: "circle-dollar-sign", label: "Spend" },
   { id: "ledger", icon: "scroll-text", label: "Ledger" },
   { id: "integrations", icon: "plug", label: "Integrations" },
-  { id: "tasks", icon: "list-checks", label: "Tasks", count: 3 },
+  { id: "tasks", icon: "list-checks", label: "Tasks" },
   { id: "calendar", icon: "calendar", label: "Calendar" },
   { id: "memory", icon: "database", label: "Memory" },
-  { id: "conversations", icon: "message-square", label: "Conversations", count: 12 },
+  { id: "conversations", icon: "message-square", label: "Conversations" },
   { id: "knowledge", icon: "network", label: "Knowledge Base" },
-  { id: "tools", icon: "wrench", label: "Tools & Skills", count: 18 },
+  { id: "tools", icon: "wrench", label: "Tools & Skills" },
   { id: "workflows", icon: "workflow", label: "Workflows" },
   { id: "monitor", icon: "gauge", label: "System Monitor" },
 ] as const;
@@ -50,14 +50,7 @@ function Clock() {
 
 function TeamCost() {
   const { data } = useApi<SessionCost>("/api/memory/cost");
-  const cost = data ?? {
-    total: "$0.7421",
-    entries: [
-      { provider: "anthropic", cost: "$0.6112", tokens: "22,140 tok" },
-      { provider: "groq", cost: "$0.0934", tokens: "12,880 tok" },
-      { provider: "openai", cost: "$0.0375", tokens: "3,430 tok" },
-    ],
-  };
+  const cost = data ?? { total: "$0.00", entries: [] };
   const title = cost.entries.map((e) => `${e.provider} ${e.cost}`).join(" · ");
   return (
     <div

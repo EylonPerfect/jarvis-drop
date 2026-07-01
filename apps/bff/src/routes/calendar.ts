@@ -31,8 +31,20 @@ export default async function calendarRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
+  // Clear all reminders.
+  app.delete("/api/calendar/reminders", async () => {
+    await query(`DELETE FROM reminders`);
+    return { ok: true };
+  });
+
   app.get("/api/calendar/time", async () => {
     const rows = await query(`SELECT * FROM time_entries ORDER BY sort`);
     return rows.map(rowToEntry);
+  });
+
+  // Clear all time entries.
+  app.delete("/api/calendar/time", async () => {
+    await query(`DELETE FROM time_entries`);
+    return { ok: true };
   });
 }

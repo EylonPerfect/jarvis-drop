@@ -1,27 +1,11 @@
 import { Fragment, useState } from "react";
-import { Panel, Badge, Button, Icon, StatTile } from "../ds";
+import { Panel, Button, Icon, StatTile, EmptyState, IconButton, ConfirmDialog } from "../ds";
 import { useApi } from "../api/hooks";
 import { api } from "../api/client";
 import type { Agent, AgentRun, RuntimeStats, NewAgent } from "@jarvis/shared";
 import AgentCockpit from "./AgentCockpit";
 
-const ROSTER_SEED: Agent[] = [
-  { id: "ag_coding", icon: "code", name: "Coding Agent", role: "Writing code", status: "optimal", statusLabel: "Active" },
-  { id: "ag_research", icon: "search", name: "Research Agent", role: "Deep analysis", status: "optimal", statusLabel: "Active" },
-  { id: "ag_memory", icon: "database", name: "Memory Agent", role: "Idle", status: "standby", statusLabel: "Standby" },
-  { id: "ag_browser", icon: "globe", name: "Browser Agent", role: "Idle", status: "standby", statusLabel: "Standby" },
-  { id: "ag_task", icon: "list-checks", name: "Task Agent", role: "Idle", status: "standby", statusLabel: "Standby" },
-  { id: "ag_system", icon: "shield-check", name: "System Agent", role: "Monitoring", status: "optimal", statusLabel: "Active" },
-];
-
-const RUNS_SEED: AgentRun[] = [
-  { id: "run1", query: "Research the top 3 STT engines and benchmark latency on my hardware", ts: "13 jun, 1:42 pm", okCount: 3, errCount: 0, steps: [] },
-  { id: "run2", query: "Draft and validate the Alembic migration to add a due_date column to jarvis_tasks", ts: "12 jun, 8:20 pm", okCount: 2, errCount: 1, steps: [] },
-  { id: "run3", query: "Summarize this week's admin error reports and propose the top fix", ts: "12 jun, 12:05 am", okCount: 2, errCount: 0, steps: [] },
-  { id: "run4", query: "Generate release notes for the 2026.6 desktop build and check the MSIX version", ts: "10 jun, 4:48 pm", okCount: 2, errCount: 0, steps: [] },
-];
-
-function AgentCard({ a, onClick }: { a: Agent; onClick?: () => void }) {
+function AgentCard({ a, onClick, onDelete }: { a: Agent; onClick?: () => void; onDelete?: () => void }) {
   const c = a.status === "optimal" ? "var(--jv-green)" : "var(--jv-violet)";
   return (
     <div
@@ -51,75 +35,27 @@ function AgentCard({ a, onClick }: { a: Agent; onClick?: () => void }) {
         <span style={{ width: 5, height: 5, borderRadius: "50%", background: c, boxShadow: `0 0 6px ${c}` }} />
         {a.statusLabel}
       </span>
+      {onDelete && (
+        <IconButton
+          icon="trash-2"
+          tone="danger"
+          title="Delete"
+          size={28}
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete();
+          }}
+        />
+      )}
       {onClick && <Icon name="chevron-right" size={15} color="var(--jv-text-faint)" />}
     </div>
-  );
-}
-
-// Delegation — parent agents spawning permission-narrowed sub-agents.
-const DELEGATIONS: { parent: string; ic: string; task: string; subs: [string, string, string, string][] }[] = [
-  {
-    parent: "Research Agent",
-    ic: "search",
-    task: "Benchmark the top 3 STT engines",
-    subs: [
-      ["globe", "Browser sub-agent", "read-only web", "fetched 3 vendor docs → parent"],
-      ["code", "Coding sub-agent", "sandbox only", "ran latency harness → parent"],
-    ],
-  },
-  {
-    parent: "AR Clerk",
-    ic: "credit-card",
-    task: "Close the June books",
-    subs: [["table", "Data sub-agent", "sheet read", "pulled 92 invoices → parent"]],
-  },
-];
-
-function Delegation() {
-  return (
-    <Panel title="Delegation" eyebrow action={<span style={{ font: "var(--fw-medium) 11.5px var(--font-body)", color: "var(--jv-text-muted)" }}>Sub-agents inherit narrower rights</span>}>
-      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-        {DELEGATIONS.map((d, i) => (
-          <div key={i}>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
-              <span style={{ width: 32, height: 32, display: "grid", placeItems: "center", borderRadius: "var(--r-sm)", color: "var(--jv-cyan)", background: "rgba(41,211,245,0.08)", border: "1px solid var(--jv-border-cyan)" }}>
-                <Icon name={d.ic} size={16} />
-              </span>
-              <div>
-                <span style={{ font: "var(--fw-bold) 13px var(--font-body)", color: "var(--jv-text)" }}>{d.parent}</span>
-                <span style={{ font: "12px var(--font-body)", color: "var(--jv-text-muted)", marginLeft: 8 }}>
-                  spawned {d.subs.length} sub-agent{d.subs.length > 1 ? "s" : ""} · {d.task}
-                </span>
-              </div>
-            </div>
-            <div style={{ marginLeft: 15, borderLeft: "1px dashed var(--jv-border)", paddingLeft: 18, display: "flex", flexDirection: "column", gap: 8 }}>
-              {d.subs.map((s, j) => (
-                <div key={j} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderRadius: "var(--r-sm)", background: "var(--jv-void)", border: "1px solid var(--jv-border-soft)" }}>
-                  <Icon name={s[0]} size={14} color="var(--jv-violet)" />
-                  <span style={{ font: "var(--fw-semibold) 12px var(--font-body)", color: "var(--jv-text-soft)" }}>{s[1]}</span>
-                  <span style={{ padding: "2px 7px", borderRadius: 3, font: "var(--fw-medium) 9px var(--font-hud)", letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--jv-violet)", background: "color-mix(in srgb, var(--jv-violet) 13%, transparent)", border: "1px solid color-mix(in srgb, var(--jv-violet) 30%, transparent)" }}>{s[2]}</span>
-                  <span style={{ flex: 1, textAlign: "right", font: "11px var(--font-mono)", color: "var(--jv-text-muted)" }}>{s[3]}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        ))}
-      </div>
-    </Panel>
   );
 }
 
 function RunRow({ run }: { run: AgentRun }) {
   const [open, setOpen] = useState(false);
   const err = run.errCount;
-  const steps =
-    run.steps && run.steps.length
-      ? run.steps
-      : [
-          { agent: "Research Agent", detail: "web_search · 4 results", tone: "green" as const },
-          { agent: "Coding Agent", detail: "wrote migration.py · 62 lines", tone: "green" as const },
-          err > 0 ? { agent: "System Agent", detail: "verification failed · retrying", tone: "red" as const } : { agent: "Task Agent", detail: "created follow-up task", tone: "green" as const },
-        ];
+  const steps = run.steps ?? [];
   return (
     <div style={{ borderRadius: "var(--r-sm)", background: "var(--jv-void)", border: "1px solid var(--jv-border-soft)", overflow: "hidden" }}>
       <button
@@ -142,7 +78,7 @@ function RunRow({ run }: { run: AgentRun }) {
           )}
         </span>
       </button>
-      {open && (
+      {open && steps.length > 0 && (
         <div style={{ padding: "0 16px 14px 43px", display: "flex", flexDirection: "column", gap: 6 }}>
           {steps.map((s, i) => (
             <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, font: "12px/1.5 var(--font-mono)" }}>
@@ -349,12 +285,13 @@ function AgentBuilder({ onClose, onCreate }: { onClose: () => void; onCreate: (a
 export default function Agents() {
   const [building, setBuilding] = useState(false);
   const [cockpit, setCockpit] = useState<string | null>(null);
+  const [confirmClear, setConfirmClear] = useState(false);
   const { data: rosterData, reload } = useApi<Agent[]>("/api/agents");
   const { data: runsData } = useApi<AgentRun[]>("/api/agents/runs");
   const { data: runtime } = useApi<RuntimeStats>("/api/agents/runtime");
-  const roster = rosterData ?? ROSTER_SEED;
-  const runs = runsData ?? RUNS_SEED;
-  const stats = runtime ?? { active: 3, recentRuns: 4, stepsToday: 11, errors: 1 };
+  const roster = rosterData ?? [];
+  const runs = runsData ?? [];
+  const stats = runtime ?? { active: 0, recentRuns: 0, stepsToday: 0, errors: 0 };
 
   const create = async (a: NewAgent) => {
     try {
@@ -366,6 +303,48 @@ export default function Agents() {
     setBuilding(false);
   };
 
+  const removeAgent = async (id: string) => {
+    try {
+      await api.del(`/api/agents/${id}`);
+      reload();
+    } catch {
+      /* offline — ignore */
+    }
+  };
+
+  const clearRoster = async () => {
+    try {
+      await api.del("/api/agents");
+      reload();
+    } catch {
+      /* offline — ignore */
+    }
+    setConfirmClear(false);
+  };
+
+  const newAgentButton = (
+    <button
+      onClick={() => setBuilding(true)}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 5,
+        padding: "5px 10px",
+        borderRadius: "var(--r-sm)",
+        border: "1px solid var(--jv-border-cyan)",
+        background: "var(--grad-cyan-soft)",
+        color: "var(--jv-cyan-300)",
+        font: "var(--fw-semibold) 10px var(--font-hud)",
+        letterSpacing: "0.08em",
+        textTransform: "uppercase",
+        cursor: "pointer",
+      }}
+    >
+      <Icon name="plus" size={13} />
+      New Agent
+    </button>
+  );
+
   if (cockpit) return <AgentCockpit agentName={cockpit} onExit={() => setCockpit(null)} />;
 
   return (
@@ -376,32 +355,33 @@ export default function Agents() {
             title="Agent Roster"
             eyebrow
             action={
-              <button
-                onClick={() => setBuilding(true)}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 5,
-                  padding: "5px 10px",
-                  borderRadius: "var(--r-sm)",
-                  border: "1px solid var(--jv-border-cyan)",
-                  background: "var(--grad-cyan-soft)",
-                  color: "var(--jv-cyan-300)",
-                  font: "var(--fw-semibold) 10px var(--font-hud)",
-                  letterSpacing: "0.08em",
-                  textTransform: "uppercase",
-                  cursor: "pointer",
-                }}
-              >
-                <Icon name="plus" size={13} />
-                New Agent
-              </button>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                {roster.length > 0 && (
+                  <Button variant="danger" size="sm" glow={false} icon={<Icon name="trash-2" size={13} />} onClick={() => setConfirmClear(true)}>
+                    Clear all
+                  </Button>
+                )}
+                {newAgentButton}
+              </div>
             }
             bodyStyle={{ display: "flex", flexDirection: "column", gap: 8 }}
           >
-            {roster.map((a) => (
-              <AgentCard key={a.id} a={a} onClick={() => setCockpit(a.name)} />
-            ))}
+            {roster.length === 0 ? (
+              <EmptyState
+                icon="bot"
+                title="No agents yet"
+                hint="Your roster is empty. Hire an agent to start orchestrating multi-agent work."
+                action={
+                  <Button variant="primary" size="sm" icon={<Icon name="plus" size={14} />} onClick={() => setBuilding(true)}>
+                    Hire an Agent
+                  </Button>
+                }
+              />
+            ) : (
+              roster.map((a) => (
+                <AgentCard key={a.id} a={a} onClick={() => setCockpit(a.name)} onDelete={() => removeAgent(a.id)} />
+              ))
+            )}
           </Panel>
           <Panel title="Runtime" eyebrow>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
@@ -414,17 +394,31 @@ export default function Agents() {
         </div>
 
         <Panel title="Multi-agent Executions" action={<span style={{ font: "var(--fw-medium) 12px var(--font-body)", color: "var(--jv-text-muted)" }}>{runs.length} recent</span>}>
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            {runs.map((r) => (
-              <RunRow key={r.id} run={r} />
-            ))}
-          </div>
+          {runs.length === 0 ? (
+            <EmptyState
+              icon="git-branch"
+              title="No executions yet"
+              hint="Multi-agent runs will appear here once your agents start working."
+            />
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {runs.map((r) => (
+                <RunRow key={r.id} run={r} />
+              ))}
+            </div>
+          )}
         </Panel>
       </div>
-      <div style={{ marginTop: 16 }}>
-        <Delegation />
-      </div>
       {building && <AgentBuilder onClose={() => setBuilding(false)} onCreate={create} />}
+      <ConfirmDialog
+        open={confirmClear}
+        danger
+        title="Clear agent roster?"
+        message="This permanently removes every agent from your roster. This cannot be undone."
+        confirmLabel="Clear all"
+        onConfirm={clearRoster}
+        onCancel={() => setConfirmClear(false)}
+      />
     </Fragment>
   );
 }

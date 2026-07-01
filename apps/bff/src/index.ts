@@ -6,7 +6,7 @@ import { config } from "./config.js";
 import { hermesReachable } from "./hermes.js";
 import { pool } from "./db/pool.js";
 import { runMigrations, waitForDb } from "./db/migrate.js";
-import { seed, isSeeded } from "./db/seed.js";
+import { seed } from "./db/seed.js";
 
 import agentsRoutes from "./routes/agents.js";
 import tasksRoutes from "./routes/tasks.js";
@@ -103,11 +103,12 @@ async function boot() {
       await waitForDb();
       app.log.info("Running migrations…");
       await runMigrations();
-      const forced = config.seedOnBoot === "true";
-      const auto = config.seedOnBoot === undefined && !(await isSeeded());
-      if (forced || auto) {
-        app.log.info("Seeding database…");
-        await seed({ force: forced });
+      // Clean slate by default: the DB starts EMPTY (no demo records). The
+      // canonical demo data is loaded only when explicitly requested via
+      // SEED_ON_BOOT=true (or `npm run seed` / the Admin "Load demo" button).
+      if (config.seedOnBoot === "true") {
+        app.log.info("SEED_ON_BOOT=true — loading demo data…");
+        await seed({ force: true });
       }
     } catch (err) {
       // Don't crash at boot if the DB is briefly unavailable — the process

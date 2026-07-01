@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Panel, Badge, Button, Icon } from "../ds";
+import { Panel, Badge, Button, Icon, ConfirmDialog } from "../ds";
 import { usePersistentState } from "../api/hooks";
 
 type DiffRow = [string, string];
@@ -19,43 +19,6 @@ type QueueItem = {
   payload?: string[];
   diff?: DiffRow[];
 };
-
-const QUEUE: QueueItem[] = [
-  {
-    id: "apr_00", agent: "Recruiting Sourcer", ic: "help-circle", kind: "question", clarifying: true,
-    action: "Before I message the 3 finalists — should I lead with the remote-first note or the equity range? Your last two hires reacted better to different openers.",
-    reason: "Agent paused for a decision it cannot make alone", rule: "clarify",
-    options: ["Lead with remote-first", "Lead with equity range", "Let you draft it"],
-  },
-  {
-    id: "apr_01", agent: "SDR Agent", ic: "send", irreversible: true, kind: "send",
-    action: "Send the Q3 outreach email to 42 prospects on the “Warm — Enterprise” list",
-    reason: "Grant: may draft email, may not send", rule: "permission",
-    payload: ["To: 42 recipients (warm-enterprise.csv)", "Subject: Cutting AI ops cost 40% — a 15-min look", "From: outbound@jarvis.ai", "Attachments: none"],
-    diff: [["+", "42 emails will be sent immediately"], ["+", "Replies routed to SDR Agent inbox"], ["~", "Unsubscribes honored automatically"]],
-  },
-  {
-    id: "apr_02", agent: "AR Clerk", ic: "credit-card", irreversible: true, kind: "pay", escalated: true,
-    action: "Pay invoice #4821 to Northwind Hosting — $2,480.00",
-    reason: "Exceeded monthly spend cap ($2,000 / mo)", rule: "budget",
-    payload: ["Vendor: Northwind Hosting Ltd", "Amount: $2,480.00 USD", "Method: ACH · acct ••4417", "Due: 16 Jun 2026"],
-    diff: [["+", "$2,480.00 debited from Operating account"], ["-", "Remaining June budget: −$480 (overage)"], ["~", "Marked paid in the ledger"]],
-  },
-  {
-    id: "apr_03", agent: "Recruiting Sourcer", ic: "database", irreversible: false, kind: "read",
-    action: "Read the compensation column in the Candidates sheet to rank offers",
-    reason: "Data wall: HR finance is not shared with Recruiting", rule: "datawall", escalated: true,
-    payload: ["Source: Candidates.xlsx → column K (comp)", "Rows: 128", "Scope requested: read-only, this session"],
-    diff: [["~", "Recruiting Sourcer gains temporary read access"], ["~", "Access auto-revokes at end of run"]],
-  },
-  {
-    id: "apr_04", agent: "Data-Entry Clerk", ic: "trash-2", irreversible: true, kind: "delete",
-    action: "Delete 1,204 duplicate rows from the Leads table after dedupe",
-    reason: "Destructive op requires sign-off", rule: "permission",
-    payload: ["Table: crm.leads", "Rows affected: 1,204 (of 8,900)", "Backup: snapshot leads_2026-06-15 created"],
-    diff: [["-", "1,204 rows permanently removed"], ["+", "Snapshot retained for 30 days"], ["~", "Dedupe key: email + company"]],
-  },
-];
 
 const RULE_LABEL: Record<string, string> = { permission: "Permission wall", budget: "Budget cap", datawall: "Data wall", clarify: "Clarifying question" };
 const KIND_VERB: Record<string, string> = { send: "Send", pay: "Pay", delete: "Delete", sign: "Sign", read: "Grant access" };
@@ -170,12 +133,13 @@ function ApprovalItem({ item, onResolve }: { item: QueueItem; onResolve: (id: st
 }
 
 export default function ApprovalsInbox() {
-  const [queue, setQueue] = usePersistentState("approvals", QUEUE);
+  const [queue, setQueue] = usePersistentState<QueueItem[]>("approvals", []);
   const [toast, setToast] = useState<string | null>(null);
+  const [clearing, setClearing] = useState(false);
   const resolve = (id: string, verb: string) => { setQueue(queue.filter((x) => x.id !== id)); setToast(verb === "approved" ? "Action approved and fired." : verb === "answered" ? "Answer sent — agent resuming." : "Action rejected — agent notified."); setTimeout(() => setToast(null), 2200); };
   return (
     <div style={{ maxWidth: 860, margin: "0 auto" }}>
-      <Panel title="Approvals Inbox" eyebrow action={<Badge status={queue.length ? "warn" : "optimal"} solid>{queue.length} pending</Badge>}>
+      <Panel title="Approvals Inbox" eyebrow action={<div style={{ display: "flex", alignItems: "center", gap: 10 }}><Badge status={queue.length ? "warn" : "optimal"} solid>{queue.length} pending</Badge>{queue.length > 0 && <Button size="sm" variant="danger" icon={<Icon name="trash-2" size={13} />} onClick={() => setClearing(true)}>Clear all</Button>}</div>}>
         <p style={{ margin: "0 0 16px", font: "var(--fw-regular) 12.5px/1.55 var(--font-body)", color: "var(--jv-text-muted)" }}>Actions your workforce cannot take without you. Each shows the agent, the action in plain language, why it stopped, and a payload preview. Irreversible actions confirm before firing.</p>
         {queue.length === 0 ? (
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "56px 20px", textAlign: "center" }}>
@@ -194,6 +158,7 @@ export default function ApprovalsInbox() {
           <Icon name="info" size={15} color="var(--jv-cyan)" />{toast}
         </div>
       )}
+      <ConfirmDialog open={clearing} danger title="Clear the approvals queue?" message="This removes every pending request from the inbox. Agents waiting on these decisions will be notified." confirmLabel="Clear all" onCancel={() => setClearing(false)} onConfirm={() => { setQueue([]); setClearing(false); setToast("Queue cleared."); setTimeout(() => setToast(null), 2200); }} />
     </div>
   );
 }

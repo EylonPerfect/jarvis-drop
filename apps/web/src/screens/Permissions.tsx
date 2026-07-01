@@ -1,4 +1,5 @@
-import { Panel, Icon } from "../ds";
+import { useState } from "react";
+import { Panel, Icon, EmptyState, IconButton, ConfirmDialog, Button } from "../ds";
 import { usePersistentState } from "../api/hooks";
 
 type Grant = [string, string];
@@ -10,31 +11,6 @@ type AgentT = {
   tone: string;
   grants: Grant[];
 };
-
-// grant: [label, state]  state: "allow" | "deny" | limit string
-const AGENTS: AgentT[] = [
-  { ic: "send", name: "SDR Agent", role: "Sales Development", tone: "optimal",
-    grants: [["Draft email", "allow"], ["Send email", "deny"], ["Read CRM contacts", "allow"], ["Share data externally", "deny"], ["Monthly spend", "$500 / mo"], ["Autonomy", "Ask before acting"]] },
-  { ic: "credit-card", name: "AR Clerk", role: "Accounts Receivable", tone: "optimal",
-    grants: [["Read finance", "allow"], ["Draft invoice", "allow"], ["Pay invoice", "deny"], ["Share externally", "deny"], ["Monthly spend", "$2,000 / mo"], ["Autonomy", "Act, then report"]] },
-  { ic: "database", name: "Recruiting Sourcer", role: "Talent Sourcing", tone: "standby",
-    grants: [["Read candidate data", "allow"], ["Read compensation", "deny"], ["Message candidates", "allow"], ["Share externally", "deny"], ["Monthly spend", "$300 / mo"], ["Autonomy", "Ask before acting"]] },
-];
-
-const ROLE_TEMPLATES: [string, string, string][] = [
-  ["send", "SDR", "Draft only · no send · $500/mo · CRM read"],
-  ["credit-card", "AR Clerk", "Finance read · draft pay · no send · $2k/mo"],
-  ["users", "Recruiting Sourcer", "Candidate read · no comp · $300/mo"],
-  ["clipboard-check", "QA Tester", "Sandbox only · no prod · $150/mo"],
-  ["table", "Data-Entry Clerk", "Sheet write · backup on delete · $100/mo"],
-];
-
-const DATA_WALLS: [string, string, string][] = [
-  ["HR finance", "Recruiting", "blocked"],
-  ["Customer PII", "External share", "blocked"],
-  ["Prod database", "QA Tester", "blocked"],
-  ["Bank credentials", "All except AR Clerk", "blocked"],
-];
 
 function GrantRow({ label, state, onToggle }: { label: string; state: string; onToggle: () => void }) {
   const isLimit = state !== "allow" && state !== "deny";
@@ -53,7 +29,7 @@ function GrantRow({ label, state, onToggle }: { label: string; state: string; on
   );
 }
 
-function AgentFence({ agent, onToggle }: { agent: AgentT; onToggle: (name: string, gi: number) => void }) {
+function AgentFence({ agent, onToggle, onRevokeAll, onRemove }: { agent: AgentT; onToggle: (name: string, gi: number) => void; onRevokeAll: (name: string) => void; onRemove: (name: string) => void }) {
   const c = agent.tone === "optimal" ? "var(--jv-green)" : "var(--jv-violet)";
   return (
     <div style={{ borderRadius: "var(--r-md)", background: "var(--jv-surface-2)", border: "1px solid var(--jv-border-soft)", padding: 16 }}>
@@ -63,7 +39,8 @@ function AgentFence({ agent, onToggle }: { agent: AgentT; onToggle: (name: strin
           <div style={{ font: "var(--fw-bold) 13.5px var(--font-body)", color: "var(--jv-text)" }}>{agent.name}</div>
           <div style={{ font: "var(--fw-regular) 11px var(--font-body)", color: "var(--jv-text-muted)" }}>{agent.role}</div>
         </div>
-        <button title="Revoke all grants" style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 10px", borderRadius: "var(--r-sm)", border: "1px solid color-mix(in srgb, var(--jv-red) 34%, transparent)", background: "transparent", color: "var(--jv-red)", font: "var(--fw-semibold) 9px var(--font-hud)", letterSpacing: "0.06em", textTransform: "uppercase", cursor: "pointer" }}><Icon name="shield-off" size={12} />Revoke all</button>
+        <button onClick={() => onRevokeAll(agent.name)} title="Revoke all grants" style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 10px", borderRadius: "var(--r-sm)", border: "1px solid color-mix(in srgb, var(--jv-red) 34%, transparent)", background: "transparent", color: "var(--jv-red)", font: "var(--fw-semibold) 9px var(--font-hud)", letterSpacing: "0.06em", textTransform: "uppercase", cursor: "pointer" }}><Icon name="shield-off" size={12} />Revoke all</button>
+        <IconButton icon="trash-2" title={`Remove ${agent.name}`} tone="danger" onClick={() => onRemove(agent.name)} />
       </div>
       {agent.grants.map((g, i) => <GrantRow key={i} label={g[0]} state={g[1]} onToggle={() => onToggle(agent.name, i)} />)}
     </div>
@@ -71,42 +48,34 @@ function AgentFence({ agent, onToggle }: { agent: AgentT; onToggle: (name: strin
 }
 
 export default function Permissions() {
-  const [agents, setAgents] = usePersistentState("permissions", AGENTS);
+  const [agents, setAgents] = usePersistentState<AgentT[]>("permissions", []);
+  const [clearing, setClearing] = useState(false);
   const toggle = (name: string, gi: number) => setAgents(agents.map((a) => {
     if (a.name !== name) return a;
     const grants = a.grants.map((g, i): Grant => (i === gi && (g[1] === "allow" || g[1] === "deny")) ? [g[0], g[1] === "allow" ? "deny" : "allow"] : g);
     return { ...a, grants };
   }));
+  const revokeAll = (name: string) => setAgents(agents.map((a) => {
+    if (a.name !== name) return a;
+    const grants = a.grants.map((g): Grant => (g[1] === "allow" || g[1] === "deny") ? [g[0], "deny"] : g);
+    return { ...a, grants };
+  }));
+  const remove = (name: string) => setAgents(agents.filter((a) => a.name !== name));
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "1fr 320px", gap: 16, alignItems: "start" }}>
-      <Panel title="The Fence — Per-agent grants" eyebrow action={<span style={{ font: "var(--fw-medium) 11.5px var(--font-body)", color: "var(--jv-text-muted)" }}>Every grant revocable in one tap</span>}>
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          {agents.map((a) => <AgentFence key={a.name} agent={a} onToggle={toggle} />)}
-        </div>
-      </Panel>
-
-      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-        <Panel title="Role templates" eyebrow bodyStyle={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {ROLE_TEMPLATES.map((r, i) => (
-            <div key={i} style={{ display: "flex", alignItems: "center", gap: 11, padding: "10px 12px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)" }}>
-              <span style={{ width: 32, height: 32, flex: "0 0 32px", display: "grid", placeItems: "center", borderRadius: "var(--r-sm)", color: "var(--jv-cyan)", background: "rgba(41,211,245,0.08)" }}><Icon name={r[0]} size={15} /></span>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ font: "var(--fw-semibold) 12.5px var(--font-body)", color: "var(--jv-text)" }}>{r[1]}</div>
-                <div style={{ font: "10.5px/1.4 var(--font-mono)", color: "var(--jv-text-muted)", marginTop: 2 }}>{r[2]}</div>
-              </div>
-            </div>
-          ))}
-        </Panel>
-        <Panel title="Data walls" eyebrow action={<Icon name="shield" size={15} color="var(--jv-red)" />} bodyStyle={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {DATA_WALLS.map((w, i) => (
-            <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: "var(--r-sm)", background: "var(--jv-void)", border: "1px solid color-mix(in srgb, var(--jv-red) 22%, transparent)" }}>
-              <Icon name="ban" size={14} color="var(--jv-red)" />
-              <div style={{ flex: 1, font: "12px var(--font-mono)", color: "var(--jv-text-soft)" }}>{w[0]} <span style={{ color: "var(--jv-text-faint)" }}>↛</span> {w[1]}</div>
-              <span style={{ font: "var(--fw-semibold) 9px var(--font-hud)", letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--jv-red)" }}>Blocked</span>
-            </div>
-          ))}
-        </Panel>
+    <Panel title="The Fence — Per-agent grants" eyebrow action={agents.length > 0 ? (
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <span style={{ font: "var(--fw-medium) 11.5px var(--font-body)", color: "var(--jv-text-muted)" }}>Every grant revocable in one tap</span>
+        <Button size="sm" variant="danger" icon={<Icon name="trash-2" size={13} />} onClick={() => setClearing(true)}>Clear all</Button>
       </div>
-    </div>
+    ) : undefined}>
+      {agents.length === 0 ? (
+        <EmptyState icon="shield" title="No agents to govern yet" hint="Grant permissions once agents are hired. Each agent gets its own fence — a set of revocable grants for what it may and may not do." />
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {agents.map((a) => <AgentFence key={a.name} agent={a} onToggle={toggle} onRevokeAll={revokeAll} onRemove={remove} />)}
+        </div>
+      )}
+      <ConfirmDialog open={clearing} danger title="Remove all agents?" message="This clears every agent and its grants from the fence. This cannot be undone." confirmLabel="Clear all" onCancel={() => setClearing(false)} onConfirm={() => { setAgents([]); setClearing(false); }} />
+    </Panel>
   );
 }

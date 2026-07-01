@@ -1,37 +1,14 @@
 // Workflows — saved multi-step automations. Each has a trigger, an ordered set
-// of steps (agent/tool nodes), a status and a run control. Ported from the
-// prototype screen and wired to the /api/workflows backend endpoints.
+// of steps (agent/tool nodes), a status and a run control. Wired to the
+// /api/workflows backend endpoints; renders empty states on a clean database.
 import { Fragment } from "react";
-import { Panel, Badge, Button, Icon, StatTile } from "../ds";
+import { Panel, Badge, Button, Icon, StatTile, EmptyState } from "../ds";
 import type { Workflow, WorkflowRun } from "@jarvis/shared";
 import { useApi } from "../api/hooks";
 import { api } from "../api/client";
 
-const WORKFLOWS_SEED: Workflow[] = [
-  { id: "wf1", name: "Morning Briefing", trigger: "Every day · 8:00 am", status: "Enabled", steps: [
-    { icon: "calendar", label: "Pull today's calendar" }, { icon: "mail", label: "Summarize unread mail" }, { icon: "list-checks", label: "List overdue tasks" }, { icon: "mic", label: "Speak the briefing" },
-  ] },
-  { id: "wf2", name: "Release Notes", trigger: "On git tag push", status: "Enabled", steps: [
-    { icon: "github", label: "Collect merged PRs" }, { icon: "code", label: "Diff since last tag" }, { icon: "file-text", label: "Draft notes" }, { icon: "message-square", label: "Post to Slack" },
-  ] },
-  { id: "wf3", name: "Inbox Triage", trigger: "Every 2 hours", status: "Paused", steps: [
-    { icon: "mail", label: "Fetch new mail" }, { icon: "sparkles", label: "Classify + prioritize" }, { icon: "list-checks", label: "Create tasks" },
-  ] },
-  { id: "wf4", name: "Nightly Backup", trigger: "Every day · 2:00 am", status: "Enabled", steps: [
-    { icon: "database", label: "Dump Postgres" }, { icon: "hard-drive", label: "Snapshot vectors" }, { icon: "shield-check", label: "Verify integrity" },
-  ] },
-];
-
-const RUNS_SEED: WorkflowRun[] = [
-  { id: "run1", name: "Morning Briefing", when: "8:00 am", tone: "optimal" },
-  { id: "run2", name: "Nightly Backup", when: "2:00 am", tone: "optimal" },
-  { id: "run3", name: "Release Notes", when: "yesterday", tone: "optimal" },
-  { id: "run4", name: "Inbox Triage", when: "paused", tone: "standby" },
-];
-
 interface WorkflowStats { workflows: number; enabled: number; paused: number; runsPerWeek: number; }
-
-const STATS_SEED: WorkflowStats = { workflows: 4, enabled: 3, paused: 1, runsPerWeek: 28 };
+const ZERO_STATS: WorkflowStats = { workflows: 0, enabled: 0, paused: 0, runsPerWeek: 0 };
 
 function StepNode({ ic, label, last }: { ic: string; label: string; last: boolean }) {
   return (
@@ -45,14 +22,13 @@ function StepNode({ ic, label, last }: { ic: string; label: string; last: boolea
   );
 }
 
-function FlowCard({ wf }: { wf: Workflow }) {
+function FlowCard({ wf, onRan }: { wf: Workflow; onRan: () => void }) {
   const { name, trigger, status, steps } = wf;
   const paused = status === "Paused";
   const run = async () => {
-    const jobId = wf.jobId ?? wf.id;
-    if (!jobId) return;
     try {
       await api.post(`/api/workflows/${wf.id}/run`);
+      onRan();
     } catch {
       /* gateway may be offline — ignore */
     }
@@ -68,8 +44,7 @@ function FlowCard({ wf }: { wf: Workflow }) {
           <div style={{ display: "flex", alignItems: "center", gap: 6, font: "var(--fw-medium) 11.5px var(--font-body)", color: "var(--jv-text-muted)", marginTop: 4 }}><Icon name="clock" size={12} />{trigger}</div>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
-          <Button size="sm" variant="ghost" icon={<Icon name="settings" size={13} />}>Edit</Button>
-          <Button size="sm" variant={paused ? "secondary" : "primary"} icon={<Icon name={paused ? "play" : "play"} size={13} />} onClick={run}>Run</Button>
+          <Button size="sm" variant={paused ? "secondary" : "primary"} icon={<Icon name="play" size={13} />} onClick={run}>Run</Button>
         </div>
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -81,18 +56,26 @@ function FlowCard({ wf }: { wf: Workflow }) {
 
 export default function Workflows() {
   const { data: workflows } = useApi<Workflow[]>("/api/workflows");
-  const { data: runs } = useApi<WorkflowRun[]>("/api/workflows/runs");
+  const { data: runs, reload: reloadRuns } = useApi<WorkflowRun[]>("/api/workflows/runs");
   const { data: stats } = useApi<WorkflowStats>("/api/workflows/stats");
 
-  const flows = workflows ?? WORKFLOWS_SEED;
-  const recentRuns = runs ?? RUNS_SEED;
-  const s = stats ?? STATS_SEED;
+  const flows = workflows ?? [];
+  const recentRuns = runs ?? [];
+  const s = stats ?? ZERO_STATS;
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1fr 300px", gap: 16, alignItems: "start" }}>
-      <Panel title="Workflows" action={<Button size="sm" variant="secondary" icon={<Icon name="plus" size={13} />}>New Workflow</Button>}>
+      <Panel title="Workflows">
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          {flows.map((f, i) => <FlowCard key={f.id ?? i} wf={f} />)}
+          {flows.length === 0 ? (
+            <EmptyState
+              icon="workflow"
+              title="No workflows yet"
+              hint="Automations that chain agents and tools on a trigger will appear here once they're configured."
+            />
+          ) : (
+            flows.map((f, i) => <FlowCard key={f.id ?? i} wf={f} onRan={reloadRuns} />)
+          )}
         </div>
       </Panel>
 
@@ -106,12 +89,16 @@ export default function Workflows() {
           </div>
         </Panel>
         <Panel title="Recent runs" eyebrow bodyStyle={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {recentRuns.map((r, i) => (
-            <div key={r.id ?? i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 11px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)" }}>
-              <span style={{ display: "flex", alignItems: "center", gap: 8, font: "var(--fw-medium) 12.5px var(--font-body)", color: "var(--jv-text-soft)" }}><span style={{ width: 6, height: 6, borderRadius: "50%", background: `var(--jv-${r.tone === "optimal" ? "green" : "violet"})`, boxShadow: `0 0 6px var(--jv-${r.tone === "optimal" ? "green" : "violet"})` }} />{r.name}</span>
-              <span style={{ font: "12px var(--font-mono)", color: "var(--jv-text-muted)" }}>{r.when}</span>
-            </div>
-          ))}
+          {recentRuns.length === 0 ? (
+            <EmptyState icon="history" compact title="No runs yet" hint="Workflow runs will show up here once a workflow executes." />
+          ) : (
+            recentRuns.map((r, i) => (
+              <div key={r.id ?? i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 11px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)" }}>
+                <span style={{ display: "flex", alignItems: "center", gap: 8, font: "var(--fw-medium) 12.5px var(--font-body)", color: "var(--jv-text-soft)" }}><span style={{ width: 6, height: 6, borderRadius: "50%", background: `var(--jv-${r.tone === "optimal" ? "green" : "violet"})`, boxShadow: `0 0 6px var(--jv-${r.tone === "optimal" ? "green" : "violet"})` }} />{r.name}</span>
+                <span style={{ font: "12px var(--font-mono)", color: "var(--jv-text-muted)" }}>{r.when}</span>
+              </div>
+            ))
+          )}
         </Panel>
       </div>
     </div>

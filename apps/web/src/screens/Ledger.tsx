@@ -2,10 +2,8 @@
 // what it saw, did, decided, and what it cost. Filter by agent, scrub the day's
 // timeline, expand "Why did you do this?" (reasoning + grant used + tokens), export.
 import { useState } from "react";
-import { Panel, Badge, Button, Icon } from "../ds";
+import { Panel, Badge, Button, Icon, EmptyState, ConfirmDialog } from "../ds";
 import { usePersistentState } from "../api/hooks";
-
-const AGENTS = ["All agents", "SDR Agent", "AR Clerk", "Recruiting Sourcer", "QA Tester", "System Agent"];
 
 interface LedgerEntry {
   t: string;
@@ -20,19 +18,6 @@ interface LedgerEntry {
   decided: string;
   tokens: string;
 }
-
-const ENTRIES: LedgerEntry[] = [
-  { t: "07:41:22 pm", agent: "SDR Agent", ic: "send", verb: "Drafted", what: "Outreach email to 42 warm-enterprise prospects", cost: "$0.42", grant: "may draft email", status: "ok",
-    saw: "Warm-Enterprise list (42 rows) + last-quarter reply rates", decided: "Personalized on company + recent funding; queued for approval (no send grant)", tokens: "3,140 in / 1,020 out" },
-  { t: "07:38:05 pm", agent: "AR Clerk", ic: "credit-card", verb: "Blocked", what: "Attempted to pay invoice #4821 ($2,480) — exceeded cap", cost: "$0.01", grant: "spend ≤ $2,000/mo", status: "blocked",
-    saw: "Invoice #4821 from Northwind + June spend to date ($2,000)", decided: "Payment would breach monthly cap; escalated to Approvals Inbox", tokens: "890 in / 210 out" },
-  { t: "07:31:48 pm", agent: "Recruiting Sourcer", ic: "database", verb: "Requested", what: "Read access to the compensation column (data wall)", cost: "$0.00", grant: "candidate read only", status: "blocked",
-    saw: "Candidates.xlsx schema — column K flagged as HR-finance", decided: "Hit data wall; asked operator for a temporary, auto-revoking grant", tokens: "420 in / 90 out" },
-  { t: "07:22:10 pm", agent: "QA Tester", ic: "clipboard-check", verb: "Filed", what: "Reproduced bug JV-482 and opened a GitHub issue", cost: "$1.90", grant: "sandbox + github", status: "ok",
-    saw: "Failing test log + last 3 commits touching loop.py", decided: "Isolated the regression to commit 8f3a; attached repro steps", tokens: "12,400 in / 2,110 out" },
-  { t: "07:05:55 pm", agent: "System Agent", ic: "shield-check", verb: "Verified", what: "Nightly backup integrity check passed", cost: "$0.08", grant: "read prod (verify only)", status: "ok",
-    saw: "Postgres dump checksum + vector snapshot manifest", decided: "All checksums matched; no action needed", tokens: "1,050 in / 180 out" },
-];
 
 const STATUS_C: Record<string, string> = { ok: "var(--jv-green)", blocked: "var(--jv-red)", warn: "var(--jv-amber)" };
 
@@ -66,33 +51,45 @@ function Entry({ e }: { e: LedgerEntry }) {
 }
 
 export default function Ledger() {
-  const [entries] = usePersistentState("ledger", ENTRIES);
+  const [entries, setEntries] = usePersistentState<LedgerEntry[]>("ledger", []);
   const [agent, setAgent] = useState("All agents");
-  const [scrub, setScrub] = useState(100);
+  const [clearing, setClearing] = useState(false);
+  const agentChips = ["All agents", ...Array.from(new Set(entries.map((e) => e.agent)))];
   const shown = entries.filter((e) => agent === "All agents" || e.agent === agent);
+  const exportAudit = () => {
+    const blob = new Blob([JSON.stringify(entries, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `ledger-audit-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
   return (
-    <Panel title="Ledger" eyebrow action={<div style={{ display: "flex", gap: 8, alignItems: "center" }}><Badge status="info" dot={false}>Append-only</Badge><Button size="sm" variant="secondary" icon={<Icon name="download" size={13} />}>Export audit</Button></div>}>
+    <Panel title="Ledger" eyebrow action={<div style={{ display: "flex", gap: 8, alignItems: "center" }}><Badge status="info" dot={false}>Append-only</Badge>{entries.length > 0 && <><Button size="sm" variant="secondary" icon={<Icon name="download" size={13} />} onClick={exportAudit}>Export audit</Button><Button size="sm" variant="danger" icon={<Icon name="trash-2" size={13} />} onClick={() => setClearing(true)}>Clear all</Button></>}</div>}>
       <p style={{ margin: "0 0 14px", font: "var(--fw-regular) 12.5px/1.55 var(--font-body)", color: "var(--jv-text-muted)" }}>Every action every agent took — what it saw, did, decided, and what it cost. Timestamped and immutable.</p>
 
-      {/* controls */}
-      <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 14, flexWrap: "wrap" }}>
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          {AGENTS.map((a) => (
-            <button key={a} onClick={() => setAgent(a)} style={{ padding: "6px 12px", borderRadius: "var(--r-pill)", border: `1px solid ${agent === a ? "var(--jv-border-cyan)" : "var(--jv-border)"}`, background: agent === a ? "var(--grad-cyan-soft)" : "transparent", color: agent === a ? "var(--jv-cyan-300)" : "var(--jv-text-muted)", font: "var(--fw-medium) 11.5px var(--font-body)", cursor: "pointer" }}>{a}</button>
-          ))}
-        </div>
-      </div>
-      {/* scrub / replay */}
-      <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 14px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)", marginBottom: 14 }}>
-        <Icon name="history" size={15} color="var(--jv-cyan-300)" />
-        <span style={{ font: "var(--fw-semibold) 10px var(--font-hud)", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--jv-text-muted)", whiteSpace: "nowrap" }}>Replay day</span>
-        <input type="range" min="0" max="100" value={scrub} onChange={(e) => setScrub(+e.target.value)} style={{ flex: 1, accentColor: "var(--jv-cyan)" }} />
-        <span style={{ font: "12px var(--font-mono)", color: "var(--jv-cyan-300)", whiteSpace: "nowrap" }}>{scrub === 100 ? "now · 07:41 pm" : Math.round(6 + (scrub / 100) * 13.7) + ":00 " + (scrub < 44 ? "am" : "pm")}</span>
-      </div>
+      {entries.length === 0 ? (
+        <EmptyState icon="scroll-text" title="The ledger is empty" hint="Every action your agents take will be recorded here — timestamped, immutable, and exportable as an audit trail." />
+      ) : (
+        <>
+          {/* controls */}
+          <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 14, flexWrap: "wrap" }}>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {agentChips.map((a) => (
+                <button key={a} onClick={() => setAgent(a)} style={{ padding: "6px 12px", borderRadius: "var(--r-pill)", border: `1px solid ${agent === a ? "var(--jv-border-cyan)" : "var(--jv-border)"}`, background: agent === a ? "var(--grad-cyan-soft)" : "transparent", color: agent === a ? "var(--jv-cyan-300)" : "var(--jv-text-muted)", font: "var(--fw-medium) 11.5px var(--font-body)", cursor: "pointer" }}>{a}</button>
+              ))}
+            </div>
+          </div>
 
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {shown.map((e, i) => <Entry key={i} e={e} />)}
-      </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {shown.map((e, i) => <Entry key={i} e={e} />)}
+          </div>
+        </>
+      )}
+      <ConfirmDialog open={clearing} danger title="Clear the ledger?" message="This permanently erases every recorded action from the audit trail. Export first if you need a copy." confirmLabel="Clear all" onCancel={() => setClearing(false)} onConfirm={() => { setEntries([]); setAgent("All agents"); setClearing(false); }} />
     </Panel>
   );
 }

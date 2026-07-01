@@ -55,6 +55,40 @@ export default async function agentsRoutes(app: FastifyInstance) {
     return reply.code(201).send(rowToAgent(row));
   });
 
+  // Update an existing agent (rename, re-role, change model/autonomy, status).
+  app.patch("/api/agents/:id", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const b = req.body as Partial<NewAgent> & { status?: string; statusLabel?: string };
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    const set = (col: string, v: unknown) => {
+      sets.push(`${col} = $${sets.length + 1}`);
+      vals.push(v);
+    };
+    if (b.name !== undefined) set("name", b.name);
+    if (b.role !== undefined) set("role", b.role);
+    if (b.icon !== undefined) set("icon", b.icon);
+    if (b.model !== undefined) set("model", b.model);
+    if (b.autonomy !== undefined) set("autonomy", b.autonomy);
+    if (b.instructions !== undefined) set("instructions", b.instructions);
+    if (b.status !== undefined) set("status", b.status);
+    if (b.statusLabel !== undefined) set("status_label", b.statusLabel);
+    if (b.tools !== undefined) set("tools", JSON.stringify(b.tools));
+    if (b.collaborators !== undefined) set("collaborators", JSON.stringify(b.collaborators));
+    if (!sets.length) return reply.code(400).send({ error: "no fields to update" });
+    vals.push(id);
+    await query(`UPDATE agents SET ${sets.join(", ")} WHERE id = $${vals.length}`, vals);
+    const row = await one(`SELECT * FROM agents WHERE id = $1`, [id]);
+    if (!row) return reply.code(404).send({ error: "not found" });
+    return rowToAgent(row);
+  });
+
+  // Remove all agents (clear the roster).
+  app.delete("/api/agents", async () => {
+    await query(`DELETE FROM agents`);
+    return { ok: true };
+  });
+
   app.delete("/api/agents/:id", async (req) => {
     const { id } = req.params as { id: string };
     await query(`DELETE FROM agents WHERE id = $1`, [id]);
