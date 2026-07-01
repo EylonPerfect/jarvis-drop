@@ -48,6 +48,10 @@ export const config = {
     sessionKey: process.env.HERMES_SESSION_KEY ?? "operator-primary",
     // Default to Claude (hermes routes it via its configured provider, e.g. Nexos).
     model: process.env.HERMES_MODEL ?? "claude-sonnet-4-6",
+    // Hostinger Hermes dashboard uses a session-cookie login (no bearer key).
+    // When these are set, the BFF logs in and authenticates /v1/* with the cookie.
+    dashUser: process.env.HERMES_DASH_USER,
+    dashPass: process.env.HERMES_DASH_PASS,
   },
 
   db: {
