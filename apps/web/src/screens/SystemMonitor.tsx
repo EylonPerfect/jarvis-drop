@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Panel, Badge, ProgressRing, Button, Icon, Switch } from "../ds";
 import { useApi, usePoll } from "../api/hooks";
 import type { Gauges, LedgerEntry, SlowTurn as SlowTurnData, LogEntry } from "@jarvis/shared";
+import AdminReset from "../components/AdminReset";
 
 const LEDGER_SEED: LedgerEntry[] = [
   { tool: "web_search", status: "verified", duration: "412ms", tone: "green" },
@@ -133,6 +134,8 @@ export default function SystemMonitor() {
           ))}
         </div>
       </Panel>
+
+      <AdminReset />
     </div>
   );
 }
