@@ -3,27 +3,70 @@ import { Icon, Logo, Badge, Input, Button, Waveform } from "../ds";
 import { useApi } from "../api/hooks";
 import type { SessionCost } from "@jarvis/shared";
 
-export const NAV = [
-  { id: "command", icon: "layout-grid", label: "Command Center" },
-  { id: "aicore", icon: "cpu", label: "AI Core" },
-  { id: "agents", icon: "bot", label: "Agents" },
-  { id: "hire", icon: "user-plus", label: "Hire an Agent" },
-  { id: "approvals", icon: "inbox", label: "Approvals" },
-  { id: "permissions", icon: "shield", label: "Permissions" },
-  { id: "spend", icon: "circle-dollar-sign", label: "Spend" },
-  { id: "ledger", icon: "scroll-text", label: "Ledger" },
-  { id: "integrations", icon: "plug", label: "Integrations" },
-  { id: "tasks", icon: "list-checks", label: "Tasks" },
-  { id: "calendar", icon: "calendar", label: "Calendar" },
-  { id: "memory", icon: "database", label: "Memory" },
-  { id: "conversations", icon: "message-square", label: "Conversations" },
-  { id: "knowledge", icon: "network", label: "Knowledge Base" },
-  { id: "tools", icon: "wrench", label: "Tools & Skills" },
-  { id: "workflows", icon: "workflow", label: "Workflows" },
-  { id: "monitor", icon: "gauge", label: "System Monitor" },
-] as const;
+export type ViewId =
+  | "command"
+  | "aicore"
+  | "agents"
+  | "hire"
+  | "approvals"
+  | "permissions"
+  | "spend"
+  | "ledger"
+  | "integrations"
+  | "tasks"
+  | "calendar"
+  | "memory"
+  | "conversations"
+  | "knowledge"
+  | "tools"
+  | "workflows"
+  | "monitor";
 
-export type ViewId = (typeof NAV)[number]["id"];
+type Leaf = { id: ViewId; icon: string; label: string };
+type NavGroupDef = { group: true; id: ViewId; icon: string; label: string; children: Leaf[] };
+type NavEntry = Leaf | NavGroupDef;
+type NavSection = { header: string; items: NavEntry[] };
+
+// The Command Center is the home surface, pinned above the two labelled
+// sections. Everything agent-related is collapsed under the "Agents" group.
+const HOME: Leaf = { id: "command", icon: "layout-grid", label: "Command Center" };
+
+const SECTIONS: NavSection[] = [
+  {
+    header: "Agents",
+    items: [
+      {
+        group: true,
+        id: "agents",
+        icon: "bot",
+        label: "Agents",
+        children: [
+          { id: "agents", icon: "users", label: "Roster" },
+          { id: "hire", icon: "user-plus", label: "Hire an Agent" },
+          { id: "approvals", icon: "inbox", label: "Approvals" },
+          { id: "permissions", icon: "shield", label: "Permissions" },
+        ],
+      },
+    ],
+  },
+  {
+    header: "System",
+    items: [
+      { id: "aicore", icon: "cpu", label: "AI Core" },
+      { id: "spend", icon: "circle-dollar-sign", label: "Spend" },
+      { id: "ledger", icon: "scroll-text", label: "Ledger" },
+      { id: "integrations", icon: "plug", label: "Integrations" },
+      { id: "tasks", icon: "list-checks", label: "Tasks" },
+      { id: "calendar", icon: "calendar", label: "Calendar" },
+      { id: "memory", icon: "database", label: "Memory" },
+      { id: "conversations", icon: "message-square", label: "Conversations" },
+      { id: "knowledge", icon: "network", label: "Knowledge Base" },
+      { id: "tools", icon: "wrench", label: "Tools & Skills" },
+      { id: "workflows", icon: "workflow", label: "Workflows" },
+      { id: "monitor", icon: "gauge", label: "System Monitor" },
+    ],
+  },
+];
 
 function useClock() {
   const [t, setT] = useState(new Date());
@@ -96,8 +139,29 @@ function Rail({ active, onNav }: { active: ViewId; onNav: (id: ViewId) => void }
         <Logo size={44} wordmark />
       </div>
       <nav style={{ display: "flex", flexDirection: "column", gap: 3, overflowY: "auto", flex: 1, margin: "0 -4px", padding: "0 4px" }}>
-        {NAV.map((n) => (
-          <NavRow key={n.id} n={n} active={active === n.id} onClick={() => onNav(n.id)} />
+        <NavLeafRow leaf={HOME} active={active === HOME.id} onNav={onNav} />
+        {SECTIONS.map((section) => (
+          <div key={section.header} style={{ marginTop: 14 }}>
+            <div
+              style={{
+                font: "var(--fw-semibold) 10px var(--font-hud)",
+                letterSpacing: "0.18em",
+                textTransform: "uppercase",
+                color: "var(--jv-text-muted)",
+                padding: "0 12px",
+                marginBottom: 6,
+              }}
+            >
+              {section.header}
+            </div>
+            {section.items.map((item) =>
+              "group" in item ? (
+                <NavGroupRow key={item.id} group={item} active={active} onNav={onNav} />
+              ) : (
+                <NavLeafRow key={item.id} leaf={item} active={active === item.id} onNav={onNav} />
+              ),
+            )}
+          </div>
         ))}
       </nav>
       <div style={{ flex: "0 0 8px" }} />
@@ -125,10 +189,43 @@ function Rail({ active, onNav }: { active: ViewId; onNav: (id: ViewId) => void }
   );
 }
 
-// Local nav row (mirrors DS NavItem but keeps the Icon composition inline).
+// Nav rows (mirror DS NavItem but keep the Icon composition inline).
 import { NavItem } from "../ds";
-function NavRow({ n, active, onClick }: { n: (typeof NAV)[number]; active: boolean; onClick: () => void }) {
-  return <NavItem icon={<Icon name={n.icon} size={18} />} label={n.label} count={(n as any).count ?? null} active={active} onClick={onClick} />;
+
+function NavLeafRow({ leaf, active, onNav, indent = false }: { leaf: Leaf; active: boolean; onNav: (id: ViewId) => void; indent?: boolean }) {
+  return (
+    <div style={indent ? { paddingLeft: 14 } : undefined}>
+      <NavItem icon={<Icon name={leaf.icon} size={indent ? 16 : 18} />} label={leaf.label} active={active} onClick={() => onNav(leaf.id)} />
+    </div>
+  );
+}
+
+// Collapsible group: the parent row toggles expansion (and stays open while one
+// of its children is the active view); children navigate.
+function NavGroupRow({ group, active, onNav }: { group: NavGroupDef; active: ViewId; onNav: (id: ViewId) => void }) {
+  const childIds = group.children.map((c) => c.id);
+  const hasActiveChild = childIds.includes(active);
+  const [open, setOpen] = useState(hasActiveChild);
+  useEffect(() => {
+    if (hasActiveChild) setOpen(true);
+  }, [hasActiveChild]);
+
+  return (
+    <>
+      <NavItem
+        icon={<Icon name={group.icon} size={18} />}
+        active={!open && hasActiveChild}
+        onClick={() => setOpen((o) => !o)}
+        label={
+          <span style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%" }}>
+            {group.label}
+            <Icon name={open ? "chevron-down" : "chevron-right"} size={15} />
+          </span>
+        }
+      />
+      {open && group.children.map((c) => <NavLeafRow key={c.id} leaf={c} active={active === c.id} onNav={onNav} indent />)}
+    </>
+  );
 }
 
 function TopBar({ onAbout }: { onAbout: () => void }) {
