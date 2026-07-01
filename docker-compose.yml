@@ -41,6 +41,11 @@ services:
       HERMES_API_KEY: ${HERMES_API_KEY:-change-me}
       HERMES_SESSION_KEY: ${HERMES_SESSION_KEY:-operator-primary}
       HERMES_MODEL: ${HERMES_MODEL:-claude-sonnet-4-6}
+      # Hostinger hermes dashboard login (session-cookie auth). Set both in .env
+      # to turn on live Claude chat; without them the BFF can't log in and every
+      # reply falls back to the offline canned message.
+      HERMES_DASH_USER: ${HERMES_DASH_USER:-}
+      HERMES_DASH_PASS: ${HERMES_DASH_PASS:-}
     extra_hosts:
       # Lets the container reach hermes bound on the VPS host (see DEPLOY.md).
       - "host.docker.internal:host-gateway"
