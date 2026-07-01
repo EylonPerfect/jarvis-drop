@@ -1,0 +1,20 @@
+/* Token layers (order matters: fonts → colors → typography → spacing → effects → base). */
+@import "./tokens/fonts.css";
+@import "./tokens/colors.css";
+@import "./tokens/typography.css";
+@import "./tokens/spacing.css";
+@import "./tokens/effects.css";
+@import "./tokens/base.css";
+
+html, body { height: 100%; margin: 0; background: var(--jv-void); }
+#root { position: fixed; inset: 0; }
+
+.placeholder {
+  display: grid;
+  place-items: center;
+  height: 60vh;
+  color: var(--jv-text-muted);
+  font: var(--fw-medium) 14px var(--font-body);
+  gap: 10px;
+  text-align: center;
+}

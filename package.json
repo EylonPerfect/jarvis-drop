@@ -1,0 +1,22 @@
+{
+  "name": "jarvis-command-center",
+  "private": true,
+  "version": "3.0.0",
+  "description": "J.A.R.V.I.S. Command Center — full-stack HUD frontend + BFF that integrates NousResearch hermes-agent (deployed on a Hostinger VPS) with a Postgres store for app-owned domains.",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace=@jarvis/bff & npm run dev --workspace=@jarvis/web",
+    "dev:web": "npm run dev --workspace=@jarvis/web",
+    "dev:bff": "npm run dev --workspace=@jarvis/bff",
+    "build": "npm run build --workspace=@jarvis/shared && npm run build --workspace=@jarvis/bff && npm run build --workspace=@jarvis/web",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "db:migrate": "npm run migrate --workspace=@jarvis/bff",
+    "db:seed": "npm run seed --workspace=@jarvis/bff"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

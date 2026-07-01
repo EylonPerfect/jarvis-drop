@@ -1,0 +1,68 @@
+# J.A.R.V.I.S. Command Center — production stack.
+# Run on the same VPS as hermes-agent:  docker compose up -d --build
+# The BFF reaches hermes over the Docker host gateway (see DEPLOY.md).
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-jarvis}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-jarvis}
+      POSTGRES_DB: ${POSTGRES_DB:-jarvis}
+    volumes:
+      - jarvis_db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-jarvis} -d ${POSTGRES_DB:-jarvis}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    # Not published: only the BFF (same compose network) reaches it.
+
+  bff:
+    build:
+      context: .
+      dockerfile: apps/bff/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PORT: "8787"
+      HOST: 0.0.0.0
+      WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:8080}
+      DATABASE_URL: postgres://${POSTGRES_USER:-jarvis}:${POSTGRES_PASSWORD:-jarvis}@db:5432/${POSTGRES_DB:-jarvis}
+      DATABASE_SSL: "false"
+      MIGRATE_ON_BOOT: "true"
+      # SEED_ON_BOOT unset → auto-seed only when the DB is empty.
+      # Optional shared secret guarding the BFF (see DEPLOY.md). If set, Nginx
+      # must forward it (uncomment the proxy_set_header line in nginx.conf).
+      BFF_API_KEY: ${BFF_API_KEY:-}
+      HERMES_BASE_URL: ${HERMES_BASE_URL:-http://host.docker.internal:8642}
+      HERMES_API_KEY: ${HERMES_API_KEY:-change-me}
+      HERMES_SESSION_KEY: ${HERMES_SESSION_KEY:-operator-primary}
+      HERMES_MODEL: ${HERMES_MODEL:-claude-sonnet-4-6}
+    extra_hosts:
+      # Lets the container reach hermes bound on the VPS host (see DEPLOY.md).
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8787/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      # Wait until the BFF is actually listening (migrations done) to avoid
+      # early 502s from nginx.
+      bff:
+        condition: service_healthy
+    ports:
+      - "${WEB_PORT:-8080}:80"
+
+volumes:
+  jarvis_db:

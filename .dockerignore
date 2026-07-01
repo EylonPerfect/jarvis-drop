@@ -1,0 +1,12 @@
+**/node_modules
+**/dist
+**/build
+.git
+.env
+.env.*
+!.env.example
+*.log
+**/*.tsbuildinfo
+project
+chats
+scratchpad

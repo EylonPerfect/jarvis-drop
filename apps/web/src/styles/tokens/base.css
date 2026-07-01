@@ -1,0 +1,72 @@
+/* ============================================================
+   J.A.R.V.I.S. — Base layer: resets, app canvas, helper classes,
+   scrollbars, selection. Tokens must load before this.
+   ============================================================ */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font: var(--text-body);
+  color: var(--text-primary);
+  background: var(--grad-app);
+  background-color: var(--jv-void);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::selection { background: rgba(41, 211, 245, 0.30); color: #fff; }
+
+a { color: var(--jv-cyan); text-decoration: none; }
+a:hover { color: var(--jv-cyan-300); }
+
+/* ---- Scrollbars (thin, cyan-tinted) ---- */
+* { scrollbar-width: thin; scrollbar-color: rgba(41,211,245,0.35) transparent; }
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-thumb {
+  background: rgba(41, 211, 245, 0.30);
+  border-radius: 99px;
+}
+*::-webkit-scrollbar-thumb:hover { background: rgba(41, 211, 245, 0.55); }
+
+/* ---- HUD eyebrow / tracked label ---- */
+.jv-label {
+  font: var(--text-hud-label);
+  text-transform: uppercase;
+  letter-spacing: var(--ls-wider);
+  color: var(--jv-cyan-300);
+}
+
+/* ---- Panel: the workhorse HUD container ---- */
+.jv-panel {
+  position: relative;
+  background: var(--grad-panel);
+  border-radius: var(--r-md);
+  box-shadow: var(--panel-shadow);
+  padding: var(--panel-pad);
+}
+.jv-panel--chamfer { clip-path: var(--clip-chamfer); border-radius: 0; }
+.jv-panel--active { box-shadow: var(--panel-shadow-active); }
+
+/* corner-bracket decoration (apply to a positioned ancestor) */
+.jv-brackets::before,
+.jv-brackets::after {
+  content: "";
+  position: absolute;
+  width: 14px; height: 14px;
+  border: 1.5px solid var(--jv-border-cyan);
+  pointer-events: none;
+}
+.jv-brackets::before { top: 8px; left: 8px; border-right: none; border-bottom: none; }
+.jv-brackets::after  { bottom: 8px; right: 8px; border-left: none; border-top: none; }
+
+/* live status dot */
+.jv-dot {
+  display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--jv-green); box-shadow: 0 0 8px var(--jv-glow-green);
+  animation: jv-pulse 2s var(--ease-out) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; }
+}

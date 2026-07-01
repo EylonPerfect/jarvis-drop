@@ -1,0 +1,100 @@
+/* ============================================================
+   J.A.R.V.I.S. — Color tokens
+   Sci-fi HUD command center. Deep-navy void, electric cyan,
+   and a full semantic status spectrum.
+   ============================================================ */
+
+:root {
+  /* ---- Core void / surface ramp (cool navy-black) ---- */
+  --jv-void:        #050a12;   /* deepest app background */
+  --jv-bg:          #070e1a;   /* base canvas */
+  --jv-bg-2:        #0a1424;   /* raised region */
+  --jv-surface:     #0c1a2e;   /* panel fill (top of gradient) */
+  --jv-surface-2:   #0a1626;   /* panel fill (bottom of gradient) */
+  --jv-surface-3:   #102236;   /* inset tile / row */
+  --jv-elevated:    #13283f;   /* hovered tile, popover */
+
+  /* ---- Cyan: the JARVIS signal color ---- */
+  --jv-cyan-50:     #d6f7ff;
+  --jv-cyan-100:    #a5ecff;
+  --jv-cyan-300:    #4fdcff;
+  --jv-cyan-400:    #29d3f5;   /* primary accent */
+  --jv-cyan-500:    #14b8d8;
+  --jv-cyan-600:    #0e90ad;
+  --jv-cyan-700:    #0b6e85;
+  --jv-cyan:        var(--jv-cyan-400);
+
+  /* ---- Electric blue (info / focus / links) ---- */
+  --jv-blue-300:    #6aa8ff;
+  --jv-blue-400:    #3b82f6;
+  --jv-blue-500:    #2563eb;
+  --jv-blue:        var(--jv-blue-400);
+
+  /* ---- Status spectrum ---- */
+  --jv-green-300:   #6ee7b7;
+  --jv-green-400:   #34d399;   /* active / optimal / connected */
+  --jv-green-500:   #22c55e;
+  --jv-green:       var(--jv-green-400);
+
+  --jv-amber-300:   #fcd34d;
+  --jv-amber-400:   #fbbf24;   /* warn / medium / standby */
+  --jv-amber-500:   #f59e0b;
+  --jv-amber:       var(--jv-amber-400);
+
+  --jv-red-300:     #fda4af;
+  --jv-red-400:     #fb5b6e;   /* overdue / critical / error */
+  --jv-red-500:     #ef4444;
+  --jv-red:         var(--jv-red-400);
+
+  --jv-violet-300:  #c4b5fd;
+  --jv-violet-400:  #a78bfa;   /* agents / system / secondary */
+  --jv-violet-500:  #8b5cf6;
+  --jv-violet:      var(--jv-violet-400);
+
+  --jv-magenta-300: #f9a8d4;
+  --jv-magenta-400: #ec4899;   /* brainstorm / critical accent */
+  --jv-magenta:     var(--jv-magenta-400);
+
+  /* ---- Text ramp (cool whites → slate) ---- */
+  --jv-text:        #e9f4fb;   /* primary text */
+  --jv-text-soft:   #b9cee0;   /* secondary text */
+  --jv-text-muted:  #7c97b0;   /* labels / meta */
+  --jv-text-faint:  #51708c;   /* disabled / ghost */
+
+  /* ---- Lines & glow ---- */
+  --jv-border:        rgba(60, 122, 158, 0.28);  /* default panel edge */
+  --jv-border-soft:   rgba(60, 122, 158, 0.16);
+  --jv-border-cyan:   rgba(41, 211, 245, 0.45);  /* active/glowing edge */
+  --jv-border-strong: rgba(41, 211, 245, 0.75);
+  --jv-hairline:      rgba(120, 160, 190, 0.12);
+
+  /* glow color tokens (use inside box-shadow / drop-shadow) */
+  --jv-glow-cyan:    rgba(41, 211, 245, 0.55);
+  --jv-glow-cyan-sm: rgba(41, 211, 245, 0.30);
+  --jv-glow-green:   rgba(52, 211, 153, 0.55);
+  --jv-glow-amber:   rgba(251, 191, 36, 0.50);
+  --jv-glow-red:     rgba(251, 91, 110, 0.50);
+  --jv-glow-violet:  rgba(167, 139, 250, 0.50);
+
+  /* ---- Semantic aliases ---- */
+  --text-primary:    var(--jv-text);
+  --text-secondary:  var(--jv-text-soft);
+  --text-muted:      var(--jv-text-muted);
+  --accent:          var(--jv-cyan);
+  --accent-contrast: #04141b;            /* text on cyan fills */
+  --surface-app:     var(--jv-void);
+  --surface-card:    var(--jv-surface);
+  --surface-inset:   var(--jv-surface-3);
+
+  --status-optimal:  var(--jv-green);
+  --status-warn:     var(--jv-amber);
+  --status-critical: var(--jv-red);
+  --status-info:     var(--jv-cyan);
+  --status-standby:  var(--jv-violet);
+
+  /* ---- Priority tags ---- */
+  --tag-critical:    var(--jv-magenta-400);
+  --tag-high:        var(--jv-amber-400);
+  --tag-medium:      var(--jv-cyan-400);
+  --tag-low:         var(--jv-text-muted);
+}
