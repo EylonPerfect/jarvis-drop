@@ -1,7 +1,7 @@
 // Integrations — connected tools (email, CRM, bank, Slack, browser) and, per
 // integration, which agents may use it. The model provider is a swappable
 // connector here too, and the model can be set PER AGENT, not just globally.
-import { useState } from "react";
+import { usePersistentState } from "../api/hooks";
 import { Panel, Badge, Button, Icon } from "../ds";
 
 const INTEGRATIONS: [string, string, string, string, string[]][] = [
@@ -59,7 +59,7 @@ function IntegrationCard({ ic, name, cat, status, agents }: { ic: string; name: 
 }
 
 export default function Integrations() {
-  const [models, setModels] = useState<Record<string, string>>(Object.fromEntries(PER_AGENT_MODEL.map((r) => [r[0], r[2]])));
+  const [models, setModels] = usePersistentState<Record<string, string>>("agent_models", Object.fromEntries(PER_AGENT_MODEL.map((r) => [r[0], r[2]])));
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <Panel title="Connected tools" eyebrow action={<Button size="sm" variant="secondary" icon={<Icon name="plus" size={13} />}>Add integration</Button>}>
@@ -93,7 +93,7 @@ export default function Integrations() {
               <div key={r[0]} style={{ display: "flex", alignItems: "center", gap: 11, padding: "9px 12px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)" }}>
                 <span style={{ width: 28, height: 28, flex: "0 0 28px", display: "grid", placeItems: "center", borderRadius: "var(--r-sm)", color: "var(--jv-cyan)", background: "rgba(41,211,245,0.08)" }}><Icon name={r[1]} size={14} /></span>
                 <span style={{ flex: 1, font: "var(--fw-semibold) 12.5px var(--font-body)", color: "var(--jv-text)" }}>{r[0]}</span>
-                <select value={models[r[0]]} onChange={(e) => setModels((m) => ({ ...m, [r[0]]: e.target.value }))} style={{ height: 32, padding: "0 8px", borderRadius: "var(--r-sm)", background: "var(--jv-void)", border: "1px solid var(--jv-border)", color: "var(--jv-cyan-300)", font: "11px var(--font-mono)", cursor: "pointer" }}>
+                <select value={models[r[0]]} onChange={(e) => setModels({ ...models, [r[0]]: e.target.value })} style={{ height: 32, padding: "0 8px", borderRadius: "var(--r-sm)", background: "var(--jv-void)", border: "1px solid var(--jv-border)", color: "var(--jv-cyan-300)", font: "11px var(--font-mono)", cursor: "pointer" }}>
                   {MODEL_OPTS.map((o) => <option key={o}>{o}</option>)}
                 </select>
               </div>

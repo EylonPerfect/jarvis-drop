@@ -4,6 +4,7 @@
 // recent ledger. Pause and Kill controls in the header.
 import { useEffect, useState } from "react";
 import { Panel, Badge, Button, Icon } from "../ds";
+import { usePersistentState } from "../api/hooks";
 
 type PlanState = "done" | "active" | "pending";
 
@@ -24,6 +25,7 @@ const LEDGER: [string, string, string][] = [
 const GRANTS: [string, string][] = [["Draft email", "may"], ["Send email", "may not"], ["Read CRM", "may"], ["Share externally", "may not"]];
 
 export default function AgentCockpit({ agentName = "SDR Agent", onExit }: { agentName: string; onExit: () => void }) {
+  const [cp] = usePersistentState("cockpit", { plan: PLAN, ledger: LEDGER, grants: GRANTS });
   const [controlled, setControlled] = useState(false);
   const [paused, setPaused] = useState(false);
   const [tick, setTick] = useState(0);
@@ -52,8 +54,8 @@ export default function AgentCockpit({ agentName = "SDR Agent", onExit }: { agen
       <div style={{ flex: 1, display: "grid", gridTemplateColumns: "280px 1fr 280px", gap: 14, minHeight: 0 }}>
         {/* plan */}
         <Panel title="Plan" eyebrow style={{ height: "100%" }} bodyStyle={{ display: "flex", flexDirection: "column", gap: 4 }}>
-          {PLAN.map(([st, text], i) => (
-            <div key={i} style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "10px 8px", borderBottom: i < PLAN.length - 1 ? "1px solid var(--jv-hairline)" : "none" }}>
+          {cp.plan.map(([st, text], i) => (
+            <div key={i} style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "10px 8px", borderBottom: i < cp.plan.length - 1 ? "1px solid var(--jv-hairline)" : "none" }}>
               <span style={{ flex: "0 0 18px", marginTop: 1 }}>
                 {st === "done" ? <Icon name="check-circle" size={16} color={STATE_C.done} />
                   : st === "active" ? <span style={{ display: "block", width: 14, height: 14, margin: 1, borderRadius: "50%", border: "2px solid var(--jv-cyan)", boxShadow: "0 0 8px var(--jv-glow-cyan)", animation: "jv-pulse 1.6s ease-out infinite" }} />
@@ -106,7 +108,7 @@ export default function AgentCockpit({ agentName = "SDR Agent", onExit }: { agen
             <div style={{ marginTop: 8, height: 7, borderRadius: 4, background: "var(--jv-void)", overflow: "hidden", border: "1px solid var(--jv-border-soft)" }}><div style={{ width: "92%", height: "100%", background: "var(--jv-amber)", boxShadow: "0 0 8px color-mix(in srgb, var(--jv-amber) 60%, transparent)" }} /></div>
           </Panel>
           <Panel title="Permissions" eyebrow bodyStyle={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            {GRANTS.map(([l, s], i) => {
+            {cp.grants.map(([l, s], i) => {
               const allow = s === "may";
               return (
                 <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", font: "var(--fw-medium) 12px var(--font-body)" }}>
@@ -117,7 +119,7 @@ export default function AgentCockpit({ agentName = "SDR Agent", onExit }: { agen
             })}
           </Panel>
           <Panel title="Recent ledger" eyebrow style={{ flex: 1, minHeight: 0 }} bodyStyle={{ display: "flex", flexDirection: "column", gap: 6, overflowY: "auto" }}>
-            {LEDGER.map((e, i) => (
+            {cp.ledger.map((e, i) => (
               <div key={i} style={{ padding: "8px 10px", borderRadius: "var(--r-sm)", background: "var(--jv-void)", border: "1px solid var(--jv-border-soft)" }}>
                 <div style={{ font: "var(--fw-medium) 12px var(--font-body)", color: "var(--jv-text-soft)" }}>{e[1]}</div>
                 <div style={{ display: "flex", justifyContent: "space-between", font: "10.5px var(--font-mono)", color: "var(--jv-text-muted)", marginTop: 2 }}><span>{e[0]}</span><span>{e[2]}</span></div>

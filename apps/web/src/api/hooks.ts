@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { api } from "./client";
 
 // Generic fetch hook: loads a GET endpoint, exposes { data, loading, error, reload }.
@@ -34,6 +34,26 @@ export function useApi<T>(path: string, deps: unknown[] = []): {
   useEffect(() => load(), [load]);
 
   return { data, loading, error, reload: load };
+}
+
+// Persistent control-plane state: reads /api/state/:key, falls back to `seed`,
+// and persists every update back to the BFF (survives reloads/redeploys).
+// Drop-in replacement for useState in the control-plane screens.
+export function usePersistentState<T>(key: string, seed: T): [T, (next: T | ((prev: T) => T)) => void] {
+  const { data } = useApi<{ value: T | null }>(`/api/state/${key}`);
+  const [local, setLocal] = useState<T | null>(null);
+  const value = local ?? data?.value ?? seed;
+  const valueRef = useRef(value);
+  valueRef.current = value;
+  const persist = useCallback(
+    (next: T | ((prev: T) => T)) => {
+      const resolved = typeof next === "function" ? (next as (p: T) => T)(valueRef.current) : next;
+      setLocal(resolved);
+      api.put(`/api/state/${key}`, { value: resolved }).catch(() => {});
+    },
+    [key],
+  );
+  return [value, persist];
 }
 
 // Poll an endpoint on an interval (live telemetry: gauges, health, logs).

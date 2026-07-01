@@ -1,5 +1,5 @@
-import { useState } from "react";
 import { Panel, Icon } from "../ds";
+import { usePersistentState } from "../api/hooks";
 
 type Grant = [string, string];
 
@@ -71,8 +71,8 @@ function AgentFence({ agent, onToggle }: { agent: AgentT; onToggle: (name: strin
 }
 
 export default function Permissions() {
-  const [agents, setAgents] = useState(AGENTS);
-  const toggle = (name: string, gi: number) => setAgents((prev) => prev.map((a) => {
+  const [agents, setAgents] = usePersistentState("permissions", AGENTS);
+  const toggle = (name: string, gi: number) => setAgents(agents.map((a) => {
     if (a.name !== name) return a;
     const grants = a.grants.map((g, i): Grant => (i === gi && (g[1] === "allow" || g[1] === "deny")) ? [g[0], g[1] === "allow" ? "deny" : "allow"] : g);
     return { ...a, grants };

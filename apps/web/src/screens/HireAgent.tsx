@@ -3,6 +3,7 @@
 // tools it needs, deploy. New hire then appears in Your Team.
 import { useState } from "react";
 import type { CSSProperties } from "react";
+import { api } from "../api/client";
 import { Panel, Badge, Button, Icon } from "../ds";
 
 type Role = { ic: string; name: string; dept: string; blurb: string; budget: string; tools: string[]; grants: string };
@@ -60,7 +61,7 @@ export default function HireAgent() {
   const [picked, setPicked] = useState<Role | null>(null);
   const [, setHired] = useState<string[]>([]);
   const [toast, setToast] = useState<string | null>(null);
-  const hire = (name: string) => { setHired((h) => [...h, name]); setPicked(null); setToast(name + " hired — now in Your Team, on standby."); setTimeout(() => setToast(null), 2600); };
+  const hire = (name: string) => { if (picked) api.post("/api/agents", { name, role: picked.blurb, icon: picked.ic }).catch(() => {}); setHired((h) => [...h, name]); setPicked(null); setToast(name + " hired — now in Your Team, on standby."); setTimeout(() => setToast(null), 2600); };
   return (
     <div>
       <Panel title="Hire an Agent" eyebrow action={<Badge status="info" dot={false}>{ROLES.length} role templates</Badge>}>

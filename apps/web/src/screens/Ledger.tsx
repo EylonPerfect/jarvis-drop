@@ -3,6 +3,7 @@
 // timeline, expand "Why did you do this?" (reasoning + grant used + tokens), export.
 import { useState } from "react";
 import { Panel, Badge, Button, Icon } from "../ds";
+import { usePersistentState } from "../api/hooks";
 
 const AGENTS = ["All agents", "SDR Agent", "AR Clerk", "Recruiting Sourcer", "QA Tester", "System Agent"];
 
@@ -65,9 +66,10 @@ function Entry({ e }: { e: LedgerEntry }) {
 }
 
 export default function Ledger() {
+  const [entries] = usePersistentState("ledger", ENTRIES);
   const [agent, setAgent] = useState("All agents");
   const [scrub, setScrub] = useState(100);
-  const shown = ENTRIES.filter((e) => agent === "All agents" || e.agent === agent);
+  const shown = entries.filter((e) => agent === "All agents" || e.agent === agent);
   return (
     <Panel title="Ledger" eyebrow action={<div style={{ display: "flex", gap: 8, alignItems: "center" }}><Badge status="info" dot={false}>Append-only</Badge><Button size="sm" variant="secondary" icon={<Icon name="download" size={13} />}>Export audit</Button></div>}>
       <p style={{ margin: "0 0 14px", font: "var(--fw-regular) 12.5px/1.55 var(--font-body)", color: "var(--jv-text-muted)" }}>Every action every agent took — what it saw, did, decided, and what it cost. Timestamped and immutable.</p>

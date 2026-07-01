@@ -2,6 +2,7 @@
 // Company total at top, budgets + caps per agent with usage bars, overage as
 // cost-plus. Per-token detail is demoted to a footnote.
 import { Panel, Badge, Icon } from "../ds";
+import { usePersistentState } from "../api/hooks";
 
 const OUTCOMES: [string, string, number, string, string][] = [
   ["Qualified lead booked", "SDR Agent", 148, "$3.10", "avg"],
@@ -42,6 +43,7 @@ function BudgetBar({ name, ic, spent, cap }: { name: string; ic: string; spent: 
 }
 
 export default function Spend() {
+  const [spend] = usePersistentState("spend", { outcomes: OUTCOMES, budgets: BUDGETS });
   const total = 3352;
   const budgetTotal = 3050;
   return (
@@ -74,8 +76,8 @@ export default function Spend() {
           <div style={{ display: "grid", gridTemplateColumns: "1fr 200px 90px 110px", gap: 12, padding: "0 6px 10px", borderBottom: "1px solid var(--jv-hairline)", font: "var(--fw-semibold) 9px var(--font-hud)", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--jv-text-faint)" }}>
             <span>Outcome</span><span>Agent</span><span style={{ textAlign: "right" }}>Count</span><span style={{ textAlign: "right" }}>Cost / each</span>
           </div>
-          {OUTCOMES.map((o, i) => (
-            <div key={i} style={{ display: "grid", gridTemplateColumns: "1fr 200px 90px 110px", gap: 12, padding: "12px 6px", borderBottom: i < OUTCOMES.length - 1 ? "1px solid var(--jv-hairline)" : "none", alignItems: "center" }}>
+          {spend.outcomes.map((o, i) => (
+            <div key={i} style={{ display: "grid", gridTemplateColumns: "1fr 200px 90px 110px", gap: 12, padding: "12px 6px", borderBottom: i < spend.outcomes.length - 1 ? "1px solid var(--jv-hairline)" : "none", alignItems: "center" }}>
               <span style={{ font: "var(--fw-semibold) 13px var(--font-body)", color: "var(--jv-text)" }}>{o[0]}</span>
               <span style={{ font: "var(--fw-medium) 12px var(--font-body)", color: "var(--jv-cyan-300)" }}>{o[1]}</span>
               <span style={{ textAlign: "right", font: "13px var(--font-mono)", color: "var(--jv-text-soft)" }}>{o[2]}</span>
@@ -89,7 +91,7 @@ export default function Spend() {
       {/* budgets + caps */}
       <Panel title="Budgets & caps per agent" eyebrow>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-          {BUDGETS.map((b, i) => <BudgetBar key={i} name={b[0]} ic={b[1]} spent={b[2]} cap={b[3]} tone={b[4]} />)}
+          {spend.budgets.map((b, i) => <BudgetBar key={i} name={b[0]} ic={b[1]} spent={b[2]} cap={b[3]} tone={b[4]} />)}
         </div>
       </Panel>
     </div>

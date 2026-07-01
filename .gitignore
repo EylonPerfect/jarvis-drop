@@ -10,3 +10,4 @@ apps/web/dist/
 apps/bff/dist/
 coverage/
 *.tsbuildinfo
+jarvis-command-center.tar.gz

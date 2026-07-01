@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Panel, Badge, Button, Icon } from "../ds";
+import { usePersistentState } from "../api/hooks";
 
 type DiffRow = [string, string];
 
@@ -169,9 +170,9 @@ function ApprovalItem({ item, onResolve }: { item: QueueItem; onResolve: (id: st
 }
 
 export default function ApprovalsInbox() {
-  const [queue, setQueue] = useState(QUEUE);
+  const [queue, setQueue] = usePersistentState("approvals", QUEUE);
   const [toast, setToast] = useState<string | null>(null);
-  const resolve = (id: string, verb: string) => { setQueue((q) => q.filter((x) => x.id !== id)); setToast(verb === "approved" ? "Action approved and fired." : verb === "answered" ? "Answer sent — agent resuming." : "Action rejected — agent notified."); setTimeout(() => setToast(null), 2200); };
+  const resolve = (id: string, verb: string) => { setQueue(queue.filter((x) => x.id !== id)); setToast(verb === "approved" ? "Action approved and fired." : verb === "answered" ? "Answer sent — agent resuming." : "Action rejected — agent notified."); setTimeout(() => setToast(null), 2200); };
   return (
     <div style={{ maxWidth: 860, margin: "0 auto" }}>
       <Panel title="Approvals Inbox" eyebrow action={<Badge status={queue.length ? "warn" : "optimal"} solid>{queue.length} pending</Badge>}>
