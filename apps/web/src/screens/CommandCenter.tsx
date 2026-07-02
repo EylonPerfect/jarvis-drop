@@ -47,14 +47,110 @@ function RadialVoiceViz({ active = true, level = 0, bars = 96, size = 300, color
   );
 }
 
+// ---- Browser command → animated browser stage ---------------------------
+const SITE_ALIASES: Record<string, string> = {
+  google: "google.com", youtube: "youtube.com", github: "github.com", gmail: "mail.google.com",
+  stripe: "dashboard.stripe.com", notion: "notion.so", linkedin: "linkedin.com",
+  twitter: "x.com", slack: "app.slack.com", amazon: "amazon.com", wikipedia: "wikipedia.org",
+};
+
+// Detect an "open a browser / go to a site" command and pull out a target URL.
+function detectBrowserCommand(text: string): { url: string; label: string } | null {
+  const t = text.toLowerCase();
+  const wantsBrowser =
+    /\bopen (a |the |up )?(browser|chrome|tab|page|website|site)\b/.test(t) ||
+    /\b(go to|navigate to|pull up|browse to|take me to|visit)\b/.test(t) ||
+    (/\bopen\b/.test(t) && /\b(browser|website|site|url|page|link|\.com|\.io|\.ai|\.org)\b/.test(t));
+  if (!wantsBrowser) return null;
+  const m = text.match(/\bhttps?:\/\/\S+|\b([a-z0-9-]+\.)+(com|io|ai|org|net|co|dev|so|app|gov|edu)(\/\S*)?/i);
+  if (m) {
+    const raw = m[0].replace(/[.,)]+$/, "");
+    const url = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+    return { url, label: url.replace(/^https?:\/\//, "") };
+  }
+  for (const [name, host] of Object.entries(SITE_ALIASES)) {
+    if (new RegExp(`\\b${name}\\b`).test(t)) return { url: `https://${host}`, label: host };
+  }
+  return { url: "about:blank", label: "new tab" };
+}
+
+// BrowserStage — an animated browser window that opens in the center of the
+// Command Center when a voice command asks to open a browser. It scales in,
+// runs a load bar, and settles into a live session view. (Real remote browsing
+// runs on the Hermes `browser` toolset; this is the operator-facing view.)
+function BrowserStage({ target, onClose }: { target: { url: string; label: string }; onClose: () => void }) {
+  const [mounted, setMounted] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  useEffect(() => {
+    setMounted(false);
+    setLoaded(false);
+    const a = window.setTimeout(() => setMounted(true), 30);
+    const b = window.setTimeout(() => setLoaded(true), 1400);
+    return () => {
+      window.clearTimeout(a);
+      window.clearTimeout(b);
+    };
+  }, [target.url]);
+  const dot = (c: string) => <span style={{ width: 11, height: 11, borderRadius: "50%", background: c }} />;
+  return (
+    <div
+      style={{
+        width: "100%", maxWidth: 840, height: "min(56vh, 480px)", display: "flex", flexDirection: "column",
+        borderRadius: "var(--r-lg)", overflow: "hidden", background: "var(--jv-void)",
+        border: "1px solid var(--jv-border-cyan)", boxShadow: "var(--panel-shadow-active)",
+        transform: mounted ? "scale(1)" : "scale(0.93)", opacity: mounted ? 1 : 0,
+        transition: "transform 360ms cubic-bezier(0.34,1.15,0.64,1), opacity 300ms ease",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", background: "var(--jv-surface-2)", borderBottom: "1px solid var(--jv-hairline)" }}>
+        <div style={{ display: "flex", gap: 7 }}>{dot("var(--jv-red-400)")}{dot("var(--jv-amber)")}{dot("var(--jv-green)")}</div>
+        <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 8, padding: "7px 12px", borderRadius: "var(--r-pill)", background: "var(--jv-void)", border: "1px solid var(--jv-border-soft)", font: "var(--fw-medium) 12px var(--font-mono)", color: "var(--jv-text-soft)", minWidth: 0 }}>
+          <Icon name={loaded ? "lock" : "loader"} size={12} color="var(--jv-cyan)" />
+          <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{target.label}</span>
+        </div>
+        <span style={{ display: "flex", alignItems: "center", gap: 6, font: "var(--fw-semibold) 10px var(--font-hud)", letterSpacing: "0.1em", color: "var(--jv-cyan-300)" }}>
+          <span style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--jv-cyan)", boxShadow: "0 0 8px var(--jv-cyan)", animation: "jv-pulse 1.6s ease-out infinite" }} /> LIVE
+        </span>
+        <button onClick={onClose} title="Close browser" style={{ display: "grid", placeItems: "center", width: 26, height: 26, borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)", color: "var(--jv-text-muted)", cursor: "pointer" }}>
+          <Icon name="x" size={14} />
+        </button>
+      </div>
+      <div style={{ height: 2 }}>
+        <div style={{ height: "100%", width: loaded ? "100%" : mounted ? "80%" : "0%", background: "var(--jv-cyan)", boxShadow: "0 0 8px var(--jv-cyan)", transition: "width 1.3s ease-out", opacity: loaded ? 0 : 1 }} />
+      </div>
+      <div style={{ flex: 1, position: "relative", display: "grid", placeItems: "center", background: "radial-gradient(circle at 50% 38%, color-mix(in srgb, var(--jv-cyan) 7%, transparent), transparent 70%)", overflow: "hidden" }}>
+        <div style={{ position: "absolute", inset: 0, padding: 22, display: "flex", flexDirection: "column", gap: 12, opacity: loaded ? 0.16 : 0.32, transition: "opacity 500ms" }}>
+          <div style={{ height: 32, width: "42%", borderRadius: 8, background: "var(--jv-surface-3)" }} />
+          <div style={{ height: 88, borderRadius: 10, background: "var(--jv-surface-2)" }} />
+          <div style={{ display: "flex", gap: 12 }}>
+            <div style={{ flex: 1, height: 58, borderRadius: 10, background: "var(--jv-surface-3)" }} />
+            <div style={{ flex: 1, height: 58, borderRadius: 10, background: "var(--jv-surface-3)" }} />
+            <div style={{ flex: 1, height: 58, borderRadius: 10, background: "var(--jv-surface-3)" }} />
+          </div>
+        </div>
+        <div style={{ position: "relative", textAlign: "center", padding: 20 }}>
+          <div style={{ width: 58, height: 58, margin: "0 auto 14px", borderRadius: "50%", display: "grid", placeItems: "center", background: "var(--grad-cyan-soft)", border: "1px solid var(--jv-border-cyan)", color: "var(--jv-cyan)" }}>
+            <Icon name={loaded ? "globe" : "loader"} size={26} />
+          </div>
+          <div style={{ font: "var(--fw-bold) 18px var(--font-display)", letterSpacing: "0.04em", color: "var(--jv-text)" }}>{loaded ? target.label : "Opening browser…"}</div>
+          <div style={{ font: "var(--fw-regular) 12.5px/1.5 var(--font-body)", color: "var(--jv-text-muted)", marginTop: 6, maxWidth: 360 }}>
+            {loaded ? "Living Shadow is driving this browser session." : "Establishing a live browser session…"}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // VoiceCore — real voice interaction: mic transcription (when the browser
 // allows it — HTTPS/localhost + Chromium), a live transcript, an audio-reactive
 // orb, and streamed replies from JARVIS. Falls back to a text composer so it
 // works everywhere (e.g. plain-HTTP deployments where the mic is blocked).
-function VoiceCore() {
+function VoiceCore({ onModeChange }: { onModeChange?: (active: boolean) => void }) {
   const [youText, setYouText] = useState("");
   const [reply, setReply] = useState("");
   const [busy, setBusy] = useState(false);
+  const [browser, setBrowser] = useState<{ url: string; label: string } | null>(null);
   // Voice output on by default; the operator can mute it. Persist the choice.
   const [voiceOut, setVoiceOut] = useState(() => localStorage.getItem("jv.voiceOut") !== "off");
 
@@ -71,6 +167,8 @@ function VoiceCore() {
     const t = text.trim();
     if (!t) return;
     outRef.current.cancel(); // stop any in-flight speech
+    const bcmd = detectBrowserCommand(t); // "open a browser / go to X" → browser stage
+    if (bcmd) setBrowser(bcmd);
     setYouText(t);
     setReply("");
     setBusy(true);
@@ -99,6 +197,21 @@ function VoiceCore() {
   const listening = speech.listening;
   const active = listening || busy || out.speaking;
   const displayedYou = speech.interim || youText;
+
+  // "Command mode": the operator is actively giving a command (speaking a
+  // transcript, awaiting a reply, being spoken to, or a browser is open) — as
+  // opposed to the mic idly listening. Reported up so the Command Center can
+  // collapse the side panels for a focused view. A short linger avoids flicker.
+  const rawActive = !!speech.interim || busy || out.speaking || !!browser;
+  useEffect(() => {
+    if (!onModeChange) return;
+    if (rawActive) {
+      onModeChange(true);
+      return;
+    }
+    const id = window.setTimeout(() => onModeChange(false), 1800);
+    return () => window.clearTimeout(id);
+  }, [rawActive, onModeChange]);
 
   // Auto-open the mic when the Command Center loads (if the browser allows it).
   const autostarted = useRef(false);
@@ -163,10 +276,16 @@ function VoiceCore() {
   return (
     <div style={{ position: "relative", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", minHeight: 480 }}>
       <div style={{ position: "absolute", width: 580, height: 580, borderRadius: "50%", background: `radial-gradient(circle at 50% 45%, color-mix(in srgb, ${ACCENT} 12%, transparent), transparent 62%)`, pointerEvents: "none" }} />
-      <div style={{ position: "relative", textAlign: "center", marginBottom: 24 }}>
-        <div style={{ font: "var(--fw-medium) 11px/1 var(--font-hud)", letterSpacing: "0.44em", color: "var(--jv-cyan-100)" }}>AI CORE · v3.0.0</div>
-      </div>
-      <RadialVoiceViz active={active} level={speech.level} bars={96} size={300} color={ACCENT} onClick={toggle} />
+      {browser ? (
+        <BrowserStage target={browser} onClose={() => setBrowser(null)} />
+      ) : (
+        <>
+          <div style={{ position: "relative", textAlign: "center", marginBottom: 24 }}>
+            <div style={{ font: "var(--fw-medium) 11px/1 var(--font-hud)", letterSpacing: "0.44em", color: "var(--jv-cyan-100)" }}>AI CORE · v3.0.0</div>
+          </div>
+          <RadialVoiceViz active={active} level={speech.level} bars={96} size={300} color={ACCENT} onClick={toggle} />
+        </>
+      )}
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 24 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, font: "var(--fw-semibold) 12px var(--font-hud)", letterSpacing: "0.16em", textTransform: "uppercase", color: active ? ACCENT : "var(--jv-text-muted)" }}>
           {listening && !out.speaking ? (
@@ -394,21 +513,40 @@ function AgentsList({ onNav }: { onNav: (v: ViewId) => void }) {
 }
 
 export default function CommandCenter({ onNav }: { onNav: (v: ViewId) => void }) {
+  // When the operator is actively giving a voice command, collapse the side
+  // panels ("Your Team" + "Live Intelligence") so the center takes full focus.
+  const [commandMode, setCommandMode] = useState(false);
+  const sidePanel = (child: React.ReactNode) => (
+    <div style={{ minWidth: 0, height: "100%", overflow: "hidden", opacity: commandMode ? 0 : 1, pointerEvents: commandMode ? "none" : "auto", transition: "opacity 260ms ease" }}>
+      {child}
+    </div>
+  );
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16, height: "100%" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
         <StatusStrip />
         <QuickBar onNav={onNav} />
       </div>
-      <div style={{ flex: 1, display: "grid", gridTemplateColumns: "300px 1fr 340px", gap: 16, minHeight: 0 }}>
-        <AgentsList onNav={onNav} />
-        <VoiceCore />
-        <Panel title="Live Intelligence Feed" eyebrow action={<Badge status="live" solid>Live</Badge>} active style={{ height: "100%" }}>
-          <Feed />
-          <div style={{ textAlign: "center", marginTop: 12 }}>
-            <ViewAll onClick={() => onNav("ledger")}>View All Intelligence</ViewAll>
-          </div>
-        </Panel>
+      <div
+        style={{
+          flex: 1,
+          display: "grid",
+          gridTemplateColumns: commandMode ? "0px 1fr 0px" : "300px 1fr 340px",
+          gap: commandMode ? 0 : 16,
+          minHeight: 0,
+          transition: "grid-template-columns 420ms cubic-bezier(0.4,0,0.2,1), gap 420ms ease",
+        }}
+      >
+        {sidePanel(<AgentsList onNav={onNav} />)}
+        <VoiceCore onModeChange={setCommandMode} />
+        {sidePanel(
+          <Panel title="Live Intelligence Feed" eyebrow action={<Badge status="live" solid>Live</Badge>} active style={{ height: "100%" }}>
+            <Feed />
+            <div style={{ textAlign: "center", marginTop: 12 }}>
+              <ViewAll onClick={() => onNav("ledger")}>View All Intelligence</ViewAll>
+            </div>
+          </Panel>,
+        )}
       </div>
     </div>
   );
