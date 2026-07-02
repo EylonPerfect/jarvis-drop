@@ -32,7 +32,15 @@ export interface Agent {
   instructions?: string;
   plan?: string; // the agent's goal / plan — what it's trying to achieve
   routine?: string; // the recurring routine / steps it follows
+  budget?: string; // spend cap, e.g. "$500/mo"
+  schedule?: string; // when/how often it runs (its calendar)
+  permissions?: AgentPermission[]; // granted capabilities
   createdAt?: string;
+}
+
+export interface AgentPermission {
+  label: string;
+  allowed: boolean;
 }
 
 export interface NewAgent {
@@ -46,6 +54,9 @@ export interface NewAgent {
   instructions?: string;
   plan?: string;
   routine?: string;
+  budget?: string;
+  schedule?: string;
+  permissions?: AgentPermission[];
 }
 
 export interface RunStep {

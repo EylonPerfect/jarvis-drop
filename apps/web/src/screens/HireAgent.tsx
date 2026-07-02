@@ -1,12 +1,12 @@
-// HireAgent — build-first, two columns. Left: build your own agent (the full
-// builder, shared with the Roster). Right: a gallery of role templates as a
-// quick-start. Both paths POST /api/agents; the new hire appears in Your Team.
+// HireAgent — the template gallery is the main surface; "Build your own agent"
+// is a button that opens the full builder in a modal (same one as the Roster's
+// "New Agent"). Both paths POST /api/agents; the new hire appears in Your Team.
 import { useState } from "react";
 import type { CSSProperties } from "react";
 import { api } from "../api/client";
 import { useApi } from "../api/hooks";
 import { Panel, Badge, Button, Icon } from "../ds";
-import { AgentForm } from "../components/AgentForm";
+import { AgentBuilder } from "./Agents";
 import type { AiProvider, NewAgent } from "@jarvis/shared";
 
 type Role = { ic: string; name: string; dept: string; blurb: string; budget: string; tools: string[]; grants: string };
@@ -64,6 +64,7 @@ export default function HireAgent() {
   const { data: provData } = useApi<AiProvider[]>("/api/aicore/providers");
   const activeModel = (provData ?? []).find((p) => p.active)?.model;
   const [picked, setPicked] = useState<Role | null>(null);
+  const [building, setBuilding] = useState(false);
   const [, setHired] = useState<string[]>([]);
   const [toast, setToast] = useState<string | null>(null);
 
@@ -74,6 +75,7 @@ export default function HireAgent() {
 
   const build = (a: NewAgent) => {
     api.post("/api/agents", a).catch(() => {});
+    setBuilding(false);
     setHired((h) => [...h, a.name]);
     notify("✓ " + a.name + " created — now in Your Team, on standby.");
   };
@@ -86,48 +88,46 @@ export default function HireAgent() {
   };
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, alignItems: "start" }}>
-      {/* LEFT — build your own (primary) */}
-      <Panel
-        title="Build your own agent"
-        eyebrow
-        action={<Badge status="optimal" dot={false}>Recommended</Badge>}
-        style={{ border: "1px solid var(--jv-border-cyan)", background: "var(--grad-cyan-soft)", boxShadow: "var(--panel-shadow-active)" }}
-      >
-        <p style={{ margin: "0 0 20px", font: "var(--fw-regular) 13px/1.6 var(--font-body)", color: "var(--jv-text-soft)" }}>
-          Don't settle for a preset. Tailor an agent to <strong style={{ color: "var(--jv-text)" }}>exactly</strong> your workflow — name, job, the connected model it reasons with, the tools it may call, teammates it hands off to, and its guardrails. It joins Your Team the moment you build it.
-        </p>
-        <AgentForm submitLabel="Build agent" resetOnSubmit onSubmit={build} />
-      </Panel>
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {/* CTA header — build your own opens the full builder in a modal */}
+      <div style={{ display: "flex", alignItems: "center", gap: 16, padding: "16px 20px", borderRadius: "var(--r-md)", background: "var(--grad-cyan-soft)", border: "1px solid var(--jv-border-cyan)", boxShadow: "var(--panel-shadow-active)" }}>
+        <span style={{ width: 44, height: 44, flex: "0 0 44px", display: "grid", placeItems: "center", borderRadius: "var(--r-sm)", color: "var(--jv-cyan)", background: "var(--jv-void)", border: "1px solid var(--jv-border-cyan)" }}><Icon name="sparkles" size={22} /></span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ font: "var(--fw-bold) 16px var(--font-body)", color: "var(--jv-text)" }}>Build your own agent</div>
+          <div style={{ font: "var(--fw-regular) 12.5px/1.5 var(--font-body)", color: "var(--jv-text-soft)", marginTop: 2 }}>Tailor an agent to exactly your workflow — model, tools, plan, routine and guardrails. Or start from a template below.</div>
+        </div>
+        <Button variant="primary" size="lg" icon={<Icon name="plus" size={16} />} onClick={() => setBuilding(true)}>Build your own agent</Button>
+      </div>
 
-      {/* RIGHT — templates (secondary) */}
-      <Panel title="…or start from a template" eyebrow action={<Badge status="info" dot={false}>{ROLES.length} templates</Badge>}>
+      {/* templates — the main surface */}
+      <Panel title="Agent templates" eyebrow action={<Badge status="info" dot={false}>{ROLES.length} templates</Badge>}>
         <p style={{ margin: "0 0 16px", font: "var(--fw-regular) 12.5px/1.55 var(--font-body)", color: "var(--jv-text-muted)" }}>
-          In a hurry? Start from a ready-made role. Permissions, budget and tools come pre-set — name it and deploy.
+          Start from a ready-made role — permissions, budget and tools come pre-set. Name it and deploy, then fine-tune anytime from the Roster.
         </p>
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
           {ROLES.map((r) => (
-            <div key={r.name} style={{ display: "flex", flexDirection: "column", padding: 14, borderRadius: "var(--r-md)", background: "var(--jv-surface-2)", border: "1px solid var(--jv-border-soft)" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
-                <span style={{ width: 38, height: 38, display: "grid", placeItems: "center", borderRadius: "var(--r-sm)", color: "var(--jv-cyan)", background: "rgba(41,211,245,0.08)", border: "1px solid var(--jv-border-soft)" }}><Icon name={r.ic} size={18} /></span>
-                <div style={{ flex: 1 }}>
+            <div key={r.name} style={{ display: "flex", flexDirection: "column", padding: 16, borderRadius: "var(--r-md)", background: "var(--jv-surface-2)", border: "1px solid var(--jv-border-soft)" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                <span style={{ width: 40, height: 40, display: "grid", placeItems: "center", borderRadius: "var(--r-sm)", color: "var(--jv-cyan)", background: "rgba(41,211,245,0.08)", border: "1px solid var(--jv-border-soft)" }}><Icon name={r.ic} size={19} /></span>
+                <div>
                   <div style={{ font: "var(--fw-bold) 14px var(--font-body)", color: "var(--jv-text)" }}>{r.name}</div>
                   <div style={{ font: "var(--fw-medium) 10px var(--font-hud)", letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--jv-cyan-300)" }}>{r.dept}</div>
                 </div>
-                <Button size="sm" variant="secondary" icon={<Icon name="user-plus" size={13} />} onClick={() => setPicked(r)}>Hire</Button>
               </div>
-              <p style={{ margin: "0 0 10px", font: "var(--fw-regular) 12px/1.55 var(--font-body)", color: "var(--jv-text-muted)" }}>{r.blurb}</p>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                  {r.tools.map((t) => <span key={t} style={{ padding: "3px 8px", borderRadius: 3, font: "var(--fw-medium) 10px var(--font-mono)", color: "var(--jv-text-soft)", background: "var(--jv-void)", border: "1px solid var(--jv-border-soft)" }}>{t}</span>)}
-                </div>
-                <span style={{ font: "12px var(--font-mono)", color: "var(--jv-text-faint)", whiteSpace: "nowrap" }}>{r.budget}</span>
+              <p style={{ margin: "0 0 12px", flex: 1, font: "var(--fw-regular) 12px/1.55 var(--font-body)", color: "var(--jv-text-muted)" }}>{r.blurb}</p>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+                {r.tools.map((t) => <span key={t} style={{ padding: "3px 8px", borderRadius: 3, font: "var(--fw-medium) 10px var(--font-mono)", color: "var(--jv-text-soft)", background: "var(--jv-void)", border: "1px solid var(--jv-border-soft)" }}>{t}</span>)}
+              </div>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <span style={{ font: "12px var(--font-mono)", color: "var(--jv-text-faint)" }}>{r.budget}</span>
+                <Button size="sm" variant="secondary" icon={<Icon name="user-plus" size={13} />} onClick={() => setPicked(r)}>Hire</Button>
               </div>
             </div>
           ))}
         </div>
       </Panel>
 
+      {building && <AgentBuilder onClose={() => setBuilding(false)} onCreate={build} />}
       {picked && <HireFlow role={picked} onClose={() => setPicked(null)} onHire={hire} />}
       {toast && (
         <div style={{ position: "absolute", bottom: 90, left: "50%", transform: "translateX(-50%)", zIndex: 40, display: "flex", alignItems: "center", gap: 9, padding: "11px 18px", borderRadius: "var(--r-pill)", background: "var(--grad-panel)", border: "1px solid var(--jv-border-cyan)", boxShadow: "var(--panel-shadow-active)", font: "var(--fw-medium) 13px var(--font-body)", color: "var(--jv-text)" }}>

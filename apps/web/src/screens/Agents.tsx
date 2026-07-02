@@ -94,7 +94,7 @@ function RunRow({ run }: { run: AgentRun }) {
   );
 }
 
-function AgentBuilder({ onClose, onCreate }: { onClose: () => void; onCreate: (a: NewAgent) => void }) {
+export function AgentBuilder({ onClose, onCreate }: { onClose: () => void; onCreate: (a: NewAgent) => void }) {
   return (
     <div
       onClick={onClose}
@@ -200,7 +200,7 @@ export default function Agents() {
     </button>
   );
 
-  if (cockpit) return <AgentCockpit agentName={cockpit} onExit={() => setCockpit(null)} />;
+  if (cockpit) return <AgentCockpit agentId={cockpit} onExit={() => setCockpit(null)} />;
 
   return (
     <Fragment>
@@ -234,7 +234,7 @@ export default function Agents() {
               />
             ) : (
               roster.map((a) => (
-                <AgentCard key={a.id} a={a} onClick={() => setCockpit(a.name)} onDelete={() => removeAgent(a.id)} />
+                <AgentCard key={a.id} a={a} onClick={() => setCockpit(a.id)} onDelete={() => removeAgent(a.id)} />
               ))
             )}
           </Panel>

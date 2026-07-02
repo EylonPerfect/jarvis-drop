@@ -18,6 +18,9 @@ function rowToAgent(r: any): Agent {
     instructions: r.instructions ?? undefined,
     plan: r.plan ?? undefined,
     routine: r.routine ?? undefined,
+    budget: r.budget ?? undefined,
+    schedule: r.schedule ?? undefined,
+    permissions: r.permissions ?? [],
     createdAt: r.created_at,
   };
 }
@@ -77,6 +80,9 @@ export default async function agentsRoutes(app: FastifyInstance) {
     if (b.instructions !== undefined) set("instructions", b.instructions);
     if (b.plan !== undefined) set("plan", b.plan);
     if (b.routine !== undefined) set("routine", b.routine);
+    if (b.budget !== undefined) set("budget", b.budget);
+    if (b.schedule !== undefined) set("schedule", b.schedule);
+    if (b.permissions !== undefined) set("permissions", JSON.stringify(b.permissions));
     if (b.status !== undefined) set("status", b.status);
     if (b.statusLabel !== undefined) set("status_label", b.statusLabel);
     if (b.tools !== undefined) set("tools", JSON.stringify(b.tools));

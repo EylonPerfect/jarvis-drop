@@ -125,9 +125,13 @@ CREATE TABLE IF NOT EXISTS settings (
 -- via ALTER so existing databases pick it up idempotently.
 ALTER TABLE knowledge_sources ADD COLUMN IF NOT EXISTS content TEXT;
 
--- An agent's plan (goal) and routine (recurring steps), so it knows its job.
+-- An agent's plan (goal) and routine (recurring steps), so it knows its job,
+-- plus a spend budget, a schedule (its calendar), and granted permissions.
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS plan TEXT;
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS routine TEXT;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS budget TEXT;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS schedule TEXT;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS permissions JSONB NOT NULL DEFAULT '[]';
 
 -- Operator-added AI providers (OpenAI-compatible). The active one is used
 -- directly by the Command Center chat; the key is stored server-side only.
