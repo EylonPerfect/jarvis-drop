@@ -4,10 +4,10 @@
 // (plan, routine, calendar/schedule, budget, permissions, skills & tools).
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
-import { Panel, Badge, Button, Icon, EmptyState, IconButton } from "../ds";
+import { Panel, Badge, Button, Icon, EmptyState, IconButton, StatTile } from "../ds";
 import { useApi } from "../api/hooks";
 import { api } from "../api/client";
-import type { Agent, AgentPermission } from "@jarvis/shared";
+import type { Agent, AgentPermission, AgentPerformance, AgentComm } from "@jarvis/shared";
 
 const TOOL_CHOICES = ["web_search", "code_interpreter", "filesystem", "github", "memory.query", "calendar", "gmail", "whatsapp", "shell", "vision"];
 
@@ -61,6 +61,80 @@ function EditModal({ title, icon, onCancel, onSave, children }: { title: string;
         </div>
       </div>
     </div>
+  );
+}
+
+// How the agent is performing, over day / week / month. Counts are real (from
+// the activity log) — 0 until the agent logs work.
+function PerformanceBox({ agentId }: { agentId: string }) {
+  const [period, setPeriod] = useState<"daily" | "weekly" | "monthly">("daily");
+  const { data } = useApi<AgentPerformance>(`/api/agents/${agentId}/performance?period=${period}`);
+  const p = data ?? { period, goals: 0, tasks: 0, routine: 0, scheduled: 0, workflow: 0 };
+  const periods: ["daily" | "weekly" | "monthly", string][] = [["daily", "Daily"], ["weekly", "Weekly"], ["monthly", "Monthly"]];
+  const tiles: [string, number, "info" | "optimal"][] = [
+    ["Goals", p.goals, "info"],
+    ["Tasks done", p.tasks, "optimal"],
+    ["Routine done", p.routine, "info"],
+    ["Scheduled done", p.scheduled, "info"],
+    ["Workflows done", p.workflow, "optimal"],
+  ];
+  return (
+    <Panel
+      title="Performance"
+      eyebrow
+      action={
+        <div style={{ display: "flex", gap: 2, padding: 2, borderRadius: "var(--r-pill)", background: "var(--jv-void)", border: "1px solid var(--jv-border-soft)" }}>
+          {periods.map(([val, label]) => (
+            <button key={val} onClick={() => setPeriod(val)} style={{ padding: "4px 12px", borderRadius: "var(--r-pill)", cursor: "pointer", border: "none", background: period === val ? "var(--grad-cyan-soft)" : "transparent", color: period === val ? "var(--jv-cyan-300)" : "var(--jv-text-muted)", font: `${period === val ? "var(--fw-semibold)" : "var(--fw-medium)"} 11px var(--font-hud)`, letterSpacing: "0.06em", textTransform: "uppercase" }}>{label}</button>
+          ))}
+        </div>
+      }
+    >
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 12 }}>
+        {tiles.map(([label, value, tone]) => <StatTile key={label} value={value} label={label} tone={tone} />)}
+      </div>
+      <div style={{ marginTop: 12, font: "var(--fw-regular) 11px var(--font-body)", color: "var(--jv-text-faint)" }}>
+        Completed by {p.period === "daily" ? "today" : p.period === "weekly" ? "this week" : "this month"} · updates as the agent works.
+      </div>
+    </Panel>
+  );
+}
+
+// Latest Slack + email the agent sent/received.
+function CommsBox({ agentId }: { agentId: string }) {
+  const { data } = useApi<AgentComm[]>(`/api/agents/${agentId}/communications`);
+  const items = data ?? [];
+  const fmt = (iso: string) => {
+    try {
+      return new Date(iso).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+    } catch {
+      return "";
+    }
+  };
+  return (
+    <Panel title="Latest communication" eyebrow action={<Badge status="info" dot={false}>Slack · Email</Badge>} bodyStyle={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      {items.length === 0 ? (
+        <EmptyState compact icon="messages-square" title="No messages yet" hint="Slack messages and emails this agent sends or receives will show up here." />
+      ) : (
+        items.map((c) => {
+          const col = c.channel === "slack" ? "var(--jv-violet)" : "var(--jv-cyan)";
+          return (
+            <div key={c.id} style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "10px 12px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)" }}>
+              <span style={{ width: 28, height: 28, flex: "0 0 28px", display: "grid", placeItems: "center", borderRadius: "var(--r-xs)", color: col, background: `color-mix(in srgb, ${col} 14%, transparent)`, border: `1px solid color-mix(in srgb, ${col} 30%, transparent)` }}>
+                <Icon name={c.channel === "slack" ? "slack" : "mail"} size={14} />
+              </span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                  <span style={{ font: "var(--fw-semibold) 12.5px var(--font-body)", color: "var(--jv-text)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.subject || c.party || (c.channel === "slack" ? "Slack message" : "Email")}</span>
+                  <span style={{ font: "10.5px var(--font-mono)", color: "var(--jv-text-muted)", whiteSpace: "nowrap" }}>{fmt(c.at)}</span>
+                </div>
+                {(c.preview || c.party) && <div style={{ font: "var(--fw-regular) 11.5px/1.45 var(--font-body)", color: "var(--jv-text-muted)", marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.party ? `${c.party} — ` : ""}{c.preview ?? ""}</div>}
+              </div>
+            </div>
+          );
+        })
+      )}
+    </Panel>
   );
 }
 
@@ -136,7 +210,8 @@ export default function AgentCockpit({ agentId, onExit }: { agentId: string; onE
       </div>
 
       {/* body */}
-      <div style={{ flex: 1, display: "grid", gridTemplateColumns: "300px 1fr 300px", gap: 14, minHeight: 0, overflowY: "auto" }}>
+      <div style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column", gap: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "300px 1fr 300px", gap: 14 }}>
         {/* LEFT */}
         <div style={{ display: "flex", flexDirection: "column", gap: 14, minHeight: 0 }}>
           <Panel title="Plan" eyebrow action={<EditBtn k="plan" />}>
@@ -198,6 +273,10 @@ export default function AgentCockpit({ agentId, onExit }: { agentId: string; onE
             <EmptyState compact icon="receipt" title="No activity yet" hint="This agent's actions and costs will be logged here." />
           </Panel>
         </div>
+      </div>
+
+      <PerformanceBox agentId={agentId} />
+      <CommsBox agentId={agentId} />
       </div>
 
       {/* ---- Edit modals ---- */}

@@ -95,9 +95,60 @@ export default async function agentsRoutes(app: FastifyInstance) {
     return rowToAgent(row);
   });
 
-  // Remove all agents (clear the roster).
+  // Per-agent performance box (cockpit): counts of completed goals/tasks/
+  // routine/scheduled/workflow within the selected window. Real counts from the
+  // activity log (0 until the agent logs work) — never fabricated.
+  app.get("/api/agents/:id/performance", async (req) => {
+    const { id } = req.params as { id: string };
+    const q = (req.query as { period?: string }) ?? {};
+    const period = q.period === "weekly" ? "weekly" : q.period === "monthly" ? "monthly" : "daily";
+    const interval = period === "weekly" ? "7 days" : period === "monthly" ? "30 days" : "1 day";
+    const rows = await query<{ kind: string; n: number }>(
+      `SELECT kind, COUNT(*)::int AS n FROM agent_activity WHERE agent_id = $1 AND at >= now() - $2::interval GROUP BY kind`,
+      [id, interval],
+    );
+    const by: Record<string, number> = {};
+    for (const r of rows) by[r.kind] = Number(r.n);
+    return { period, goals: by.goal ?? 0, tasks: by.task ?? 0, routine: by.routine ?? 0, scheduled: by.scheduled ?? 0, workflow: by.workflow ?? 0 };
+  });
+
+  // Log one unit of agent activity. Called as the agent does work (and usable
+  // for testing the Performance box). kind ∈ goal|task|routine|scheduled|workflow.
+  app.post("/api/agents/:id/activity", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const kind = (req.body as { kind?: string })?.kind;
+    if (!kind || !["goal", "task", "routine", "scheduled", "workflow"].includes(kind)) {
+      return reply.code(400).send({ error: "kind must be one of goal|task|routine|scheduled|workflow" });
+    }
+    await query(`INSERT INTO agent_activity (agent_id, kind) VALUES ($1, $2)`, [id, kind]);
+    return { ok: true };
+  });
+
+  // Latest Slack/email communications for an agent (cockpit block).
+  app.get("/api/agents/:id/communications", async (req) => {
+    const { id } = req.params as { id: string };
+    const rows = await query<any>(
+      `SELECT id, channel, party, subject, preview, at FROM agent_comms WHERE agent_id = $1 ORDER BY at DESC LIMIT 20`,
+      [id],
+    );
+    return rows.map((r) => ({ id: Number(r.id), channel: r.channel, party: r.party ?? undefined, subject: r.subject ?? undefined, preview: r.preview ?? undefined, at: r.at }));
+  });
+
+  app.post("/api/agents/:id/communications", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const b = (req.body as { channel?: string; party?: string; subject?: string; preview?: string }) ?? {};
+    if (b.channel !== "slack" && b.channel !== "email") {
+      return reply.code(400).send({ error: "channel must be 'slack' or 'email'" });
+    }
+    await query(`INSERT INTO agent_comms (agent_id, channel, party, subject, preview) VALUES ($1,$2,$3,$4,$5)`, [id, b.channel, b.party ?? null, b.subject ?? null, b.preview ?? null]);
+    return reply.code(201).send({ ok: true });
+  });
+
+  // Remove all agents (clear the roster) + their activity/comms.
   app.delete("/api/agents", async () => {
     await query(`DELETE FROM agents`);
+    await query(`DELETE FROM agent_activity`);
+    await query(`DELETE FROM agent_comms`);
     return { ok: true };
   });
 

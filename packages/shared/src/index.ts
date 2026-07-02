@@ -43,6 +43,24 @@ export interface AgentPermission {
   allowed: boolean;
 }
 
+export interface AgentPerformance {
+  period: "daily" | "weekly" | "monthly";
+  goals: number;
+  tasks: number;
+  routine: number;
+  scheduled: number;
+  workflow: number;
+}
+
+export interface AgentComm {
+  id: number;
+  channel: "slack" | "email";
+  party?: string;
+  subject?: string;
+  preview?: string;
+  at: string;
+}
+
 export interface NewAgent {
   icon: string;
   name: string;

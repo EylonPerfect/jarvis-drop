@@ -133,6 +133,30 @@ ALTER TABLE agents ADD COLUMN IF NOT EXISTS budget TEXT;
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS schedule TEXT;
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS permissions JSONB NOT NULL DEFAULT '[]';
 
+-- Per-agent activity log — powers the cockpit Performance box (goals/tasks/
+-- routine/scheduled/workflow completed, over day/week/month). Rows are written
+-- as the agent actually does work; counts are honest (0 until then).
+CREATE TABLE IF NOT EXISTS agent_activity (
+  id       BIGSERIAL PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  kind     TEXT NOT NULL,   -- goal | task | routine | scheduled | workflow
+  at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS agent_activity_agent_at_idx ON agent_activity (agent_id, at);
+
+-- Per-agent communications (Slack / email) — the cockpit "Latest communication"
+-- block. Populated as the agent sends/receives messages; empty until then.
+CREATE TABLE IF NOT EXISTS agent_comms (
+  id       BIGSERIAL PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  channel  TEXT NOT NULL,   -- slack | email
+  party    TEXT,            -- who it was with (to/from)
+  subject  TEXT,
+  preview  TEXT,
+  at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS agent_comms_agent_at_idx ON agent_comms (agent_id, at DESC);
+
 -- Operator-added AI providers (OpenAI-compatible). The active one is used
 -- directly by the Command Center chat; the key is stored server-side only.
 CREATE TABLE IF NOT EXISTS ai_providers (
