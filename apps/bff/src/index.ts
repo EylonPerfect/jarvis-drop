@@ -19,6 +19,7 @@ import aiCoreRoutes from "./routes/aicore.js";
 import systemRoutes from "./routes/system.js";
 import commandRoutes from "./routes/command.js";
 import chatRoutes from "./routes/chat.js";
+import approvalsRoutes from "./routes/approvals.js";
 import adminRoutes from "./routes/admin.js";
 import stateRoutes from "./routes/state.js";
 
@@ -76,6 +77,7 @@ await app.register(aiCoreRoutes);
 await app.register(systemRoutes);
 await app.register(commandRoutes);
 await app.register(chatRoutes);
+await app.register(approvalsRoutes);
 await app.register(adminRoutes);
 await app.register(stateRoutes);
 

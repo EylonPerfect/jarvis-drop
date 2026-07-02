@@ -348,3 +348,33 @@ export const HERMES_ENDPOINTS = {
   health: "/health",
   healthDetailed: "/health/detailed",
 } as const;
+
+// ---- Approvals (human-in-the-loop; Postgres-owned) ----
+export type ApprovalKind = "action" | "question";
+export type ApprovalStatus = "pending" | "approved" | "rejected" | "answered";
+export type ApprovalDecision = "approved" | "rejected" | "answered";
+
+export interface Approval {
+  id: string;
+  agent?: string;
+  action: string;
+  detail?: string;
+  risk?: string;
+  kind: ApprovalKind;
+  options: string[];
+  diff?: string;
+  status: ApprovalStatus;
+  answer?: string;
+  createdAt?: string;
+  resolvedAt?: string;
+}
+
+export interface NewApproval {
+  agent?: string;
+  action: string;
+  detail?: string;
+  risk?: string;
+  kind?: ApprovalKind;
+  options?: string[];
+  diff?: string;
+}

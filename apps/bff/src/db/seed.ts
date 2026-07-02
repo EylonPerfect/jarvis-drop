@@ -180,6 +180,41 @@ const runs = [
   },
 ];
 
+// Pending human-in-the-loop approvals so the inbox is populated after a reset.
+// [id, agent, action, detail, risk, kind, options, diff]
+const approvals: Array<[string, string, string, string, string, string, string[], string | null]> = [
+  [
+    "apr_seed1",
+    "Execute Agent",
+    "Send the Q3 roadmap recap email to sarah@acme.com",
+    "Compose and send a summary of the Q3 roadmap decisions to Sarah, cc the engineering lead.",
+    "high",
+    "action",
+    [],
+    "+ To: sarah@acme.com, cc: eng-lead@acme.com\n+ Subject: Q3 roadmap recap\n+ Body: 6 paragraphs · 2 attachments\n- No draft saved — sends immediately",
+  ],
+  [
+    "apr_seed2",
+    "Coding Agent",
+    "Merge PR #482 into main and deploy to production",
+    "Fast-forward merge of the voice-pipeline branch, then trigger the production deploy workflow.",
+    "high",
+    "action",
+    [],
+    "+ Merge PR #482 (14 commits) → main\n+ Trigger deploy: production\n- Rolls out to all users · no staged canary",
+  ],
+  [
+    "apr_seed3",
+    "Research Agent",
+    "Which vector store should I standardize on for the migration?",
+    "The migration plan can target either engine — I need your call before writing the runbook.",
+    "medium",
+    "question",
+    ["pgvector", "Qdrant", "Let me decide later"],
+    null,
+  ],
+];
+
 const settings: Array<[string, unknown]> = [
   [
     "vector_store",
@@ -312,7 +347,8 @@ const COUNT_ALL = `SELECT (
   (SELECT COUNT(*) FROM memory_facts)+(SELECT COUNT(*) FROM style_profiles)+
   (SELECT COUNT(*) FROM knowledge_sources)+(SELECT COUNT(*) FROM collections)+
   (SELECT COUNT(*) FROM tool_toggles)+(SELECT COUNT(*) FROM provider_keys)+
-  (SELECT COUNT(*) FROM cost_entries)+(SELECT COUNT(*) FROM settings)
+  (SELECT COUNT(*) FROM cost_entries)+(SELECT COUNT(*) FROM approvals)+
+  (SELECT COUNT(*) FROM settings)
 )::int AS n`;
 
 /**
@@ -337,7 +373,7 @@ export async function seed(opts: { force?: boolean } = {}): Promise<void> {
     }
     await client.query(
       `TRUNCATE agents, tasks, reminders, time_entries, memory_facts, style_profiles,
-       knowledge_sources, collections, tool_toggles, provider_keys, cost_entries, settings`,
+       knowledge_sources, collections, tool_toggles, provider_keys, cost_entries, approvals, settings`,
     );
 
     for (const [id, icon, name, role, status, label, sort] of agents) {
@@ -380,6 +416,13 @@ export async function seed(opts: { force?: boolean } = {}): Promise<void> {
     }
     for (const [provider, cost, tokens, sort] of costs) {
       await client.query(`INSERT INTO cost_entries (provider, cost, tokens, sort) VALUES ($1,$2,$3,$4)`, [provider, cost, tokens, sort]);
+    }
+    for (const [id, agent, action, detail, risk, kind, options, diff] of approvals) {
+      await client.query(
+        `INSERT INTO approvals (id, agent, action, detail, risk, kind, options, diff)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [id, agent, action, detail, risk, kind, J(options), diff],
+      );
     }
     for (const [key, value] of settings) {
       await client.query(`INSERT INTO settings (key, value) VALUES ($1,$2)`, [key, J(value)]);

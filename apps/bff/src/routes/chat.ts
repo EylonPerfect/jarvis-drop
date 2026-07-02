@@ -1,8 +1,28 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { hermes, diagnose } from "../hermes.js";
 import { getActiveProvider, streamProviderChat, completeProviderChat } from "../lib/providers.js";
+import { one } from "../db/pool.js";
 import { config } from "../config.js";
 import type { ChatRequest } from "@jarvis/shared";
+
+// Execute-mode guard: irreversible-action verbs. If the operator asks Execute
+// mode to do one of these, we DON'T run the model — we queue an approval instead.
+const IRREVERSIBLE = /\b(send|email|deploy|publish|delete|remove|pay|transfer|wire|buy|purchase|post|tweet|merge|refund|cancel|book|schedule|sign|submit)\b/i;
+
+const QUEUED_MESSAGE =
+  "⏸ Queued for approval — this looks like an irreversible action. Approve it in the Approvals inbox before I run it.";
+
+// Create a pending approval for a gated Execute-mode message. Returns the id.
+async function queueApproval(message: string, agent: string): Promise<string> {
+  const id = `apr_${Date.now().toString(36)}`;
+  const action = message.length > 80 ? `${message.slice(0, 80)}…` : message;
+  await one(
+    `INSERT INTO approvals (id, agent, action, detail, risk, kind)
+     VALUES ($1,$2,$3,$4,'high','action') RETURNING id`,
+    [id, agent, action, message],
+  );
+  return id;
+}
 
 // Per-mode system prompt layered on top of hermes' core prompt.
 const MODE_SYSTEM: Record<string, string> = {
@@ -70,6 +90,20 @@ export default async function chatRoutes(app: FastifyInstance) {
       return;
     }
 
+    // Execute-mode guard: don't run the model on an irreversible action — queue
+    // an approval and tell the operator to approve it first.
+    if (b.mode === "Execute" && IRREVERSIBLE.test(message)) {
+      try {
+        await queueApproval(message, "Execute Agent");
+      } catch (err) {
+        app.log.error({ err }, "failed to queue Execute-mode approval");
+      }
+      reply.raw.write(sseChunk(QUEUED_MESSAGE));
+      reply.raw.write("data: [DONE]\n\n");
+      reply.raw.end();
+      return;
+    }
+
     const messages: Array<{ role: string; content: string }> = [];
     if (b.mode && MODE_SYSTEM[b.mode]) messages.push({ role: "system", content: MODE_SYSTEM[b.mode] });
     messages.push({ role: "user", content: message });
@@ -121,6 +155,17 @@ export default async function chatRoutes(app: FastifyInstance) {
     const b = req.body as ChatRequest;
     const message = (b?.message ?? "").trim();
     if (!message) return { reply: "" };
+
+    // Execute-mode guard (mirror of the streaming path): queue instead of run.
+    if (b.mode === "Execute" && IRREVERSIBLE.test(message)) {
+      try {
+        await queueApproval(message, "Execute Agent");
+      } catch (err) {
+        app.log.error({ err }, "failed to queue Execute-mode approval");
+      }
+      return { reply: QUEUED_MESSAGE, queuedApproval: true };
+    }
+
     const messages: Array<{ role: string; content: string }> = [];
     if (b.mode && MODE_SYSTEM[b.mode]) messages.push({ role: "system", content: MODE_SYSTEM[b.mode] });
     messages.push({ role: "user", content: message });
