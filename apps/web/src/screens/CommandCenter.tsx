@@ -55,7 +55,6 @@ function VoiceCore() {
   const [youText, setYouText] = useState("");
   const [reply, setReply] = useState("");
   const [busy, setBusy] = useState(false);
-  const [draft, setDraft] = useState("");
   // Voice output on by default; the operator can mute it. Persist the choice.
   const [voiceOut, setVoiceOut] = useState(() => localStorage.getItem("jv.voiceOut") !== "off");
 
@@ -125,13 +124,6 @@ function VoiceCore() {
     });
   };
 
-  const submitDraft = () => {
-    const t = draft.trim();
-    if (!t || busy) return;
-    setDraft("");
-    send(t);
-  };
-
   const status = out.speaking
     ? "Speaking…"
     : listening
@@ -140,7 +132,7 @@ function VoiceCore() {
         ? "Thinking…"
         : speech.supported
           ? "Tap the core to speak"
-          : "Type to talk to JARVIS";
+          : "Voice needs HTTPS + Chromium";
 
   return (
     <div style={{ position: "relative", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", minHeight: 480 }}>
@@ -158,7 +150,7 @@ function VoiceCore() {
             </>
           ) : (
             <>
-              <Icon name={out.speaking ? "volume-2" : busy ? "loader" : speech.supported ? "mic" : "keyboard"} size={14} /> {status}
+              <Icon name={out.speaking ? "volume-2" : busy ? "loader" : speech.supported ? "mic" : "mic-off"} size={14} /> {status}
             </>
           )}
         </div>
@@ -192,27 +184,9 @@ function VoiceCore() {
         )}
         {!displayedYou && !reply && !busy && (
           <div style={{ textAlign: "center", font: "var(--fw-regular) 12.5px/1.5 var(--font-body)", color: "var(--jv-text-faint)" }}>
-            {speech.supported ? "Tap the core and speak, or type below." : "Speak needs HTTPS + a Chromium browser — type below to talk to JARVIS."}
+            {speech.supported ? "Tap the core and speak — JARVIS replies out loud." : "Voice needs a Chromium browser over HTTPS. Open this site on https:// in Chrome or Edge, then allow the microphone."}
           </div>
         )}
-      </div>
-
-      {/* composer — always available so the core works even where the mic is blocked */}
-      <div style={{ width: "100%", maxWidth: 460, marginTop: 16, display: "flex", alignItems: "center", gap: 10, padding: "8px 10px 8px 16px", borderRadius: "var(--r-md)", background: "var(--jv-void)", border: "1px solid var(--jv-border-cyan)", boxShadow: "0 0 20px rgba(41,211,245,0.08)" }}>
-        <input
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && submitDraft()}
-          placeholder="Ask JARVIS anything…"
-          style={{ flex: 1, background: "none", border: "none", outline: "none", color: "var(--jv-text)", font: "var(--fw-medium) 13.5px var(--font-body)" }}
-        />
-        <button
-          onClick={submitDraft}
-          disabled={busy || !draft.trim()}
-          style={{ width: 36, height: 36, flex: "0 0 36px", display: "grid", placeItems: "center", borderRadius: "50%", background: draft.trim() ? "var(--jv-cyan)" : "var(--jv-surface-3)", border: "none", color: draft.trim() ? "var(--accent-contrast)" : "var(--jv-text-muted)", cursor: busy ? "default" : "pointer", boxShadow: draft.trim() ? "var(--glow-cyan)" : "none" }}
-        >
-          <Icon name={busy ? "loader" : "arrow-up"} size={17} />
-        </button>
       </div>
     </div>
   );

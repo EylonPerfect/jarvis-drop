@@ -223,6 +223,25 @@ export interface AICoreState {
   models: string[];
 }
 
+// Operator-added OpenAI-compatible AI provider. The API key is never returned
+// to the client — only whether one is set and its last 4 chars.
+export interface AiProvider {
+  id: string;
+  name: string;
+  baseUrl: string;
+  model: string;
+  active: boolean;
+  hasKey: boolean;
+  keyLast4: string;
+}
+
+export interface NewAiProvider {
+  name: string;
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+}
+
 // ---- System Monitor (hermes health/runs + seeded telemetry) ----
 export interface Gauges {
   cpu: number;

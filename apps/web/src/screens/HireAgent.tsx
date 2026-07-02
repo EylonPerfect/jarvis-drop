@@ -1,6 +1,7 @@
-// HireAgent — a gallery of role-based digital employees (not capabilities).
-// Pick a role, name it, set permissions + budget from a template, connect the
-// tools it needs, deploy. New hire then appears in Your Team.
+// HireAgent — build-first. The primary action is to build your own agent,
+// tailored to your exact workflow. A gallery of role-based templates sits below
+// as a quick-start secondary path. Both paths POST /api/agents; the new hire
+// then appears in Your Team.
 import { useState } from "react";
 import type { CSSProperties } from "react";
 import { api } from "../api/client";
@@ -17,7 +18,11 @@ const ROLES: Role[] = [
   { ic: "headphones", name: "Support Agent", dept: "Customer", blurb: "Triages tickets, drafts replies, escalates anything it cannot resolve.", budget: "$400/mo", tools: ["Helpdesk", "Email", "Docs"], grants: "Reply draft · no refunds" },
 ];
 
+const ICON_CHOICES = ["bot", "code", "search", "database", "globe", "list-checks", "shield-check"];
+const AUTONOMY_CHOICES = ["Ask before acting", "Act autonomously", "Read-only"];
+
 const inputStyle: CSSProperties = { width: "100%", height: 40, padding: "0 14px", borderRadius: "var(--r-sm)", background: "var(--jv-void)", border: "1px solid var(--jv-border)", color: "var(--jv-text)", font: "var(--fw-medium) 13px var(--font-body)", outline: "none", boxSizing: "border-box" };
+const labelStyle: CSSProperties = { font: "var(--fw-semibold) 10px var(--font-hud)", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--jv-cyan-300)", marginBottom: 8 };
 
 function HireFlow({ role, onClose, onHire }: { role: Role; onClose: () => void; onHire: (name: string) => void }) {
   const [name, setName] = useState(role.name + " 01");
@@ -57,15 +62,142 @@ function HireFlow({ role, onClose, onHire }: { role: Role; onClose: () => void; 
   );
 }
 
+// TOP — the primary call to action: build a bespoke agent inline.
+function BuildYourOwn({ onBuilt }: { onBuilt: (name: string) => void }) {
+  const [name, setName] = useState("");
+  const [role, setRole] = useState("");
+  const [icon, setIcon] = useState("bot");
+  const [model, setModel] = useState("");
+  const [autonomy, setAutonomy] = useState(AUTONOMY_CHOICES[0]);
+  const [instructions, setInstructions] = useState("");
+  const ready = name.trim() !== "" && role.trim() !== "";
+
+  const build = () => {
+    if (!ready) return;
+    const cleanName = name.trim();
+    api
+      .post("/api/agents", { name: cleanName, role: role.trim(), icon, model: model.trim() || undefined, autonomy, instructions: instructions.trim() || undefined })
+      .catch(() => {});
+    onBuilt(cleanName);
+    setName("");
+    setRole("");
+    setIcon("bot");
+    setModel("");
+    setAutonomy(AUTONOMY_CHOICES[0]);
+    setInstructions("");
+  };
+
+  return (
+    <Panel
+      title="Build your own agent"
+      eyebrow
+      action={<Badge status="optimal" dot={false}>Recommended</Badge>}
+      style={{ border: "1px solid var(--jv-border-cyan)", background: "var(--grad-cyan-soft)", boxShadow: "var(--panel-shadow-active)" }}
+    >
+      <p style={{ margin: "0 0 20px", font: "var(--fw-regular) 13px/1.6 var(--font-body)", color: "var(--jv-text-soft)", maxWidth: 640 }}>
+        Don't settle for a preset. Tailor an agent to <strong style={{ color: "var(--jv-text)" }}>exactly</strong> your workflow — give it a name, a job, the model it reasons with, and the guardrails it operates under. It joins Your Team on standby the moment you build it.
+      </p>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+        <div>
+          <div style={labelStyle}>Agent name</div>
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Finance Agent" style={inputStyle} />
+        </div>
+        <div>
+          <div style={labelStyle}>Role / description</div>
+          <input value={role} onChange={(e) => setRole(e.target.value)} placeholder="e.g. Tracks spend & flags budget overruns" style={inputStyle} />
+        </div>
+      </div>
+
+      <div style={{ marginTop: 16 }}>
+        <div style={labelStyle}>Icon</div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {ICON_CHOICES.map((ic) => (
+            <button
+              key={ic}
+              onClick={() => setIcon(ic)}
+              title={ic}
+              style={{
+                width: 40,
+                height: 40,
+                display: "grid",
+                placeItems: "center",
+                borderRadius: "var(--r-sm)",
+                cursor: "pointer",
+                color: icon === ic ? "var(--jv-cyan-300)" : "var(--jv-text-muted)",
+                background: icon === ic ? "var(--grad-cyan-soft)" : "var(--jv-void)",
+                border: `1px solid ${icon === ic ? "var(--jv-border-cyan)" : "var(--jv-border)"}`,
+              }}
+            >
+              <Icon name={ic} size={18} />
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginTop: 16 }}>
+        <div>
+          <div style={labelStyle}>Model (optional)</div>
+          <input value={model} onChange={(e) => setModel(e.target.value)} placeholder="e.g. claude-opus-4-8" style={inputStyle} />
+        </div>
+        <div>
+          <div style={labelStyle}>Autonomy</div>
+          <select value={autonomy} onChange={(e) => setAutonomy(e.target.value)} style={{ ...inputStyle, appearance: "none", cursor: "pointer" }}>
+            {AUTONOMY_CHOICES.map((a) => (
+              <option key={a} value={a}>{a}</option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      <div style={{ marginTop: 16 }}>
+        <div style={labelStyle}>Instructions (optional)</div>
+        <textarea
+          value={instructions}
+          onChange={(e) => setInstructions(e.target.value)}
+          placeholder="Describe how this teammate should think and behave…"
+          style={{ ...inputStyle, height: 84, padding: "10px 14px", resize: "vertical", font: "var(--fw-regular) 13px/1.5 var(--font-body)" }}
+        />
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginTop: 20 }}>
+        <span style={{ font: "11px var(--font-mono)", color: "var(--jv-text-faint)" }}>{ready ? "Ready to build" : "Name and role required"}</span>
+        <Button variant="primary" size="lg" icon={<Icon name="rocket" size={16} />} disabled={!ready} onClick={build}>Build agent</Button>
+      </div>
+    </Panel>
+  );
+}
+
 export default function HireAgent() {
   const [picked, setPicked] = useState<Role | null>(null);
   const [, setHired] = useState<string[]>([]);
   const [toast, setToast] = useState<string | null>(null);
-  const hire = (name: string) => { if (picked) api.post("/api/agents", { name, role: picked.blurb, icon: picked.ic }).catch(() => {}); setHired((h) => [...h, name]); setPicked(null); setToast(name + " hired — now in Your Team, on standby."); setTimeout(() => setToast(null), 2600); };
+
+  const notify = (msg: string) => {
+    setToast(msg);
+    setTimeout(() => setToast(null), 2600);
+  };
+
+  const built = (name: string) => {
+    setHired((h) => [...h, name]);
+    notify("✓ " + name + " created — now in Your Team, on standby.");
+  };
+
+  const hire = (name: string) => {
+    if (picked) api.post("/api/agents", { name, role: picked.blurb, icon: picked.ic }).catch(() => {});
+    setHired((h) => [...h, name]);
+    setPicked(null);
+    notify("✓ " + name + " hired — now in Your Team, on standby.");
+  };
+
   return (
-    <div>
-      <Panel title="Hire an Agent" eyebrow action={<Badge status="info" dot={false}>{ROLES.length} role templates</Badge>}>
-        <p style={{ margin: "0 0 16px", font: "var(--fw-regular) 12.5px/1.55 var(--font-body)", color: "var(--jv-text-muted)" }}>Hire a role-based digital employee, not a bundle of capabilities. Pick a role — permissions, budget and tools come pre-set from its template. Name it, connect its tools, deploy.</p>
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <BuildYourOwn onBuilt={built} />
+
+      <Panel title="…or start from a template" eyebrow action={<Badge status="info" dot={false}>{ROLES.length} role templates</Badge>}>
+        <p style={{ margin: "0 0 16px", font: "var(--fw-regular) 12.5px/1.55 var(--font-body)", color: "var(--jv-text-muted)" }}>
+          In a hurry? Start from a ready-made role instead. Permissions, budget and tools come pre-set from the template — name it and deploy.
+        </p>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
           {ROLES.map((r) => (
             <div key={r.name} style={{ display: "flex", flexDirection: "column", padding: 16, borderRadius: "var(--r-md)", background: "var(--jv-surface-2)", border: "1px solid var(--jv-border-soft)" }}>
@@ -88,6 +220,7 @@ export default function HireAgent() {
           ))}
         </div>
       </Panel>
+
       {picked && <HireFlow role={picked} onClose={() => setPicked(null)} onHire={hire} />}
       {toast && (
         <div style={{ position: "absolute", bottom: 90, left: "50%", transform: "translateX(-50%)", zIndex: 40, display: "flex", alignItems: "center", gap: 9, padding: "11px 18px", borderRadius: "var(--r-pill)", background: "var(--grad-panel)", border: "1px solid var(--jv-border-cyan)", boxShadow: "var(--panel-shadow-active)", font: "var(--fw-medium) 13px var(--font-body)", color: "var(--jv-text)" }}>

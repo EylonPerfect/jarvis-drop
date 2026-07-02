@@ -1,19 +1,16 @@
-// AICore — the AI Control Center: connect provider keys, choose the active model,
-// keep expert routing controls available. Ported from the prototype screen and
-// wired to the /api/aicore backend endpoint.
+// AICore — the AI Control Center. Connect OpenAI-compatible AI providers (base
+// URL + key + model), test them live, and pick the active one the Command
+// Center chat routes through. Advanced routing toggles live below.
 import { useEffect, useState } from "react";
-import { Panel, Badge, Button, Switch, Icon, EmptyState } from "../ds";
-import type { AICoreState, ProviderKey } from "@jarvis/shared";
+import { Panel, Badge, Button, Switch, Icon, EmptyState, IconButton, ConfirmDialog } from "../ds";
+import type { AICoreState, AiProvider } from "@jarvis/shared";
 import { useApi } from "../api/hooks";
 import { api } from "../api/client";
 
-// Zeroed fallback for a clean, unconfigured install. No fabricated models,
-// providers, or key counts — everything reads as empty until the BFF returns
-// real configuration.
 const EMPTY: AICoreState = {
   activeModel: "None",
   connectedProviders: "0 connected",
-  fallbacks: "—",
+  fallbacks: "hermes gateway",
   savedKeys: "0",
   routing: false,
   streaming: false,
@@ -22,54 +19,88 @@ const EMPTY: AICoreState = {
   providers: [],
 };
 
+// One-click starting points for common OpenAI-compatible gateways. Claude is
+// reachable via OpenRouter (model anthropic/claude-*).
+const PRESETS: { label: string; baseUrl: string; model: string }[] = [
+  { label: "OpenAI", baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini" },
+  { label: "Groq", baseUrl: "https://api.groq.com/openai/v1", model: "llama-3.3-70b-versatile" },
+  { label: "OpenRouter (Claude)", baseUrl: "https://openrouter.ai/api/v1", model: "anthropic/claude-3.5-sonnet" },
+  { label: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", model: "deepseek-chat" },
+  { label: "Together", baseUrl: "https://api.together.xyz/v1", model: "meta-llama/Llama-3.3-70B-Instruct-Turbo" },
+  { label: "Ollama (local)", baseUrl: "http://host.docker.internal:11434/v1", model: "llama3.1" },
+];
+
 function MetaTile({ icon, label, value }: { icon: string; label: string; value: string }) {
   return (
     <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 12, padding: "14px 16px", borderRadius: "var(--r-md)", background: "var(--grad-panel)", border: "1px solid var(--jv-border-soft)" }}>
       <span style={{ width: 30, height: 30, display: "grid", placeItems: "center", borderRadius: "var(--r-sm)", color: "var(--jv-cyan)", background: "rgba(41,211,245,0.08)" }}><Icon name={icon} size={16} /></span>
-      <div>
+      <div style={{ minWidth: 0 }}>
         <div style={{ font: "var(--fw-medium) 10px var(--font-hud)", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--jv-text-muted)" }}>{label}</div>
-        <div style={{ font: "var(--fw-bold) 15px var(--font-body)", color: "var(--jv-text)", marginTop: 3 }}>{value}</div>
+        <div style={{ font: "var(--fw-bold) 15px var(--font-body)", color: "var(--jv-text)", marginTop: 3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{value}</div>
       </div>
     </div>
   );
 }
 
-function ProviderCard({ p, value, onChange, mono = true }: { p: ProviderKey; value: string; onChange: (v: string) => void; mono?: boolean }) {
-  const [show, setShow] = useState(false);
-  const filled = p.connected;
-  const tierC = ({ free: "var(--jv-green)", paid: "var(--jv-violet)", "free tier": "var(--jv-green)" } as Record<string, string>)[p.tierTone] || "var(--jv-cyan)";
+const fieldStyle = {
+  width: "100%",
+  height: 40,
+  padding: "0 12px",
+  borderRadius: "var(--r-sm)",
+  background: "var(--jv-void)",
+  border: "1px solid var(--jv-border)",
+  color: "var(--jv-text)",
+  font: "var(--fw-medium) 13px var(--font-body)",
+  outline: "none",
+  boxSizing: "border-box" as const,
+};
+
+type TestState = { ok: boolean; detail: string } | "testing" | undefined;
+
+function ProviderRow({ p, onActivate, onTest, onDelete, test }: { p: AiProvider; onActivate: () => void; onTest: () => void; onDelete: () => void; test: TestState }) {
   return (
-    <div style={{ padding: 16, borderRadius: "var(--r-md)", background: "var(--jv-surface-2)", border: `1px solid ${filled ? "var(--jv-border-cyan)" : "var(--jv-border-soft)"}`, display: "flex", flexDirection: "column", gap: 10 }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
-          <span style={{ font: "var(--fw-bold) 14px var(--font-body)", color: "var(--jv-text)" }}>{p.name}</span>
-          <span style={{ padding: "2px 7px", borderRadius: 3, font: "var(--fw-semibold) 9px var(--font-hud)", letterSpacing: "0.08em", textTransform: "uppercase", color: tierC, background: `color-mix(in srgb, ${tierC} 14%, transparent)`, border: `1px solid color-mix(in srgb, ${tierC} 34%, transparent)` }}>{p.tier}</span>
+    <div style={{ padding: 14, borderRadius: "var(--r-md)", background: "var(--jv-surface-2)", border: `1px solid ${p.active ? "var(--jv-border-cyan)" : "var(--jv-border-soft)"}`, display: "flex", flexDirection: "column", gap: 10 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <span style={{ width: 34, height: 34, flex: "0 0 34px", display: "grid", placeItems: "center", borderRadius: "var(--r-sm)", color: "var(--jv-cyan)", background: "var(--grad-cyan-soft)", border: "1px solid var(--jv-border-cyan)" }}><Icon name="cpu" size={16} /></span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ font: "var(--fw-bold) 14px var(--font-body)", color: "var(--jv-text)" }}>{p.name}</span>
+            {p.active && <Badge status="optimal">Active</Badge>}
+          </div>
+          <div style={{ font: "var(--fw-regular) 11px var(--font-mono)", color: "var(--jv-text-muted)", marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.model} · {p.baseUrl} · key ••••{p.keyLast4}</div>
         </div>
-        {filled && <span style={{ display: "flex", alignItems: "center", gap: 4, font: "var(--fw-medium) 11px var(--font-body)", color: "var(--jv-green)" }}><Icon name="check" size={12} /> Connected</span>}
+        <IconButton icon="trash-2" tone="danger" title="Delete provider" onClick={onDelete} />
       </div>
-      <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
-        <input value={value} onChange={(e) => onChange(e.target.value)} type={show ? "text" : "password"} placeholder={p.placeholder}
-          style={{ width: "100%", height: 40, padding: "0 40px 0 14px", borderRadius: "var(--r-sm)", background: "var(--jv-void)", border: "1px solid var(--jv-border)", color: "var(--jv-text)", font: `var(--fw-medium) 13px ${mono ? "var(--font-mono)" : "var(--font-body)"}`, outline: "none", boxSizing: "border-box" }} />
-        <button onClick={() => setShow((s) => !s)} style={{ position: "absolute", right: 10, background: "none", border: "none", color: "var(--jv-text-muted)", cursor: "pointer", display: "grid", placeItems: "center" }}><Icon name={show ? "eye-off" : "eye"} size={16} /></button>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        {!p.active && <Button size="sm" variant="secondary" icon={<Icon name="check" size={13} />} onClick={onActivate}>Set active</Button>}
+        <Button size="sm" variant="ghost" icon={<Icon name={test === "testing" ? "loader" : "plug-zap"} size={13} />} onClick={onTest} disabled={test === "testing"}>Test connection</Button>
+        {test && test !== "testing" && (
+          <span style={{ display: "flex", alignItems: "center", gap: 5, font: "var(--fw-medium) 11.5px var(--font-body)", color: test.ok ? "var(--jv-green)" : "var(--jv-red-400)" }}>
+            <Icon name={test.ok ? "check-circle" : "alert-triangle"} size={13} /> {test.detail}
+          </span>
+        )}
       </div>
-      <div style={{ font: "var(--fw-regular) 11px var(--font-body)", color: "var(--jv-text-faint)" }}>Paste a key here to connect this provider to Jarvis.</div>
     </div>
   );
 }
 
 export default function AICore() {
   const { data, reload } = useApi<AICoreState>("/api/aicore");
+  const { data: provData, reload: reloadProviders } = useApi<AiProvider[]>("/api/aicore/providers");
   const state = data ?? EMPTY;
+  const providers = provData ?? [];
 
   const [routing, setRouting] = useState(state.routing);
   const [stream, setStream] = useState(state.streaming);
   const [verify, setVerify] = useState(state.verification);
-  // Draft provider keys keyed by provider id, until "Save provider keys" persists them.
-  const [keys, setKeys] = useState<Record<string, string>>({});
-  const [saving, setSaving] = useState(false);
 
-  // useState initializers capture the EMPTY values on first render; resync the
-  // switches once the real config arrives from the BFF.
+  const [form, setForm] = useState({ name: "", baseUrl: "", apiKey: "", model: "" });
+  const [adding, setAdding] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [tests, setTests] = useState<Record<string, TestState>>({});
+  const [confirmClear, setConfirmClear] = useState(false);
+
   useEffect(() => {
     if (data) {
       setRouting(data.routing);
@@ -78,19 +109,51 @@ export default function AICore() {
     }
   }, [data]);
 
-  // Persist any typed provider keys to the BFF, then reload to reflect the new
-  // connected state and available models.
-  const saveKeys = async () => {
-    const pending = Object.entries(keys).filter(([, v]) => v.trim());
-    if (pending.length === 0) return;
+  const refreshAll = () => {
+    reload();
+    reloadProviders();
+  };
+
+  const addProvider = async () => {
+    setError("");
+    if (!form.name.trim() || !form.baseUrl.trim() || !form.apiKey.trim() || !form.model.trim()) {
+      setError("Fill in a name, base URL, model, and API key.");
+      return;
+    }
     setSaving(true);
     try {
-      await Promise.all(pending.map(([id, key]) => api.patch(`/api/aicore/providers/${id}`, { key: key.trim(), connected: true })));
-      setKeys({});
-      reload();
+      await api.post("/api/aicore/providers", form);
+      setForm({ name: "", baseUrl: "", apiKey: "", model: "" });
+      setAdding(false);
+      refreshAll();
+    } catch (e) {
+      setError(String(e));
     } finally {
       setSaving(false);
     }
+  };
+
+  const activate = async (id: string) => {
+    await api.patch(`/api/aicore/providers/${id}`, { active: true });
+    refreshAll();
+  };
+  const remove = async (id: string) => {
+    await api.del(`/api/aicore/providers/${id}`);
+    refreshAll();
+  };
+  const test = async (id: string) => {
+    setTests((t) => ({ ...t, [id]: "testing" }));
+    try {
+      const r = await api.post<{ ok: boolean; detail: string }>(`/api/aicore/providers/${id}/test`);
+      setTests((t) => ({ ...t, [id]: { ok: r.ok, detail: r.detail } }));
+    } catch (e) {
+      setTests((t) => ({ ...t, [id]: { ok: false, detail: String(e) } }));
+    }
+  };
+  const clearAll = async () => {
+    await api.del("/api/aicore/providers");
+    setConfirmClear(false);
+    refreshAll();
   };
 
   return (
@@ -99,40 +162,66 @@ export default function AICore() {
       <div style={{ display: "grid", gridTemplateColumns: "1fr 300px", gap: 16 }}>
         <Panel>
           <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
-            <Badge status="optimal">Ready for chat</Badge>
-            <Badge status="info" dot={false}><Icon name="shield" size={11} style={{ marginRight: 4 }} />guarded privacy</Badge>
+            <Badge status={providers.some((p) => p.active) ? "optimal" : "standby"}>{providers.some((p) => p.active) ? "Ready for chat" : "No active provider"}</Badge>
+            <Badge status="info" dot={false}><Icon name="shield" size={11} style={{ marginRight: 4 }} />keys stored server-side</Badge>
           </div>
           <div style={{ font: "var(--fw-semibold) 11px var(--font-hud)", letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--jv-cyan-300)", marginBottom: 8 }}>AI Control Center</div>
-          <p style={{ margin: "0 0 16px", maxWidth: 620, font: "var(--fw-regular) 13.5px/1.6 var(--font-body)", color: "var(--jv-text-soft)" }}>Connect provider keys, choose the model Jarvis uses in chat, and keep expert routing controls available without making setup feel technical.</p>
+          <p style={{ margin: "0 0 16px", maxWidth: 620, font: "var(--fw-regular) 13.5px/1.6 var(--font-body)", color: "var(--jv-text-soft)" }}>Connect any OpenAI-compatible provider — OpenAI, Groq, OpenRouter (for Claude), DeepSeek, Together, or a local Ollama. The active provider is what JARVIS speaks through in the Command Center. Keys never leave the server.</p>
           <div style={{ display: "flex", gap: 10 }}>
-            <Button variant="primary" icon={<Icon name="refresh-cw" size={14} />} onClick={reload}>Refresh models</Button>
-            <Button variant="ghost" icon={<Icon name="zap" size={14} />} onClick={() => window.open("https://console.groq.com/keys", "_blank", "noopener")}>Get free Groq key</Button>
+            <Button variant="primary" icon={<Icon name="plus" size={14} />} onClick={() => setAdding((a) => !a)}>Connect a provider</Button>
+            <Button variant="ghost" icon={<Icon name="refresh-cw" size={14} />} onClick={refreshAll}>Refresh</Button>
           </div>
         </Panel>
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           <MetaTile icon="cpu" label="Active model" value={state.activeModel} />
           <MetaTile icon="plug" label="Connected providers" value={state.connectedProviders} />
-          <MetaTile icon="git-branch" label="Fallbacks" value={state.fallbacks} />
+          <MetaTile icon="git-branch" label="Chat routes via" value={state.fallbacks} />
         </div>
       </div>
 
-      {/* connect providers */}
-      <Panel title="Connect AI providers" action={<Button size="sm" variant="secondary" icon={<Icon name="lock" size={13} />} onClick={saveKeys} disabled={saving || Object.values(keys).every((v) => !v.trim())}>Save provider keys</Button>}>
-        <p style={{ margin: "0 0 16px", font: "var(--fw-regular) 12px/1.55 var(--font-body)", color: "var(--jv-text-muted)", maxWidth: 640 }}>Add or update provider keys here. Jarvis stores them in your per-user configuration and refreshes available models immediately, so packaged Electron installs do not depend on .env files.</p>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, marginBottom: 16 }}>
-          {([["Saved keys", state.savedKeys], ["Recommended start", "Groq free tier"], ["Storage", "Jarvis user config"]] as [string, string][]).map(([l, v]) => (
-            <div key={l} style={{ padding: 14, borderRadius: "var(--r-md)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)" }}>
-              <div style={{ font: "var(--fw-medium) 10px var(--font-hud)", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--jv-text-muted)" }}>{l}</div>
-              <div style={{ font: "var(--fw-bold) 15px var(--font-body)", color: "var(--jv-text)", marginTop: 4 }}>{v}</div>
+      {/* providers */}
+      <Panel
+        title="AI providers"
+        action={
+          <div style={{ display: "flex", gap: 8 }}>
+            {providers.length > 0 && <Button size="sm" variant="danger" icon={<Icon name="trash-2" size={13} />} onClick={() => setConfirmClear(true)}>Clear all</Button>}
+            <Button size="sm" variant="secondary" icon={<Icon name={adding ? "x" : "plus"} size={13} />} onClick={() => setAdding((a) => !a)}>{adding ? "Cancel" : "Add provider"}</Button>
+          </div>
+        }
+      >
+        {adding && (
+          <div style={{ padding: 16, borderRadius: "var(--r-md)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-cyan)", marginBottom: 16, display: "flex", flexDirection: "column", gap: 10 }}>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 2 }}>
+              <span style={{ font: "var(--fw-medium) 11px var(--font-hud)", letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--jv-text-muted)", alignSelf: "center", marginRight: 4 }}>Quick fill:</span>
+              {PRESETS.map((p) => (
+                <button key={p.label} onClick={() => setForm((f) => ({ ...f, name: f.name || p.label, baseUrl: p.baseUrl, model: p.model }))}
+                  style={{ padding: "4px 10px", borderRadius: "var(--r-pill)", cursor: "pointer", font: "var(--fw-semibold) 11px var(--font-body)", color: "var(--jv-cyan-100)", background: "var(--grad-cyan-soft)", border: "1px solid var(--jv-border-cyan)" }}>{p.label}</button>
+              ))}
             </div>
-          ))}
-        </div>
-        {state.providers.length === 0 ? (
-          <EmptyState icon="plug" title="No providers connected" hint="Connect a provider to give Jarvis a model to think with. Groq offers a free tier to get started." />
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <input style={fieldStyle} placeholder="Name (e.g. OpenAI)" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
+              <input style={fieldStyle} placeholder="Model (e.g. gpt-4o-mini)" value={form.model} onChange={(e) => setForm((f) => ({ ...f, model: e.target.value }))} />
+            </div>
+            <input style={fieldStyle} placeholder="Base URL (e.g. https://api.openai.com/v1)" value={form.baseUrl} onChange={(e) => setForm((f) => ({ ...f, baseUrl: e.target.value }))} />
+            <input style={fieldStyle} type="password" placeholder="API key" value={form.apiKey} onChange={(e) => setForm((f) => ({ ...f, apiKey: e.target.value }))} />
+            {error && <div style={{ font: "var(--fw-medium) 12px var(--font-body)", color: "var(--jv-red-400)" }}>{error}</div>}
+            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+              <Button variant="primary" icon={<Icon name={saving ? "loader" : "plus"} size={14} />} onClick={addProvider} disabled={saving}>Connect provider</Button>
+            </div>
+          </div>
+        )}
+
+        {providers.length === 0 && !adding ? (
+          <EmptyState
+            icon="plug"
+            title="No AI providers connected"
+            hint="Connect an OpenAI-compatible provider to give JARVIS a model to think and speak with. For Claude, use OpenRouter with model anthropic/claude-3.5-sonnet."
+            action={<Button size="sm" variant="primary" icon={<Icon name="plus" size={13} />} onClick={() => setAdding(true)}>Connect a provider</Button>}
+          />
         ) : (
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            {state.providers.map((p: ProviderKey) => (
-              <ProviderCard key={p.id} p={p} value={keys[p.id] ?? ""} onChange={(v) => setKeys((k) => ({ ...k, [p.id]: v }))} />
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {providers.map((p) => (
+              <ProviderRow key={p.id} p={p} test={tests[p.id]} onActivate={() => activate(p.id)} onTest={() => test(p.id)} onDelete={() => remove(p.id)} />
             ))}
           </div>
         )}
@@ -156,6 +245,8 @@ export default function AICore() {
           ))}
         </div>
       </Panel>
+
+      <ConfirmDialog open={confirmClear} danger title="Remove all providers?" message="This deletes every connected AI provider and its stored key. This cannot be undone." confirmLabel="Remove all" onConfirm={clearAll} onCancel={() => setConfirmClear(false)} />
     </div>
   );
 }

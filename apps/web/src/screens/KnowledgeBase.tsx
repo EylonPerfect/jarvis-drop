@@ -1,7 +1,7 @@
 // KnowledgeBase — indexed sources & collections feeding the vector store.
 // Designed to the JARVIS HUD system. All data comes from the backend; the
 // screen renders empty states on a clean database and never fabricates records.
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Panel, Badge, Button, Input, Icon, StatTile, EmptyState, IconButton, ConfirmDialog } from "../ds";
 import { useApi } from "../api/hooks";
 import { api } from "../api/client";
@@ -26,6 +26,69 @@ export default function KnowledgeBase() {
   const [saving, setSaving] = useState(false);
   const [clearOpen, setClearOpen] = useState(false);
   const [clearing, setClearing] = useState(false);
+
+  // Notion import.
+  const [notionOpen, setNotionOpen] = useState(false);
+  const [notionToken, setNotionToken] = useState("");
+  const [notionUrl, setNotionUrl] = useState("");
+  const [notionBusy, setNotionBusy] = useState(false);
+  const [notionError, setNotionError] = useState("");
+
+  // File upload.
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
+
+  const MAX_TEXT = 200_000;
+
+  const onFilePicked = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // allow re-selecting the same file later
+    if (!file || uploading) return;
+    const kind = (file.name.split(".").pop() || "FILE").toUpperCase();
+    setUploading(true);
+    try {
+      let text: string;
+      try {
+        text = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result ?? ""));
+          reader.onerror = () => reject(reader.error ?? new Error("read failed"));
+          reader.readAsText(file);
+        });
+      } catch {
+        // Binary or unreadable — still register the source without content.
+        await api.post("/api/knowledge/sources", { title: file.name, kind, icon: "file-text" });
+        reloadSources();
+        return;
+      }
+      if (text.length > MAX_TEXT) text = text.slice(0, MAX_TEXT) + "\n\n[content truncated]";
+      await api.post("/api/knowledge/sources", { title: file.name, kind, icon: "file-text", content: text });
+      reloadSources();
+    } catch {
+      /* gateway may be offline */
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const connectNotion = async () => {
+    const token = notionToken.trim();
+    const pageUrl = notionUrl.trim();
+    if (!token || !pageUrl || notionBusy) return;
+    setNotionBusy(true);
+    setNotionError("");
+    try {
+      await api.post("/api/knowledge/notion", { token, pageUrl });
+      setNotionToken("");
+      setNotionUrl("");
+      setNotionOpen(false);
+      reloadSources();
+    } catch {
+      setNotionError("Could not connect to that Notion page. Check the token and URL.");
+    } finally {
+      setNotionBusy(false);
+    }
+  };
 
   const q = query.trim().toLowerCase();
   const filtered = q ? sources.filter((s) => s.title.toLowerCase().includes(q) || s.kind.toLowerCase().includes(q)) : sources;
@@ -74,10 +137,13 @@ export default function KnowledgeBase() {
       <div style={{ width: 200 }}>
         <Input icon={<Icon name="search" size={14} />} placeholder="Search sources…" value={query} onChange={(e) => setQuery(e.target.value)} />
       </div>
+      <Button size="sm" variant="secondary" icon={<Icon name="upload" size={13} />} disabled={uploading} onClick={() => fileInputRef.current?.click()}>Upload file</Button>
+      <Button size="sm" variant="secondary" icon={<Icon name="book-open" size={13} />} onClick={() => { setNotionOpen((v) => !v); setNotionError(""); }}>Connect Notion</Button>
       <Button size="sm" variant="secondary" icon={<Icon name="plus" size={13} />} onClick={() => setAdding((v) => !v)}>Add source</Button>
       {sources.length > 0 && (
         <Button size="sm" variant="danger" icon={<Icon name="trash-2" size={13} />} onClick={() => setClearOpen(true)}>Clear all</Button>
       )}
+      <input ref={fileInputRef} type="file" style={{ display: "none" }} onChange={onFilePicked} />
     </div>
   );
 
@@ -98,7 +164,23 @@ export default function KnowledgeBase() {
             </div>
           )}
 
-          {sources.length === 0 && !adding ? (
+          {notionOpen && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: "12px 14px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-cyan)" }}>
+              <div style={{ display: "flex", gap: 8 }}>
+                <div style={{ flex: 1 }}>
+                  <Input type="password" placeholder="Notion integration token (secret_…)" value={notionToken} onChange={(e) => setNotionToken(e.target.value)} />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <Input placeholder="Notion page URL" value={notionUrl} onChange={(e) => setNotionUrl(e.target.value)} onKeyDown={(e) => e.key === "Enter" && connectNotion()} />
+                </div>
+                <Button size="sm" variant="primary" disabled={!notionToken.trim() || !notionUrl.trim() || notionBusy} onClick={connectNotion}>Connect</Button>
+                <Button size="sm" variant="ghost" onClick={() => { setNotionOpen(false); setNotionError(""); }}>Cancel</Button>
+              </div>
+              {notionError && <div style={{ font: "var(--fw-regular) 11.5px var(--font-body)", color: "var(--jv-red)" }}>{notionError}</div>}
+            </div>
+          )}
+
+          {sources.length === 0 && !adding && !notionOpen ? (
             <EmptyState
               icon="database"
               title="No knowledge sources yet"

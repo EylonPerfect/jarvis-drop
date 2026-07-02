@@ -120,3 +120,19 @@ CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,
   value JSONB NOT NULL
 );
+
+-- Ingested text for a knowledge source (uploaded files / Notion pages). Added
+-- via ALTER so existing databases pick it up idempotently.
+ALTER TABLE knowledge_sources ADD COLUMN IF NOT EXISTS content TEXT;
+
+-- Operator-added AI providers (OpenAI-compatible). The active one is used
+-- directly by the Command Center chat; the key is stored server-side only.
+CREATE TABLE IF NOT EXISTS ai_providers (
+  id         TEXT PRIMARY KEY,
+  name       TEXT NOT NULL,
+  base_url   TEXT NOT NULL,          -- e.g. https://api.openai.com/v1
+  api_key    TEXT NOT NULL,
+  model      TEXT NOT NULL,
+  active     BOOLEAN NOT NULL DEFAULT false,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

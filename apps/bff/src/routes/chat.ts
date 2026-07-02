@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { hermes, diagnose } from "../hermes.js";
+import { getActiveProvider, streamProviderChat, completeProviderChat } from "../lib/providers.js";
 import { config } from "../config.js";
 import type { ChatRequest } from "@jarvis/shared";
 
@@ -73,6 +74,24 @@ export default async function chatRoutes(app: FastifyInstance) {
     if (b.mode && MODE_SYSTEM[b.mode]) messages.push({ role: "system", content: MODE_SYSTEM[b.mode] });
     messages.push({ role: "user", content: message });
 
+    // Prefer an operator-configured provider (AI Core): stream directly from it.
+    // This is what makes "connect a provider" actually work end-to-end.
+    const active = await getActiveProvider();
+    if (active) {
+      try {
+        const pres = await streamProviderChat(active, messages);
+        if (pres.statusCode < 400) {
+          for await (const buf of pres.body) reply.raw.write(buf);
+          reply.raw.end();
+          return;
+        }
+        await pres.body.dump().catch(() => {});
+        app.log.warn({ status: pres.statusCode, provider: active.name }, "active provider chat failed — falling back to hermes");
+      } catch (err) {
+        app.log.warn({ err, provider: active.name }, "active provider chat error — falling back to hermes");
+      }
+    }
+
     const body = { model: config.hermes.model, messages, stream: true };
     // X-Hermes-Session-Key is the stable per-operator long-term-memory scope
     // (config default), NOT a per-conversation id — don't override it here.
@@ -105,6 +124,12 @@ export default async function chatRoutes(app: FastifyInstance) {
     const messages: Array<{ role: string; content: string }> = [];
     if (b.mode && MODE_SYSTEM[b.mode]) messages.push({ role: "system", content: MODE_SYSTEM[b.mode] });
     messages.push({ role: "user", content: message });
+
+    const active = await getActiveProvider();
+    if (active) {
+      const pr = await completeProviderChat(active, messages);
+      if (pr.ok && pr.content) return { reply: pr.content, sessionId: b.sessionId ?? null };
+    }
 
     const r = await hermes.post<any>("/v1/chat/completions", { model: config.hermes.model, messages, stream: false });
     if (r.ok && r.data?.choices?.[0]?.message?.content) {

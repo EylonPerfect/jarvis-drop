@@ -36,6 +36,34 @@ export default async function memoryRoutes(app: FastifyInstance) {
     return { facts, styles, profile };
   });
 
+  app.post("/api/memory/facts", async (req, reply) => {
+    const b = req.body as Partial<MemoryFact>;
+    const label = b?.label?.trim();
+    const value = b?.value?.trim();
+    if (!label || !value) return reply.code(400).send({ error: "label and value required" });
+    const id = `mf_${Date.now().toString(36)}`;
+    const confidence = Math.max(0, Math.min(100, Math.round(Number(b.confidence ?? 90))));
+    const maxSort = await one<{ m: number }>(`SELECT COALESCE(MAX(sort), -1) + 1 AS m FROM memory_facts`);
+    await query(
+      `INSERT INTO memory_facts (id, label, value, confidence, sort) VALUES ($1,$2,$3,$4,$5)`,
+      [id, label, value, confidence, maxSort?.m ?? 0],
+    );
+    const r = await one<any>(`SELECT * FROM memory_facts WHERE id = $1`, [id]);
+    return reply.code(201).send({ id: r.id, label: r.label, value: r.value, confidence: r.confidence });
+  });
+
+  app.delete("/api/memory/facts/:id", async (req) => {
+    const { id } = req.params as { id: string };
+    await query(`DELETE FROM memory_facts WHERE id = $1`, [id]);
+    return { ok: true };
+  });
+
+  // Clear all memory facts.
+  app.delete("/api/memory/facts", async () => {
+    await query(`DELETE FROM memory_facts`);
+    return { ok: true };
+  });
+
   // Recent conversations: prefer live hermes sessions, else seeded fallback.
   app.get("/api/memory/conversations", async (): Promise<Conversation[]> => {
     const live = await hermes.get<any>("/api/sessions");

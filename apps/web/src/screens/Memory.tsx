@@ -1,7 +1,9 @@
 // Memory — the vector store status, session cost breakdown, recent conversations,
 // and the Personal Intelligence profile (core facts + style profiles).
-import { Panel, Icon, EmptyState } from "../ds";
+import { useState } from "react";
+import { Panel, Icon, EmptyState, Button, Input, IconButton, ConfirmDialog } from "../ds";
 import { useApi } from "../api/hooks";
+import { api } from "../api/client";
 import type {
   VectorStoreStatus,
   SessionCost,
@@ -40,7 +42,56 @@ export default function Memory() {
   const vs = useApi<VectorStoreStatus>("/api/memory/vector-store").data;
   const cost = useApi<SessionCost>("/api/memory/cost").data;
   const convos = useApi<Conversation[]>("/api/memory/conversations").data ?? [];
-  const facts = useApi<FactsResponse>("/api/memory/facts").data;
+  const { data: facts, reload: reloadFacts } = useApi<FactsResponse>("/api/memory/facts");
+
+  const [adding, setAdding] = useState(false);
+  const [label, setLabel] = useState("");
+  const [value, setValue] = useState("");
+  const [confidence, setConfidence] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [clearOpen, setClearOpen] = useState(false);
+  const [clearing, setClearing] = useState(false);
+
+  const submitAdd = async () => {
+    const l = label.trim(), v = value.trim();
+    if (!l || !v || saving) return;
+    setSaving(true);
+    try {
+      const conf = confidence.trim() === "" ? undefined : Number(confidence);
+      await api.post("/api/memory/facts", { label: l, value: v, confidence: conf });
+      setLabel("");
+      setValue("");
+      setConfidence("");
+      setAdding(false);
+      reloadFacts();
+    } catch {
+      /* gateway may be offline — leave the form open */
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const removeFact = async (id: string) => {
+    try {
+      await api.del(`/api/memory/facts/${id}`);
+      reloadFacts();
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const clearFacts = async () => {
+    setClearing(true);
+    try {
+      await api.del("/api/memory/facts");
+      reloadFacts();
+    } catch {
+      /* ignore */
+    } finally {
+      setClearing(false);
+      setClearOpen(false);
+    }
+  };
 
   const vsEmpty = !vs || vs.items === 0;
   const costTotal = cost?.total ?? "$0";
@@ -114,9 +165,26 @@ export default function Memory() {
       </Panel>
 
       {/* personal intelligence */}
-      <Panel title="Personal Intelligence" eyebrow action={<Icon name="sparkles" size={16} color="var(--jv-violet)" />}>
-        {piEmpty ? (
-          <EmptyState icon="sparkles" title="No profile yet" hint="Your Personal Intelligence profile — core facts and style — builds as you use JARVIS." />
+      <Panel
+        title="Personal Intelligence"
+        eyebrow
+        action={
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <Button size="sm" variant="secondary" icon={<Icon name="plus" size={13} />} onClick={() => setAdding((v) => !v)}>Add memory</Button>
+            {coreFacts.length > 0 && (
+              <Button size="sm" variant="danger" icon={<Icon name="trash-2" size={13} />} onClick={() => setClearOpen(true)}>Clear all</Button>
+            )}
+            <Icon name="sparkles" size={16} color="var(--jv-violet)" />
+          </div>
+        }
+      >
+        {piEmpty && !adding ? (
+          <EmptyState
+            icon="sparkles"
+            title="No profile yet"
+            hint="Your Personal Intelligence profile — core facts and style — builds as you use JARVIS."
+            action={<Button size="sm" variant="secondary" icon={<Icon name="plus" size={13} />} onClick={() => setAdding(true)}>Add memory</Button>}
+          />
         ) : (
           <>
             {profile?.prose && <p style={{ margin: "0 0 12px", font: "var(--fw-regular) 13px/1.6 var(--font-body)", color: "var(--jv-text-soft)" }}>{profile.prose}</p>}
@@ -127,15 +195,36 @@ export default function Memory() {
               <div>
                 <div style={{ font: "var(--fw-semibold) 10px var(--font-hud)", letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--jv-cyan-300)", marginBottom: 10 }}>Core facts · {profile?.coreFactsCount ?? coreFacts.length}</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {adding && (
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 8, padding: "12px 12px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-cyan)" }}>
+                      <div style={{ flex: "1 1 120px" }}>
+                        <Input placeholder="Label (e.g. Role)" value={label} autoFocus onChange={(e) => setLabel(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submitAdd()} />
+                      </div>
+                      <div style={{ flex: "2 1 160px" }}>
+                        <Input placeholder="Fact (e.g. Founder)" value={value} onChange={(e) => setValue(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submitAdd()} />
+                      </div>
+                      <div style={{ flex: "0 0 80px" }}>
+                        <Input placeholder="Conf %" value={confidence} onChange={(e) => setConfidence(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submitAdd()} />
+                      </div>
+                      <div style={{ display: "flex", gap: 8, flex: "1 1 auto", justifyContent: "flex-end" }}>
+                        <Button size="sm" variant="primary" disabled={!label.trim() || !value.trim() || saving} onClick={submitAdd}>Save</Button>
+                        <Button size="sm" variant="ghost" onClick={() => setAdding(false)}>Cancel</Button>
+                      </div>
+                    </div>
+                  )}
                   {coreFacts.map((f, i) => (
-                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 12px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)" }}>
+                    <div key={f.id ?? i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 12px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)" }}>
                       <div style={{ flex: 1 }}>
                         <div style={{ font: "var(--fw-semibold) 12.5px var(--font-body)", color: "var(--jv-text)" }}>{f.label}</div>
                         <div style={{ font: "var(--fw-regular) 11.5px var(--font-body)", color: "var(--jv-text-muted)", marginTop: 2 }}>{f.value}</div>
                       </div>
                       <Ring pct={f.confidence} />
+                      <IconButton icon="trash-2" tone="danger" title="Delete" onClick={() => removeFact(f.id)} />
                     </div>
                   ))}
+                  {coreFacts.length === 0 && !adding && (
+                    <div style={{ font: "var(--fw-regular) 11.5px var(--font-body)", color: "var(--jv-text-muted)" }}>No core facts yet.</div>
+                  )}
                 </div>
               </div>
               <div>
@@ -156,6 +245,17 @@ export default function Memory() {
           </>
         )}
       </Panel>
+
+      <ConfirmDialog
+        open={clearOpen}
+        danger
+        title="Clear all memory facts?"
+        message="This permanently removes every core fact from your Personal Intelligence profile. This cannot be undone."
+        confirmLabel="Clear all"
+        busy={clearing}
+        onConfirm={clearFacts}
+        onCancel={() => setClearOpen(false)}
+      />
     </div>
   );
 }

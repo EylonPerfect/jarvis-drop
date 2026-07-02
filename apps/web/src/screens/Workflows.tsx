@@ -1,8 +1,8 @@
 // Workflows — saved multi-step automations. Each has a trigger, an ordered set
 // of steps (agent/tool nodes), a status and a run control. Wired to the
 // /api/workflows backend endpoints; renders empty states on a clean database.
-import { Fragment } from "react";
-import { Panel, Badge, Button, Icon, StatTile, EmptyState } from "../ds";
+import { Fragment, useState } from "react";
+import { Panel, Badge, Button, Icon, Input, StatTile, EmptyState, IconButton, ConfirmDialog } from "../ds";
 import type { Workflow, WorkflowRun } from "@jarvis/shared";
 import { useApi } from "../api/hooks";
 import { api } from "../api/client";
@@ -22,7 +22,7 @@ function StepNode({ ic, label, last }: { ic: string; label: string; last: boolea
   );
 }
 
-function FlowCard({ wf, onRan }: { wf: Workflow; onRan: () => void }) {
+function FlowCard({ wf, onRan, onChanged }: { wf: Workflow; onRan: () => void; onChanged: () => void }) {
   const { name, trigger, status, steps } = wf;
   const paused = status === "Paused";
   const run = async () => {
@@ -31,6 +31,22 @@ function FlowCard({ wf, onRan }: { wf: Workflow; onRan: () => void }) {
       onRan();
     } catch {
       /* gateway may be offline — ignore */
+    }
+  };
+  const toggleStatus = async () => {
+    try {
+      await api.patch(`/api/workflows/${wf.id}`, { status: paused ? "Enabled" : "Paused" });
+      onChanged();
+    } catch {
+      /* ignore */
+    }
+  };
+  const remove = async () => {
+    try {
+      await api.del(`/api/workflows/${wf.id}`);
+      onChanged();
+    } catch {
+      /* ignore */
     }
   };
   return (
@@ -43,8 +59,10 @@ function FlowCard({ wf, onRan }: { wf: Workflow; onRan: () => void }) {
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 6, font: "var(--fw-medium) 11.5px var(--font-body)", color: "var(--jv-text-muted)", marginTop: 4 }}><Icon name="clock" size={12} />{trigger}</div>
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <Button size="sm" variant={paused ? "secondary" : "primary"} icon={<Icon name="play" size={13} />} onClick={run}>Run</Button>
+          <Button size="sm" variant="secondary" icon={<Icon name={paused ? "play" : "pause"} size={13} />} onClick={toggleStatus}>{paused ? "Resume" : "Pause"}</Button>
+          <IconButton icon="trash-2" tone="danger" title="Delete" onClick={remove} />
         </div>
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -55,26 +73,96 @@ function FlowCard({ wf, onRan }: { wf: Workflow; onRan: () => void }) {
 }
 
 export default function Workflows() {
-  const { data: workflows } = useApi<Workflow[]>("/api/workflows");
+  const { data: workflows, reload: reloadWorkflows } = useApi<Workflow[]>("/api/workflows");
   const { data: runs, reload: reloadRuns } = useApi<WorkflowRun[]>("/api/workflows/runs");
-  const { data: stats } = useApi<WorkflowStats>("/api/workflows/stats");
+  const { data: stats, reload: reloadStats } = useApi<WorkflowStats>("/api/workflows/stats");
 
   const flows = workflows ?? [];
   const recentRuns = runs ?? [];
   const s = stats ?? ZERO_STATS;
 
+  const reload = () => {
+    reloadWorkflows();
+    reloadStats();
+  };
+
+  const [adding, setAdding] = useState(false);
+  const [name, setName] = useState("");
+  const [trigger, setTrigger] = useState("");
+  const [stepsText, setStepsText] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [clearOpen, setClearOpen] = useState(false);
+  const [clearing, setClearing] = useState(false);
+
+  const submitAdd = async () => {
+    const n = name.trim();
+    if (!n || saving) return;
+    setSaving(true);
+    try {
+      const steps = stepsText
+        .split(",")
+        .map((l) => l.trim())
+        .filter(Boolean)
+        .map((label) => ({ icon: "workflow", label }));
+      await api.post("/api/workflows", { name: n, trigger: trigger.trim() || undefined, steps });
+      setName("");
+      setTrigger("");
+      setStepsText("");
+      setAdding(false);
+      reload();
+    } catch {
+      /* gateway may be offline — leave the form open */
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const clearAll = async () => {
+    setClearing(true);
+    try {
+      await api.del("/api/workflows");
+      reload();
+    } catch {
+      /* ignore */
+    } finally {
+      setClearing(false);
+      setClearOpen(false);
+    }
+  };
+
+  const headerAction = (
+    <div style={{ display: "flex", gap: 8 }}>
+      <Button size="sm" variant="secondary" icon={<Icon name="plus" size={13} />} onClick={() => setAdding((v) => !v)}>New Workflow</Button>
+      {flows.length > 0 && (
+        <Button size="sm" variant="danger" icon={<Icon name="trash-2" size={13} />} onClick={() => setClearOpen(true)}>Clear all</Button>
+      )}
+    </div>
+  );
+
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1fr 300px", gap: 16, alignItems: "start" }}>
-      <Panel title="Workflows">
+      <Panel title="Workflows" action={headerAction}>
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          {flows.length === 0 ? (
+          {adding && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: "12px 14px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-cyan)" }}>
+              <Input placeholder="Workflow name" value={name} autoFocus onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submitAdd()} />
+              <Input placeholder="Every day · 8:00 am — or Manual" value={trigger} onChange={(e) => setTrigger(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submitAdd()} />
+              <Input placeholder="Steps (comma-separated labels)" value={stepsText} onChange={(e) => setStepsText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submitAdd()} />
+              <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                <Button size="sm" variant="ghost" onClick={() => setAdding(false)}>Cancel</Button>
+                <Button size="sm" variant="primary" disabled={!name.trim() || saving} onClick={submitAdd}>Create</Button>
+              </div>
+            </div>
+          )}
+          {flows.length === 0 && !adding ? (
             <EmptyState
               icon="workflow"
               title="No workflows yet"
               hint="Automations that chain agents and tools on a trigger will appear here once they're configured."
+              action={<Button size="sm" variant="secondary" icon={<Icon name="plus" size={13} />} onClick={() => setAdding(true)}>New Workflow</Button>}
             />
           ) : (
-            flows.map((f, i) => <FlowCard key={f.id ?? i} wf={f} onRan={reloadRuns} />)
+            flows.map((f, i) => <FlowCard key={f.id ?? i} wf={f} onRan={reloadRuns} onChanged={reload} />)
           )}
         </div>
       </Panel>
@@ -101,6 +189,17 @@ export default function Workflows() {
           )}
         </Panel>
       </div>
+
+      <ConfirmDialog
+        open={clearOpen}
+        danger
+        title="Clear all workflows?"
+        message="This permanently removes every workflow. This cannot be undone."
+        confirmLabel="Clear all"
+        busy={clearing}
+        onConfirm={clearAll}
+        onCancel={() => setClearOpen(false)}
+      />
     </div>
   );
 }
