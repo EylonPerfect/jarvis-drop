@@ -45,10 +45,11 @@ const SECTIONS: NavSection[] = [
           { id: "hire", icon: "user-plus", label: "Hire an Agent" },
           { id: "approvals", icon: "inbox", label: "Approvals" },
           { id: "permissions", icon: "shield", label: "Permissions" },
-          { id: "spend", icon: "circle-dollar-sign", label: "Spend" },
-          { id: "ledger", icon: "scroll-text", label: "Ledger" },
         ],
       },
+      { id: "spend", icon: "circle-dollar-sign", label: "Spend" },
+      { id: "ledger", icon: "scroll-text", label: "Ledger" },
+      { id: "tasks", icon: "list-checks", label: "Tasks" },
     ],
   },
   {
@@ -56,7 +57,6 @@ const SECTIONS: NavSection[] = [
     items: [
       { id: "aicore", icon: "cpu", label: "AI Core" },
       { id: "integrations", icon: "plug", label: "Integrations" },
-      { id: "tasks", icon: "list-checks", label: "Tasks" },
       { id: "calendar", icon: "calendar", label: "Calendar" },
       { id: "memory", icon: "database", label: "Memory" },
       { id: "conversations", icon: "message-square", label: "Conversations" },
