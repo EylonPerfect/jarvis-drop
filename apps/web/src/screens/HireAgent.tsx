@@ -2,10 +2,12 @@
 // tailored to your exact workflow. A gallery of role-based templates sits below
 // as a quick-start secondary path. Both paths POST /api/agents; the new hire
 // then appears in Your Team.
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { CSSProperties } from "react";
 import { api } from "../api/client";
+import { useApi } from "../api/hooks";
 import { Panel, Badge, Button, Icon } from "../ds";
+import type { AiProvider } from "@jarvis/shared";
 
 type Role = { ic: string; name: string; dept: string; blurb: string; budget: string; tools: string[]; grants: string };
 
@@ -64,6 +66,13 @@ function HireFlow({ role, onClose, onHire }: { role: Role; onClose: () => void; 
 
 // TOP — the primary call to action: build a bespoke agent inline.
 function BuildYourOwn({ onBuilt }: { onBuilt: (name: string) => void }) {
+  // The model choices are exactly the providers connected in AI Core — no free
+  // text. If nothing is connected there, we say so and link the operator over.
+  const { data: provData } = useApi<AiProvider[]>("/api/aicore/providers");
+  const providers = provData ?? [];
+  const models = Array.from(new Set(providers.map((p) => p.model)));
+  const activeModel = providers.find((p) => p.active)?.model ?? models[0] ?? "";
+
   const [name, setName] = useState("");
   const [role, setRole] = useState("");
   const [icon, setIcon] = useState("bot");
@@ -71,6 +80,11 @@ function BuildYourOwn({ onBuilt }: { onBuilt: (name: string) => void }) {
   const [autonomy, setAutonomy] = useState(AUTONOMY_CHOICES[0]);
   const [instructions, setInstructions] = useState("");
   const ready = name.trim() !== "" && role.trim() !== "";
+
+  // Default the model to the active connected provider once it loads.
+  useEffect(() => {
+    if (!model && activeModel) setModel(activeModel);
+  }, [activeModel, model]);
 
   const build = () => {
     if (!ready) return;
@@ -137,8 +151,23 @@ function BuildYourOwn({ onBuilt }: { onBuilt: (name: string) => void }) {
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginTop: 16 }}>
         <div>
-          <div style={labelStyle}>Model (optional)</div>
-          <input value={model} onChange={(e) => setModel(e.target.value)} placeholder="e.g. claude-opus-4-8" style={inputStyle} />
+          <div style={labelStyle}>Model</div>
+          {models.length ? (
+            <select value={model} onChange={(e) => setModel(e.target.value)} style={{ ...inputStyle, appearance: "none", cursor: "pointer" }}>
+              {models.map((m) => {
+                const p = providers.find((pr) => pr.model === m);
+                return (
+                  <option key={m} value={m}>
+                    {m}{p ? ` · ${p.name}` : ""}{p?.active ? " (active)" : ""}
+                  </option>
+                );
+              })}
+            </select>
+          ) : (
+            <div style={{ ...inputStyle, display: "flex", alignItems: "center", gap: 7, color: "var(--jv-text-muted)", font: "var(--fw-regular) 12px var(--font-body)" }}>
+              <Icon name="plug" size={13} /> No model connected — add one in AI Core first
+            </div>
+          )}
         </div>
         <div>
           <div style={labelStyle}>Autonomy</div>
@@ -169,6 +198,8 @@ function BuildYourOwn({ onBuilt }: { onBuilt: (name: string) => void }) {
 }
 
 export default function HireAgent() {
+  const { data: provData } = useApi<AiProvider[]>("/api/aicore/providers");
+  const activeModel = (provData ?? []).find((p) => p.active)?.model;
   const [picked, setPicked] = useState<Role | null>(null);
   const [, setHired] = useState<string[]>([]);
   const [toast, setToast] = useState<string | null>(null);
@@ -184,7 +215,7 @@ export default function HireAgent() {
   };
 
   const hire = (name: string) => {
-    if (picked) api.post("/api/agents", { name, role: picked.blurb, icon: picked.ic }).catch(() => {});
+    if (picked) api.post("/api/agents", { name, role: picked.blurb, icon: picked.ic, model: activeModel }).catch(() => {});
     setHired((h) => [...h, name]);
     setPicked(null);
     notify("✓ " + name + " hired — now in Your Team, on standby.");
