@@ -12,7 +12,7 @@ const ZERO_STATS: KnowledgeStats = { sources: 0, chunks: 0, collections: 0, inde
 
 export default function KnowledgeBase() {
   const { data: sourcesData, reload: reloadSources } = useApi<KnowledgeSource[]>("/api/knowledge/sources");
-  const { data: collectionsData } = useApi<Collection[]>("/api/knowledge/collections");
+  const { data: collectionsData, reload: reloadCollections } = useApi<Collection[]>("/api/knowledge/collections");
   const { data: statsData } = useApi<KnowledgeStats>("/api/knowledge/stats");
 
   const sources = sourcesData ?? [];
@@ -33,6 +33,11 @@ export default function KnowledgeBase() {
   const [notionUrl, setNotionUrl] = useState("");
   const [notionBusy, setNotionBusy] = useState(false);
   const [notionError, setNotionError] = useState("");
+
+  // Collections.
+  const [addingCollection, setAddingCollection] = useState(false);
+  const [collectionName, setCollectionName] = useState("");
+  const [savingCollection, setSavingCollection] = useState(false);
 
   // File upload.
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -114,6 +119,31 @@ export default function KnowledgeBase() {
     try {
       await api.del(`/api/knowledge/sources/${id}`);
       reloadSources();
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const submitCollection = async () => {
+    const name = collectionName.trim();
+    if (!name || savingCollection) return;
+    setSavingCollection(true);
+    try {
+      await api.post("/api/knowledge/collections", { name });
+      setCollectionName("");
+      setAddingCollection(false);
+      reloadCollections();
+    } catch {
+      /* gateway may be offline — leave the form open */
+    } finally {
+      setSavingCollection(false);
+    }
+  };
+
+  const removeCollection = async (id: string) => {
+    try {
+      await api.del(`/api/knowledge/collections/${id}`);
+      reloadCollections();
     } catch {
       /* ignore */
     }
@@ -231,14 +261,30 @@ export default function KnowledgeBase() {
             </div>
           )}
         </Panel>
-        <Panel title="Collections" eyebrow bodyStyle={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {collections.length === 0 ? (
-            <EmptyState icon="folder" compact title="No collections" hint="Collections are derived from indexed sources — they appear here once your knowledge base has grouped content." />
+        <Panel
+          title="Collections"
+          eyebrow
+          action={<IconButton icon="plus" title="New collection" onClick={() => setAddingCollection((v) => !v)} />}
+          bodyStyle={{ display: "flex", flexDirection: "column", gap: 8 }}
+        >
+          {addingCollection && (
+            <div style={{ display: "flex", gap: 8, padding: "10px 12px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-cyan)" }}>
+              <div style={{ flex: 1 }}>
+                <Input placeholder="Collection name" value={collectionName} autoFocus onChange={(e) => setCollectionName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submitCollection()} />
+              </div>
+              <Button size="sm" variant="primary" disabled={!collectionName.trim() || savingCollection} onClick={submitCollection}>Add</Button>
+            </div>
+          )}
+          {collections.length === 0 && !addingCollection ? (
+            <EmptyState icon="folder" compact title="No collections" hint="Group indexed sources into collections. Add your first collection to get started." />
           ) : (
             collections.map((col) => (
-              <div key={col.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 12px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)" }}>
-                <span style={{ display: "flex", alignItems: "center", gap: 9, font: "var(--fw-semibold) 13px var(--font-body)", color: "var(--jv-text)" }}><span style={{ width: 8, height: 8, borderRadius: 2, background: col.color, boxShadow: `0 0 6px ${col.color}` }} />{col.name}</span>
-                <span style={{ font: "12px var(--font-mono)", color: "var(--jv-text-muted)" }}>{col.count} sources</span>
+              <div key={col.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "10px 12px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)" }}>
+                <span style={{ display: "flex", alignItems: "center", gap: 9, minWidth: 0, font: "var(--fw-semibold) 13px var(--font-body)", color: "var(--jv-text)" }}><span style={{ width: 8, height: 8, flex: "0 0 8px", borderRadius: 2, background: col.color, boxShadow: `0 0 6px ${col.color}` }} />{col.name}</span>
+                <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ font: "12px var(--font-mono)", color: "var(--jv-text-muted)" }}>{col.count} sources</span>
+                  <IconButton icon="trash-2" tone="danger" title="Delete" onClick={() => removeCollection(col.id)} />
+                </span>
               </div>
             ))
           )}

@@ -111,6 +111,37 @@ export default async function knowledgeRoutes(app: FastifyInstance) {
     return rows.map((r: any): Collection => ({ id: r.id, name: r.name, count: r.count, color: r.color }));
   });
 
+  // Palette used when the operator doesn't pick a colour for a new collection.
+  const COLLECTION_COLORS = ["#29d3f5", "#7c5cff", "#22c55e", "#f5a623", "#ff5c7c", "#00e0c6"];
+
+  app.post("/api/knowledge/collections", async (req, reply) => {
+    const b = (req.body ?? {}) as Partial<Collection>;
+    const name = b.name?.trim();
+    if (!name) return reply.code(400).send({ error: "name required" });
+    const id = `col_${Date.now().toString(36)}`;
+    const maxSort = await one<{ m: number }>(`SELECT COALESCE(MAX(sort), -1) + 1 AS m FROM collections`);
+    const sort = maxSort?.m ?? 0;
+    const color = b.color?.trim() || COLLECTION_COLORS[sort % COLLECTION_COLORS.length];
+    await query(
+      `INSERT INTO collections (id, name, count, color, sort) VALUES ($1,$2,$3,$4,$5)`,
+      [id, name, b.count ?? 0, color, sort],
+    );
+    const r = await one<any>(`SELECT * FROM collections WHERE id = $1`, [id]);
+    return reply.code(201).send({ id: r.id, name: r.name, count: r.count, color: r.color } as Collection);
+  });
+
+  app.delete("/api/knowledge/collections/:id", async (req) => {
+    const { id } = req.params as { id: string };
+    await query(`DELETE FROM collections WHERE id = $1`, [id]);
+    return { ok: true };
+  });
+
+  // Clear all collections.
+  app.delete("/api/knowledge/collections", async () => {
+    await query(`DELETE FROM collections`);
+    return { ok: true };
+  });
+
   // Index stat block.
   app.get("/api/knowledge/stats", async () => {
     const sources = await query<{ chunks: number; status: string }>(`SELECT chunks, status FROM knowledge_sources`);

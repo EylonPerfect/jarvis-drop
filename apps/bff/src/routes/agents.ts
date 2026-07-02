@@ -188,6 +188,26 @@ export default async function agentsRoutes(app: FastifyInstance) {
     return seeded?.value ?? [];
   });
 
+  // Recent Hermes runtime sessions (cockpit center pane). These are the agent
+  // runtime's own sessions from the deployed Hermes dashboard — NOT tied to any
+  // one app-agent id, so they're presented honestly as runtime-wide sessions.
+  // Relays hermes GET /api/sessions; returns [] when hermes is unreachable.
+  app.get("/api/agents/sessions", async () => {
+    const res = await hermes.get<any>("/api/sessions");
+    // Accept a bare array or the {sessions:[...]} / {data:[...]} envelope.
+    const list = Array.isArray(res.data)
+      ? res.data
+      : res.data?.sessions ?? res.data?.data;
+    if (!res.ok || !Array.isArray(list)) return [];
+    return list.map((s: any, i: number) => ({
+      id: String(s.id ?? s.session_id ?? `session_${i}`),
+      model: s.model ?? s.model_config?.model ?? undefined,
+      source: s.source ?? undefined,
+      messages: s.messages ?? s.message_count ?? undefined,
+      iterations: s.iterations ?? s.iteration_count ?? undefined,
+    }));
+  });
+
   app.get("/api/agents/runtime", async (): Promise<RuntimeStats> => {
     const rows = await query<{ status: string }>(`SELECT status FROM agents`);
     const active = rows.filter((r) => r.status === "optimal").length;

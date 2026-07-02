@@ -138,6 +138,51 @@ function CommsBox({ agentId }: { agentId: string }) {
   );
 }
 
+// Recent sessions reported by the agent runtime (Hermes). These are NOT tied to
+// a single app-agent, so they're presented honestly as the runtime's recent
+// sessions, not "this agent's session". Real data from GET /api/agents/sessions.
+type RuntimeSession = { id: string; model?: string; source?: string; messages?: number; iterations?: number };
+
+function SessionsPane() {
+  const { data } = useApi<RuntimeSession[]>("/api/agents/sessions");
+  const sessions = data ?? [];
+  return (
+    <div style={{ display: "flex", flexDirection: "column", borderRadius: "var(--r-md)", background: "var(--jv-void)", border: "1px solid var(--jv-border)", overflow: "hidden", boxShadow: "var(--panel-shadow)", minHeight: 360 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "12px 16px", borderBottom: "1px solid var(--jv-hairline)" }}>
+        <span style={{ font: "var(--fw-semibold) 10px var(--font-hud)", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--jv-text-muted)" }}>Hermes runtime sessions</span>
+        <div style={{ flex: 1 }} />
+        <Badge status="info" dot={false}>Agent runtime</Badge>
+      </div>
+      {sessions.length === 0 ? (
+        <div style={{ flex: 1, display: "grid", placeItems: "center", padding: 16 }}>
+          <EmptyState icon="monitor" title="No active runtime sessions" hint="Recent sessions reported by the agent runtime will stream here." />
+        </div>
+      ) : (
+        <div style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column", gap: 8, padding: 12 }}>
+          {sessions.map((s) => (
+            <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)" }}>
+              <span style={{ width: 28, height: 28, flex: "0 0 28px", display: "grid", placeItems: "center", borderRadius: "var(--r-xs)", color: "var(--jv-cyan)", background: "var(--grad-cyan-soft)", border: "1px solid var(--jv-border-cyan)" }}>
+                <Icon name="monitor" size={14} />
+              </span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", font: "var(--fw-semibold) 12.5px var(--font-mono)", color: "var(--jv-text)" }}>{s.id}</span>
+                  {s.source && <span style={{ flex: "0 0 auto", padding: "2px 8px", borderRadius: "var(--r-pill)", font: "var(--fw-medium) 10px var(--font-hud)", letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--jv-text-muted)", background: "var(--jv-void)", border: "1px solid var(--jv-border-soft)" }}>{s.source}</span>}
+                </div>
+                {(s.model || s.messages != null || s.iterations != null) && (
+                  <div style={{ font: "var(--fw-regular) 11px var(--font-body)", color: "var(--jv-text-muted)", marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {[s.model, s.messages != null ? `${s.messages} msgs` : null, s.iterations != null ? `${s.iterations} iters` : null].filter(Boolean).join(" · ")}
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function AgentCockpit({ agentId, onExit }: { agentId: string; onExit: () => void }) {
   const { data, reload } = useApi<Agent[]>("/api/agents");
   const agent = (data ?? []).find((a) => a.id === agentId);
@@ -228,14 +273,11 @@ export default function AgentCockpit({ agentId, onExit }: { agentId: string; onE
           </Panel>
         </div>
 
-        {/* CENTER — live session. No backend session stream exists yet, so we show
-            an honest empty state rather than a fake browser chrome that implies a
-            live remote session. */}
-        <div style={{ display: "flex", flexDirection: "column", borderRadius: "var(--r-md)", background: "var(--jv-void)", border: "1px solid var(--jv-border)", overflow: "hidden", boxShadow: "var(--panel-shadow)", minHeight: 360 }}>
-          <div style={{ flex: 1, display: "grid", placeItems: "center", padding: 16 }}>
-            <EmptyState icon="monitor" title="No agent session running" hint="When this agent starts a task, its live session streams here." />
-          </div>
-        </div>
+        {/* CENTER — real data from the agent runtime (Hermes). Shows the runtime's
+            recent sessions (id / model / source). These are runtime-wide, not
+            tied to this specific app-agent, and are labeled honestly as such.
+            Falls back to a graceful empty state when unreachable/empty. */}
+        <SessionsPane />
 
         {/* RIGHT */}
         <div style={{ display: "flex", flexDirection: "column", gap: 14, minHeight: 0 }}>

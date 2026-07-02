@@ -108,7 +108,7 @@ export default function SystemMonitor() {
       <Panel title="Recent Logs" eyebrow action={<div style={{ display: "flex", gap: 10, alignItems: "center" }}><span style={{ display: "flex", alignItems: "center", gap: 7, font: "var(--fw-medium) 11px var(--font-body)", color: "var(--jv-text-muted)" }}>Live tail<Switch checked={live} onChange={setLive} /></span><Button size="sm" variant="ghost" icon={<Icon name="refresh-cw" size={13} />} onClick={() => setNonce((n) => n + 1)}>Refresh</Button></div>}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
           <div style={{ display: "flex", gap: 4 }}>
-            {["All", "INFO", "WARN", "ERROR"].map((r) => (
+            {["All", "DEBUG", "INFO", "WARN", "ERROR"].map((r) => (
               <button key={r} onClick={() => setLvl(r)} style={{ padding: "6px 11px", borderRadius: "var(--r-sm)", border: `1px solid ${lvl === r ? "var(--jv-border-cyan)" : "var(--jv-border)"}`, background: lvl === r ? "var(--grad-cyan-soft)" : "transparent", color: lvl === r ? "var(--jv-cyan-300)" : "var(--jv-text-muted)", font: "var(--fw-medium) 11px var(--font-mono)", cursor: "pointer" }}>{r}</button>
             ))}
           </div>

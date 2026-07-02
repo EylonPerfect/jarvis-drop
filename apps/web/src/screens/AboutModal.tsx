@@ -60,7 +60,7 @@ export function AboutModal({ onClose }: { onClose: () => void }) {
           </div>
           <div style={{ font: "var(--fw-regular) 12px var(--font-body)", color: "var(--jv-text-muted)", marginTop: 6 }}>Just A Rather Very Intelligent System</div>
           <div style={{ display: "flex", gap: 7, justifyContent: "center", flexWrap: "wrap", marginTop: 14 }}>
-            {["v3.0.0", "win32 x64", "Electron 33.4.11", "Node 20.18.3"].map((c) => (
+            {["v3.0.0", "web", "Linux x64", "Hermes-connected"].map((c) => (
               <span
                 key={c}
                 style={{
@@ -92,24 +92,19 @@ export function AboutModal({ onClose }: { onClose: () => void }) {
                   color: "var(--jv-cyan-300)",
                 }}
               >
-                A
+                E
               </span>
               <div>
-                <div style={{ font: "var(--fw-bold) 14px var(--font-body)", color: "var(--jv-text)" }}>Adrees Umer</div>
-                <div style={{ font: "var(--fw-regular) 11.5px var(--font-body)", color: "var(--jv-text-muted)" }}>Solo developer — design, engineering &amp; everything in between</div>
+                <div style={{ font: "var(--fw-bold) 14px var(--font-body)", color: "var(--jv-text)" }}>Eylon</div>
+                <div style={{ font: "var(--fw-regular) 11.5px var(--font-body)", color: "var(--jv-text-muted)" }}>Operator · Go Perfect</div>
               </div>
             </div>
             <p style={{ margin: "0 0 14px", font: "var(--fw-regular) 12px/1.55 var(--font-body)", color: "var(--jv-text-soft)" }}>
-              J.A.R.V.I.S. is independently designed, built and maintained by a single developer. Feedback, ideas and bug reports go straight to the person who writes the code — say hello!
+              This is Eylon's private command center — a HUD for operating his deployed Hermes agent: chat, agents, tasks, memory, workflows and approvals in one place.
             </p>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-              <LinkRow ic="box" label="Portfolio" href="https://adreesumer.com" external />
-              <LinkRow ic="linkedin" label="LinkedIn" href="https://www.linkedin.com/in/adrees-umer" external />
-              <LinkRow ic="globe" label="jarvis.adreesumer.com" href="https://jarvis.adreesumer.com" external />
-              <LinkRow ic="mail" label="Email me" href="mailto:adrees4234@gmail.com" />
-            </div>
-            <div style={{ marginTop: 8 }}>
-              <LinkRow ic="message-circle" label="Follow the Jarvis AI Assistant channel on WhatsApp" sub="Updates, tips &amp; release news" href="https://whatsapp.com/channel" external />
+              <LinkRow ic="globe" label="goperfectmatch.com" href="https://goperfectmatch.com" external />
+              <LinkRow ic="mail" label="Email" href="mailto:eylon@goperfectmatch.com" />
             </div>
             <div
               style={{
@@ -123,12 +118,12 @@ export function AboutModal({ onClose }: { onClose: () => void }) {
                 border: "1px solid var(--jv-border-soft)",
               }}
             >
-              <span style={{ font: "12px var(--font-mono)", color: "var(--jv-text-soft)" }}>adrees4234@gmail.com</span>
+              <span style={{ font: "12px var(--font-mono)", color: "var(--jv-text-soft)" }}>eylon@goperfectmatch.com</span>
               <Button
                 size="sm"
                 variant="ghost"
                 onClick={() => {
-                  navigator.clipboard?.writeText("adrees4234@gmail.com").catch(() => {});
+                  navigator.clipboard?.writeText("eylon@goperfectmatch.com").catch(() => {});
                   setCopied(true);
                   setTimeout(() => setCopied(false), 1500);
                 }}
@@ -137,7 +132,7 @@ export function AboutModal({ onClose }: { onClose: () => void }) {
               </Button>
             </div>
           </div>
-          <div style={{ font: "var(--fw-regular) 11px var(--font-body)", color: "var(--jv-text-faint)", marginTop: 16 }}>© 2026 Adrees Umer · Built with passion, one commit at a time.</div>
+          <div style={{ font: "var(--fw-regular) 11px var(--font-body)", color: "var(--jv-text-faint)", marginTop: 16 }}>© 2026 Eylon · J.A.R.V.I.S. Command Center</div>
         </div>
       </div>
     </div>
