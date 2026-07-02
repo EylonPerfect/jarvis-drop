@@ -125,6 +125,10 @@ CREATE TABLE IF NOT EXISTS settings (
 -- via ALTER so existing databases pick it up idempotently.
 ALTER TABLE knowledge_sources ADD COLUMN IF NOT EXISTS content TEXT;
 
+-- An agent's plan (goal) and routine (recurring steps), so it knows its job.
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS plan TEXT;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS routine TEXT;
+
 -- Operator-added AI providers (OpenAI-compatible). The active one is used
 -- directly by the Command Center chat; the key is stored server-side only.
 CREATE TABLE IF NOT EXISTS ai_providers (

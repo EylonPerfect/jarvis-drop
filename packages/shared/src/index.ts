@@ -30,6 +30,8 @@ export interface Agent {
   collaborators?: string[];
   autonomy?: string;
   instructions?: string;
+  plan?: string; // the agent's goal / plan — what it's trying to achieve
+  routine?: string; // the recurring routine / steps it follows
   createdAt?: string;
 }
 
@@ -42,6 +44,8 @@ export interface NewAgent {
   collaborators?: string[];
   autonomy?: string;
   instructions?: string;
+  plan?: string;
+  routine?: string;
 }
 
 export interface RunStep {

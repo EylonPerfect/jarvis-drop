@@ -80,6 +80,8 @@ export function AgentForm({
   const [tools, setTools] = useState<string[]>(["web_search"]);
   const [collabs, setCollabs] = useState<string[]>([]);
   const [autonomy, setAutonomy] = useState(AUTONOMY_CHOICES[0]);
+  const [plan, setPlan] = useState("");
+  const [routine, setRoutine] = useState("");
   const [instr, setInstr] = useState("");
 
   useEffect(() => {
@@ -91,7 +93,7 @@ export function AgentForm({
 
   const submit = () => {
     if (!ready) return;
-    onSubmit({ icon, name: name.trim(), role: role.trim(), model: model || undefined, tools, collaborators: collabs, autonomy, instructions: instr.trim() || undefined });
+    onSubmit({ icon, name: name.trim(), role: role.trim(), model: model || undefined, tools, collaborators: collabs, autonomy, plan: plan.trim() || undefined, routine: routine.trim() || undefined, instructions: instr.trim() || undefined });
     if (resetOnSubmit) {
       setName("");
       setRole("");
@@ -99,6 +101,8 @@ export function AgentForm({
       setTools(["web_search"]);
       setCollabs([]);
       setAutonomy(AUTONOMY_CHOICES[0]);
+      setPlan("");
+      setRoutine("");
       setInstr("");
     }
   };
@@ -192,7 +196,25 @@ export function AgentForm({
         </div>
       </Field>
 
-      <Field label="System instructions">
+      <Field label="Plan · what is its job?" hint="The goal this agent is working toward — what 'done' looks like.">
+        <textarea
+          value={plan}
+          onChange={(e) => setPlan(e.target.value)}
+          placeholder="e.g. Keep spend under budget across all teams and flag overruns within the hour."
+          style={{ ...inputStyle, height: 70, padding: "10px 14px", resize: "vertical", font: "var(--fw-regular) 13px/1.5 var(--font-body)" }}
+        />
+      </Field>
+
+      <Field label="Routine · how it works" hint="The recurring steps it follows, one per line.">
+        <textarea
+          value={routine}
+          onChange={(e) => setRoutine(e.target.value)}
+          placeholder={"e.g.\n1. Pull yesterday's spend from each account\n2. Compare against caps\n3. Draft an alert for anything over 90%"}
+          style={{ ...inputStyle, height: 90, padding: "10px 14px", resize: "vertical", font: "var(--fw-regular) 13px/1.5 var(--font-body)" }}
+        />
+      </Field>
+
+      <Field label="System instructions" hint="How it should think and behave (tone, guardrails, style).">
         <textarea
           value={instr}
           onChange={(e) => setInstr(e.target.value)}

@@ -4,7 +4,7 @@ import { useApi } from "../api/hooks";
 import { streamChat } from "../api/client";
 import { useSpeech, useVoiceOutput } from "../hooks/useSpeech";
 import type { ViewId } from "../components/AppShell";
-import type { Agent, FeedItem, SystemHealth } from "@jarvis/shared";
+import type { Agent, FeedItem, SystemHealth, StatusStripItem } from "@jarvis/shared";
 
 const ACCENT = "var(--jv-cyan)";
 
@@ -132,7 +132,33 @@ function VoiceCore() {
         ? "Thinking…"
         : speech.supported
           ? "Tap the core to speak"
-          : "Voice needs HTTPS + Chromium";
+          : "Voice unavailable";
+
+  // A specific, actionable reason when voice can't run — so it's never a silent
+  // dead orb. When there's a problem we also expose a text fallback below.
+  const voiceProblem = !speech.supported
+    ? !speech.secure
+      ? "This page isn't a secure context. Open it over HTTPS (https://jarvis.srv1797540.hstgr.cloud), not http:// or an IP:port."
+      : !speech.hasRecognition
+        ? "This browser has no speech recognition. Use Chrome or Edge (desktop)."
+        : "Voice is unavailable in this browser."
+    : speech.error === "not-allowed"
+      ? "Microphone blocked. Click the lock icon in the address bar → allow Microphone → reload."
+      : speech.error === "service-not-allowed"
+        ? "The browser's speech service is unavailable (some Chromium builds/Brave block it). Try Chrome or Edge."
+        : speech.error === "mic-unavailable" || speech.error === "audio-capture"
+          ? "No microphone was found on this device."
+          : speech.error === "network"
+            ? "Speech recognition hit a network error. Check the connection and try again."
+            : null;
+
+  const [draft, setDraft] = useState("");
+  const submitDraft = () => {
+    const t = draft.trim();
+    if (!t || busy) return;
+    setDraft("");
+    send(t);
+  };
 
   return (
     <div style={{ position: "relative", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", minHeight: 480 }}>
@@ -182,12 +208,36 @@ function VoiceCore() {
             </div>
           </div>
         )}
-        {!displayedYou && !reply && !busy && (
+        {!displayedYou && !reply && !busy && !voiceProblem && (
           <div style={{ textAlign: "center", font: "var(--fw-regular) 12.5px/1.5 var(--font-body)", color: "var(--jv-text-faint)" }}>
-            {speech.supported ? "Tap the core and speak — JARVIS replies out loud." : "Voice needs a Chromium browser over HTTPS. Open this site on https:// in Chrome or Edge, then allow the microphone."}
+            Tap the core and speak — JARVIS replies out loud.
+          </div>
+        )}
+        {voiceProblem && (
+          <div style={{ display: "flex", gap: 9, padding: "11px 13px", borderRadius: "var(--r-sm)", background: "color-mix(in srgb, var(--jv-amber) 8%, transparent)", border: "1px solid color-mix(in srgb, var(--jv-amber) 34%, transparent)" }}>
+            <Icon name="alert-triangle" size={15} color="var(--jv-amber)" style={{ flex: "0 0 15px", marginTop: 1 }} />
+            <div style={{ font: "var(--fw-regular) 12px/1.5 var(--font-body)", color: "var(--jv-text-soft)" }}>
+              {voiceProblem} <span style={{ color: "var(--jv-text-faint)" }}>You can still type to JARVIS below.</span>
+            </div>
           </div>
         )}
       </div>
+
+      {/* Text fallback — only when voice can't run, so voice stays primary. */}
+      {voiceProblem && (
+        <div style={{ width: "100%", maxWidth: 460, marginTop: 14, display: "flex", alignItems: "center", gap: 10, padding: "8px 10px 8px 16px", borderRadius: "var(--r-md)", background: "var(--jv-void)", border: "1px solid var(--jv-border-cyan)" }}>
+          <input
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && submitDraft()}
+            placeholder="Type to talk to JARVIS…"
+            style={{ flex: 1, background: "none", border: "none", outline: "none", color: "var(--jv-text)", font: "var(--fw-medium) 13.5px var(--font-body)" }}
+          />
+          <button onClick={submitDraft} disabled={busy || !draft.trim()} style={{ width: 36, height: 36, flex: "0 0 36px", display: "grid", placeItems: "center", borderRadius: "50%", background: draft.trim() ? "var(--jv-cyan)" : "var(--jv-surface-3)", border: "none", color: draft.trim() ? "var(--accent-contrast)" : "var(--jv-text-muted)", cursor: busy ? "default" : "pointer" }}>
+            <Icon name={busy ? "loader" : "arrow-up"} size={17} />
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -227,7 +277,14 @@ function Feed() {
 
 function StatusStrip() {
   const { data } = useApi<SystemHealth>("/api/system/health");
-  const items = data?.strip ?? [];
+  // Voice is a browser capability, computed here (not claimed by the server):
+  // ready only when there's a secure context AND the SpeechRecognition API.
+  const voiceReady =
+    typeof window !== "undefined" &&
+    (window.isSecureContext ?? false) &&
+    !!((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
+  const voiceTile: StatusStripItem = { icon: "mic", name: "Voice", status: voiceReady ? "Ready" : "Off", tone: voiceReady ? "optimal" : "warn" };
+  const items = [...(data?.strip ?? []), voiceTile];
   const col = (t: string) => (t === "optimal" ? "var(--jv-green)" : t === "standby" ? "var(--jv-violet)" : t === "warn" ? "var(--jv-amber)" : "var(--jv-cyan)");
   return (
     <div style={{ display: "flex", alignItems: "center", padding: "9px 16px", borderRadius: "var(--r-md)", background: "rgba(10,22,38,0.5)", border: "1px solid var(--jv-border-soft)", flex: 1, minWidth: 0, overflowX: "auto" }}>

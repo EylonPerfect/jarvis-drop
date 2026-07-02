@@ -50,13 +50,22 @@ export default async function systemRoutes(app: FastifyInstance) {
   // Consolidated health for status strips (Command Center + top bar).
   app.get("/api/system/health", async (): Promise<SystemHealth> => {
     const reachable = await hermesReachable();
-    const vector = (await one<{ value: any }>(`SELECT value FROM settings WHERE key = 'vector_store'`))?.value ?? { items: 0 };
+    // Real counts from the DB — no fabricated status.
+    const facts = (await one<{ n: number }>(`SELECT COUNT(*)::int AS n FROM memory_facts`))?.n ?? 0;
+    const running = (await one<{ n: number }>(`SELECT COUNT(*)::int AS n FROM agents WHERE status = 'optimal'`))?.n ?? 0;
+    const agentsTotal = (await one<{ n: number }>(`SELECT COUNT(*)::int AS n FROM agents`))?.n ?? 0;
+    const providers = (await one<{ n: number }>(`SELECT COUNT(*)::int AS n FROM ai_providers`))?.n ?? 0;
+    const activeProv = (await one<{ n: number }>(`SELECT COUNT(*)::int AS n FROM ai_providers WHERE active = true`))?.n ?? 0;
+
+    const llmCount = providers + (reachable ? 1 : 0); // connected providers + hermes gateway
+    const aiOnline = activeProv > 0 || reachable; // a chat backend is available
+    // NOTE: "Voice" is a browser capability, not a server metric, so it is NOT
+    // reported here — the Command Center adds a Voice tile from the live browser.
     const strip: StatusStripItem[] = [
-      { icon: "cpu", name: "AI Core", status: reachable ? "Active" : "Offline", tone: reachable ? "optimal" : "warn" },
-      { icon: "database", name: "Memory", status: Number(vector.items).toLocaleString(), tone: "info" },
-      { icon: "mic", name: "Voice", status: "Online", tone: "optimal" },
-      { icon: "bot", name: "Agents", status: "2 Running", tone: "standby" },
-      { icon: "boxes", name: "LLMs", status: reachable ? "Connected" : "Check", tone: reachable ? "optimal" : "warn" },
+      { icon: "cpu", name: "AI Core", status: aiOnline ? "Online" : "Offline", tone: aiOnline ? "optimal" : "warn" },
+      { icon: "database", name: "Memory", status: `${facts.toLocaleString()} ${facts === 1 ? "fact" : "facts"}`, tone: "info" },
+      { icon: "bot", name: "Agents", status: running > 0 ? `${running} running` : `${agentsTotal} idle`, tone: running > 0 ? "optimal" : "standby" },
+      { icon: "boxes", name: "LLMs", status: llmCount > 0 ? `${llmCount} connected` : "None", tone: llmCount > 0 ? "optimal" : "warn" },
       { icon: "shield-check", name: "System", status: "Optimal", tone: "optimal" },
     ];
     return { strip, gauges: hostGauges(40), online: true, hermesReachable: reachable };

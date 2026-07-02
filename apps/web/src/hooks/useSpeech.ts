@@ -11,9 +11,11 @@ function getSR(): SpeechRecognitionCtor | null {
 export interface Speech {
   supported: boolean; // STT available AND secure context
   secure: boolean; // https or localhost (mic requires this)
+  hasRecognition: boolean; // SpeechRecognition API present (Chromium)
   listening: boolean;
   interim: string; // live partial transcript
   level: number; // 0..1 mic amplitude (drives the visualizer)
+  error: string | null; // last recognition/mic error (e.g. not-allowed)
   start: () => void;
   stop: () => void;
   pause: () => void; // temporarily ignore input (e.g. while JARVIS is speaking)
@@ -29,11 +31,13 @@ export interface Speech {
 export function useSpeech(onFinal: (text: string) => void): Speech {
   const SR = getSR();
   const secure = typeof window !== "undefined" && (window.isSecureContext ?? false);
+  const hasRecognition = !!SR;
   const supported = !!SR && secure;
 
   const [listening, setListening] = useState(false);
   const [interim, setInterim] = useState("");
   const [level, setLevel] = useState(0);
+  const [error, setError] = useState<string | null>(null);
 
   const recRef = useRef<any>(null);
   const listeningRef = useRef(false);
@@ -91,6 +95,7 @@ export function useSpeech(onFinal: (text: string) => void): Speech {
   const start = useCallback(async () => {
     if (!supported || !SR) return;
     setInterim("");
+    setError(null);
 
     // Mic amplitude → level (independent of recognition, for the visualizer).
     try {
@@ -112,8 +117,9 @@ export function useSpeech(onFinal: (text: string) => void): Speech {
         if (audioRef.current) audioRef.current.raf = requestAnimationFrame(tick);
       };
       audioRef.current = { ctx, stream, raf: requestAnimationFrame(tick) };
-    } catch {
-      /* mic denied — recognition may still prompt separately */
+    } catch (err) {
+      // Mic access denied/unavailable — surface it; recognition below will also error.
+      setError(err instanceof Error && err.name === "NotAllowedError" ? "not-allowed" : "mic-unavailable");
     }
 
     const rec = new SR();
@@ -135,7 +141,16 @@ export function useSpeech(onFinal: (text: string) => void): Speech {
       }
       if (itr) setInterim(itr);
     };
-    rec.onerror = () => {};
+    rec.onerror = (e: any) => {
+      const err = e?.error ? String(e.error) : "error";
+      setError(err);
+      // Fatal errors: permission denied or the STT service isn't reachable —
+      // stop rather than spin in an auto-restart loop.
+      if (err === "not-allowed" || err === "service-not-allowed" || err === "audio-capture") {
+        setListening(false);
+        listeningRef.current = false;
+      }
+    };
     rec.onend = () => {
       // Chrome auto-stops; restart while the user still wants to listen and
       // we're not deliberately paused (JARVIS speaking).
@@ -169,7 +184,7 @@ export function useSpeech(onFinal: (text: string) => void): Speech {
     [stopAudio],
   );
 
-  return { supported, secure, listening, interim, level, start, stop, pause, resume };
+  return { supported, secure, hasRecognition, listening, interim, level, error, start, stop, pause, resume };
 }
 
 // ---------------------------------------------------------------------------

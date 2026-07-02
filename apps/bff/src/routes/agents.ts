@@ -16,6 +16,8 @@ function rowToAgent(r: any): Agent {
     collaborators: r.collaborators ?? [],
     autonomy: r.autonomy ?? undefined,
     instructions: r.instructions ?? undefined,
+    plan: r.plan ?? undefined,
+    routine: r.routine ?? undefined,
     createdAt: r.created_at,
   };
 }
@@ -36,8 +38,8 @@ export default async function agentsRoutes(app: FastifyInstance) {
     const id = `ag_${Date.now().toString(36)}`;
     const maxSort = await one<{ m: number }>(`SELECT COALESCE(MAX(sort), -1) + 1 AS m FROM agents`);
     await query(
-      `INSERT INTO agents (id, icon, name, role, status, status_label, model, tools, collaborators, autonomy, instructions, sort)
-       VALUES ($1,$2,$3,$4,'standby','Standby',$5,$6,$7,$8,$9,$10)`,
+      `INSERT INTO agents (id, icon, name, role, status, status_label, model, tools, collaborators, autonomy, instructions, plan, routine, sort)
+       VALUES ($1,$2,$3,$4,'standby','Standby',$5,$6,$7,$8,$9,$10,$11,$12)`,
       [
         id,
         b.icon || "bot",
@@ -48,6 +50,8 @@ export default async function agentsRoutes(app: FastifyInstance) {
         JSON.stringify(b.collaborators ?? []),
         b.autonomy ?? "Ask before acting",
         b.instructions ?? null,
+        b.plan ?? null,
+        b.routine ?? null,
         maxSort?.m ?? 0,
       ],
     );
@@ -71,6 +75,8 @@ export default async function agentsRoutes(app: FastifyInstance) {
     if (b.model !== undefined) set("model", b.model);
     if (b.autonomy !== undefined) set("autonomy", b.autonomy);
     if (b.instructions !== undefined) set("instructions", b.instructions);
+    if (b.plan !== undefined) set("plan", b.plan);
+    if (b.routine !== undefined) set("routine", b.routine);
     if (b.status !== undefined) set("status", b.status);
     if (b.statusLabel !== undefined) set("status_label", b.statusLabel);
     if (b.tools !== undefined) set("tools", JSON.stringify(b.tools));
