@@ -66,7 +66,7 @@ function Labeled({ label, children }: { label: string; children: React.ReactNode
 
 type TestState = { ok: boolean; detail: string } | "testing" | undefined;
 
-function ProviderRow({ p, onActivate, onTest, onDelete, test }: { p: AiProvider; onActivate: () => void; onTest: () => void; onDelete: () => void; test: TestState }) {
+function ProviderRow({ p, onActivate, onTest, onDelete, onEdit, editing, test }: { p: AiProvider; onActivate: () => void; onTest: () => void; onDelete: () => void; onEdit: () => void; editing: boolean; test: TestState }) {
   return (
     <div style={{ padding: 14, borderRadius: "var(--r-md)", background: "var(--jv-surface-2)", border: `1px solid ${p.active ? "var(--jv-border-cyan)" : "var(--jv-border-soft)"}`, display: "flex", flexDirection: "column", gap: 10 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -83,6 +83,7 @@ function ProviderRow({ p, onActivate, onTest, onDelete, test }: { p: AiProvider;
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
         {!p.active && <Button size="sm" variant="secondary" icon={<Icon name="check" size={13} />} onClick={onActivate}>Set active</Button>}
         <Button size="sm" variant="ghost" icon={<Icon name={test === "testing" ? "loader" : "plug-zap"} size={13} />} onClick={onTest} disabled={test === "testing"}>Test connection</Button>
+        <Button size="sm" variant="ghost" icon={<Icon name={editing ? "x" : "settings-2"} size={13} />} onClick={onEdit}>{editing ? "Close" : "Edit"}</Button>
         {test && test !== "testing" && (
           <span style={{ display: "flex", alignItems: "center", gap: 5, font: "var(--fw-medium) 11.5px var(--font-body)", color: test.ok ? "var(--jv-green)" : "var(--jv-red-400)" }}>
             <Icon name={test.ok ? "check-circle" : "alert-triangle"} size={13} /> {test.detail}
@@ -111,6 +112,11 @@ export default function AICore() {
   const [error, setError] = useState("");
   const [tests, setTests] = useState<Record<string, TestState>>({});
   const [confirmClear, setConfirmClear] = useState(false);
+  // Inline edit of an existing provider (name / base URL / model / rotate key).
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState({ name: "", baseUrl: "", model: "", apiKey: "" });
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [editError, setEditError] = useState("");
 
   useEffect(() => {
     if (data) {
@@ -165,6 +171,33 @@ export default function AICore() {
     await api.del("/api/aicore/providers");
     setConfirmClear(false);
     refreshAll();
+  };
+  const startEdit = (p: AiProvider) => {
+    setEditingId(p.id);
+    setEditForm({ name: p.name, baseUrl: p.baseUrl, model: p.model, apiKey: "" });
+    setEditError("");
+  };
+  const cancelEdit = () => {
+    setEditingId(null);
+    setEditError("");
+  };
+  const saveEdit = async (id: string) => {
+    if (!editForm.name.trim() || !editForm.baseUrl.trim() || !editForm.model.trim()) {
+      setEditError("Name, base URL and model are required.");
+      return;
+    }
+    setSavingEdit(true);
+    try {
+      const body: Record<string, string> = { name: editForm.name.trim(), baseUrl: editForm.baseUrl.trim(), model: editForm.model.trim() };
+      if (editForm.apiKey.trim()) body.apiKey = editForm.apiKey.trim(); // blank = keep existing key
+      await api.patch(`/api/aicore/providers/${id}`, body);
+      setEditingId(null);
+      refreshAll();
+    } catch (e) {
+      setEditError(String(e));
+    } finally {
+      setSavingEdit(false);
+    }
   };
 
   return (
@@ -243,7 +276,25 @@ export default function AICore() {
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             {providers.map((p) => (
-              <ProviderRow key={p.id} p={p} test={tests[p.id]} onActivate={() => activate(p.id)} onTest={() => test(p.id)} onDelete={() => remove(p.id)} />
+              <div key={p.id} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                <ProviderRow p={p} test={tests[p.id]} editing={editingId === p.id} onActivate={() => activate(p.id)} onTest={() => test(p.id)} onDelete={() => remove(p.id)} onEdit={() => (editingId === p.id ? cancelEdit() : startEdit(p))} />
+                {editingId === p.id && (
+                  <div style={{ padding: 16, borderRadius: "var(--r-md)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-cyan)", display: "flex", flexDirection: "column", gap: 10 }}>
+                    <div style={{ font: "var(--fw-semibold) 11px var(--font-hud)", letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--jv-cyan-300)" }}>Edit provider</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                      <Labeled label="Provider name"><input style={fieldStyle} value={editForm.name} onChange={(e) => setEditForm((f) => ({ ...f, name: e.target.value }))} /></Labeled>
+                      <Labeled label="Model"><input style={fieldStyle} placeholder="gpt-4o-mini" value={editForm.model} onChange={(e) => setEditForm((f) => ({ ...f, model: e.target.value }))} /></Labeled>
+                    </div>
+                    <Labeled label="API base URL"><input style={fieldStyle} value={editForm.baseUrl} onChange={(e) => setEditForm((f) => ({ ...f, baseUrl: e.target.value }))} /></Labeled>
+                    <Labeled label="Secret key  ·  leave blank to keep current"><input style={fieldStyle} type="password" placeholder="•••• keep existing key" value={editForm.apiKey} onChange={(e) => setEditForm((f) => ({ ...f, apiKey: e.target.value }))} /></Labeled>
+                    {editError && <div style={{ font: "var(--fw-medium) 12px var(--font-body)", color: "var(--jv-red-400)" }}>{editError}</div>}
+                    <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+                      <Button size="sm" variant="ghost" onClick={cancelEdit}>Cancel</Button>
+                      <Button size="sm" variant="primary" icon={<Icon name={savingEdit ? "loader" : "check"} size={13} />} onClick={() => saveEdit(p.id)} disabled={savingEdit}>Save changes</Button>
+                    </div>
+                  </div>
+                )}
+              </div>
             ))}
           </div>
         )}

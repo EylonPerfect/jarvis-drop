@@ -7,9 +7,39 @@ import type { ReactNode } from "react";
 import { Panel, Badge, Button, Icon, EmptyState, IconButton, StatTile } from "../ds";
 import { useApi } from "../api/hooks";
 import { api } from "../api/client";
-import type { Agent, AgentPermission, AgentPerformance, AgentComm, LedgerEntry } from "@jarvis/shared";
+import type { Agent, AgentPermission, AgentPerformance, AgentComm, LedgerEntry, WeekdayKey } from "@jarvis/shared";
 
 const TOOL_CHOICES = ["web_search", "code_interpreter", "filesystem", "github", "memory.query", "calendar", "gmail", "whatsapp", "shell", "vision"];
+
+// Friendly labels for enabled connection ids. Unknown ids fall back to a
+// title-cased version of the id.
+const CONNECTION_LABELS: Record<string, string> = {
+  browser: "Browser",
+  whatsapp: "WhatsApp",
+  slack: "Slack",
+  email: "Email",
+  stripe: "Stripe",
+  web: "Web",
+  terminal: "Terminal",
+  cron: "Cron",
+  memory: "Memory",
+  telegram: "Telegram",
+  discord: "Discord",
+  calendar: "Calendar",
+  notion: "Notion",
+  code: "Code",
+};
+const connLabel = (id: string) => CONNECTION_LABELS[id] ?? (id.charAt(0).toUpperCase() + id.slice(1));
+
+const WEEKDAYS: [WeekdayKey, string][] = [
+  ["mon", "Monday"],
+  ["tue", "Tuesday"],
+  ["wed", "Wednesday"],
+  ["thu", "Thursday"],
+  ["fri", "Friday"],
+  ["sat", "Saturday"],
+  ["sun", "Sunday"],
+];
 
 const fieldStyle = {
   width: "100%",
@@ -257,6 +287,14 @@ export default function AgentCockpit({ agentId, onExit }: { agentId: string; onE
         <button onClick={() => save({ status: "standby", statusLabel: "Standby" })} style={{ display: "flex", alignItems: "center", gap: 6, padding: "0 13px", height: 34, borderRadius: "var(--r-sm)", border: "1px solid color-mix(in srgb, var(--jv-red) 40%, transparent)", background: "color-mix(in srgb, var(--jv-red) 12%, transparent)", color: "var(--jv-red)", font: "var(--fw-semibold) 11px var(--font-hud)", letterSpacing: "0.06em", textTransform: "uppercase", cursor: "pointer" }}><Icon name="octagon-x" size={14} />Stop</button>
       </div>
 
+      {/* overview — short descriptive line under the header (wizard step 1) */}
+      {agent?.overview && (
+        <div style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "12px 16px", borderRadius: "var(--r-md)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)", borderLeft: "2px solid var(--jv-border-cyan)" }}>
+          <Icon name="info" size={15} color="var(--jv-cyan)" />
+          <p style={{ ...proseStyle, flex: 1 }}>{agent.overview}</p>
+        </div>
+      )}
+
       {/* body */}
       <div style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column", gap: 14 }}>
       <div style={{ display: "grid", gridTemplateColumns: "300px 1fr 300px", gap: 14 }}>
@@ -271,6 +309,26 @@ export default function AgentCockpit({ agentId, onExit }: { agentId: string; onE
           <Panel title="Calendar" eyebrow action={<EditBtn k="schedule" />}>
             {agent?.schedule ? <div style={{ display: "flex", alignItems: "center", gap: 8, font: "var(--fw-semibold) 13px var(--font-body)", color: "var(--jv-text)" }}><Icon name="calendar" size={15} color="var(--jv-cyan)" />{agent.schedule}</div> : <EmptyState compact icon="calendar" title="No schedule set" hint="Choose when this agent runs." />}
           </Panel>
+          <Panel title="Playbook" eyebrow>
+            {agent?.playbook && agent.playbook.kind !== "none" ? (
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ width: 30, height: 30, flex: "0 0 30px", display: "grid", placeItems: "center", borderRadius: "var(--r-xs)", color: "var(--jv-cyan)", background: "var(--grad-cyan-soft)", border: "1px solid var(--jv-border-cyan)" }}>
+                  <Icon name={agent.playbook.kind === "notion" ? "book-open" : agent.playbook.kind === "file" ? "file-text" : "text-cursor"} size={15} />
+                </span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ font: "var(--fw-semibold) 12.5px var(--font-body)", color: "var(--jv-text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{agent.playbook.name || connLabel(agent.playbook.kind)}</div>
+                  <div style={{ font: "var(--fw-medium) 10px var(--font-hud)", letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--jv-text-muted)", marginTop: 2 }}>{agent.playbook.kind}</div>
+                </div>
+                {agent.playbook.kind === "notion" && agent.playbook.url && (
+                  <a href={agent.playbook.url} target="_blank" rel="noopener noreferrer" style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 10px", borderRadius: "var(--r-pill)", textDecoration: "none", color: "var(--jv-cyan-300)", background: "var(--grad-cyan-soft)", border: "1px solid var(--jv-border-cyan)", font: "var(--fw-semibold) 10px var(--font-hud)", letterSpacing: "0.06em", textTransform: "uppercase" }}>
+                    <Icon name="external-link" size={12} />Open
+                  </a>
+                )}
+              </div>
+            ) : (
+              <EmptyState compact icon="book-open" title="No playbook linked" hint="Attach a Notion doc, file, or text reference for this role." />
+            )}
+          </Panel>
         </div>
 
         {/* CENTER — real data from the agent runtime (Hermes). Shows the runtime's
@@ -281,8 +339,41 @@ export default function AgentCockpit({ agentId, onExit }: { agentId: string; onE
 
         {/* RIGHT */}
         <div style={{ display: "flex", flexDirection: "column", gap: 14, minHeight: 0 }}>
-          <Panel title="Budget" eyebrow action={<EditBtn k="budget" />}>
-            {agent?.budget ? <div style={{ font: "var(--fw-bold) 20px var(--font-body)", color: "var(--jv-text)" }}>{agent.budget}</div> : <EmptyState compact icon="wallet" title="No budget set" hint="Set a spend cap when this agent runs a task." />}
+          <Panel title="Budget" eyebrow action={agent?.budgetConfig ? undefined : <EditBtn k="budget" />} bodyStyle={agent?.budgetConfig ? { display: "flex", flexDirection: "column", gap: 8 } : {}}>
+            {agent?.budgetConfig ? (
+              (() => {
+                const b = agent.budgetConfig;
+                const money = (n: number) => `${b.currency} ${n.toLocaleString()}`;
+                const rows: [string, ReactNode][] = [];
+                if (b.monthlyCap != null) rows.push(["Monthly cap", money(b.monthlyCap)]);
+                if (b.perActionLimit != null) rows.push(["Per-action limit", money(b.perActionLimit)]);
+                if (b.approvalThreshold != null) rows.push(["Approval threshold", money(b.approvalThreshold)]);
+                rows.push([
+                  "Payments",
+                  <span style={{ display: "flex", alignItems: "center", gap: 4, color: b.allowPayments ? "var(--jv-green)" : "var(--jv-red)", font: "var(--fw-semibold) 10px var(--font-hud)", letterSpacing: "0.06em", textTransform: "uppercase" }}>
+                    <Icon name={b.allowPayments ? "check" : "x"} size={12} />{b.allowPayments ? "Allowed" : "Blocked"}
+                  </span>,
+                ]);
+                if (b.tokenBudgetUsd != null) rows.push(["Token budget", `USD ${b.tokenBudgetUsd.toLocaleString()}`]);
+                if (b.maxMessagesPerDay != null) rows.push(["Max messages/day", String(b.maxMessagesPerDay)]);
+                if (b.maxBrowserSessionsPerDay != null) rows.push(["Max browser sessions/day", String(b.maxBrowserSessionsPerDay)]);
+                return (
+                  <>
+                    {rows.map(([label, val], i) => (
+                      <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, font: "var(--fw-medium) 12px var(--font-body)" }}>
+                        <span style={{ flex: 1, color: "var(--jv-text-muted)" }}>{label}</span>
+                        <span style={{ font: "var(--fw-semibold) 12px var(--font-body)", color: "var(--jv-text)" }}>{val}</span>
+                      </div>
+                    ))}
+                    {b.notes && <p style={{ ...proseStyle, marginTop: 4, paddingTop: 8, borderTop: "1px solid var(--jv-hairline)" }}>{b.notes}</p>}
+                  </>
+                );
+              })()
+            ) : agent?.budget ? (
+              <div style={{ font: "var(--fw-bold) 20px var(--font-body)", color: "var(--jv-text)" }}>{agent.budget}</div>
+            ) : (
+              <EmptyState compact icon="wallet" title="No budget set" hint="Set a spend cap when this agent runs a task." />
+            )}
           </Panel>
           <Panel title="Permissions" eyebrow action={<EditBtn k="permissions" />} bodyStyle={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {(agent?.permissions ?? []).length === 0 ? (
@@ -305,6 +396,19 @@ export default function AgentCockpit({ agentId, onExit }: { agentId: string; onE
               <EmptyState compact icon="wrench" title="No tools granted" hint="Choose the skills & tools this agent may call." />
             )}
           </Panel>
+          <Panel title="Connections" eyebrow>
+            {(agent?.connections ?? []).length ? (
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {(agent?.connections ?? []).map((id) => (
+                  <span key={id} style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 10px", borderRadius: "var(--r-pill)", font: "var(--fw-medium) 11px var(--font-mono)", color: "var(--jv-cyan-300)", background: "var(--grad-cyan-soft)", border: "1px solid var(--jv-border-cyan)" }}>
+                    <span style={{ width: 5, height: 5, borderRadius: "50%", background: "var(--jv-cyan)" }} />{connLabel(id)}
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <EmptyState compact icon="plug" title="No connections" hint="Enable the systems this agent may reach." />
+            )}
+          </Panel>
           <Panel title="Recent ledger" eyebrow style={{ flex: 1, minHeight: 0 }} bodyStyle={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {ledger.length === 0 ? (
               <EmptyState compact icon="receipt" title="No activity yet" hint="This agent's actions and costs will be logged here." />
@@ -323,6 +427,57 @@ export default function AgentCockpit({ agentId, onExit }: { agentId: string; onE
             )}
           </Panel>
         </div>
+      </div>
+
+      {/* Wizard step-3 operating spec — weekly plan + calendar-triggered playbooks */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+        <Panel title="Weekly plan" eyebrow bodyStyle={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {(() => {
+            const wp = agent?.weeklyPlan;
+            const activeDays = WEEKDAYS.filter(([k]) => (wp?.days?.[k]?.length ?? 0) > 0);
+            const daily = wp?.daily ?? [];
+            if (activeDays.length === 0 && daily.length === 0) {
+              return <EmptyState compact icon="calendar-days" title="No weekly plan" hint="Set per-day focus and daily repeatable tasks." />;
+            }
+            return (
+              <>
+                {activeDays.map(([k, label]) => (
+                  <div key={k}>
+                    <div style={{ font: "var(--fw-semibold) 10px var(--font-hud)", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--jv-cyan-300)", marginBottom: 6 }}>{label}</div>
+                    <ul style={{ margin: 0, paddingLeft: 16, display: "flex", flexDirection: "column", gap: 4 }}>
+                      {(wp?.days?.[k] ?? []).map((t, i) => <li key={i} style={proseStyle}>{t}</li>)}
+                    </ul>
+                  </div>
+                ))}
+                {daily.length > 0 && (
+                  <div style={{ paddingTop: activeDays.length ? 10 : 0, borderTop: activeDays.length ? "1px solid var(--jv-hairline)" : "none" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, font: "var(--fw-semibold) 10px var(--font-hud)", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--jv-text-muted)", marginBottom: 6 }}><Icon name="repeat" size={12} color="var(--jv-text-muted)" />Daily</div>
+                    <ul style={{ margin: 0, paddingLeft: 16, display: "flex", flexDirection: "column", gap: 4 }}>
+                      {daily.map((t, i) => <li key={i} style={proseStyle}>{t}</li>)}
+                    </ul>
+                  </div>
+                )}
+              </>
+            );
+          })()}
+        </Panel>
+        <Panel title="Calendar playbooks" eyebrow bodyStyle={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {(agent?.calendarPlaybooks ?? []).length ? (
+            (agent?.calendarPlaybooks ?? []).map((pb) => (
+              <div key={pb.id} style={{ padding: "10px 12px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                  <span style={{ flex: 1, minWidth: 0, font: "var(--fw-semibold) 12.5px var(--font-body)", color: "var(--jv-text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{pb.name}</span>
+                  <span style={{ flex: "0 0 auto", display: "flex", alignItems: "center", gap: 4, padding: "2px 9px", borderRadius: "var(--r-pill)", font: "var(--fw-medium) 10px var(--font-hud)", letterSpacing: "0.05em", textTransform: "uppercase", color: "var(--jv-text-muted)", background: "var(--jv-void)", border: "1px solid var(--jv-border-soft)" }}><Icon name="zap" size={11} />trigger: {pb.trigger}</span>
+                </div>
+                <ol style={{ margin: 0, paddingLeft: 18, display: "flex", flexDirection: "column", gap: 4 }}>
+                  {pb.steps.map((s, i) => <li key={i} style={proseStyle}>{s}</li>)}
+                </ol>
+              </div>
+            ))
+          ) : (
+            <EmptyState compact icon="calendar-clock" title="No calendar playbooks" hint="Define scenarios triggered by calendar events." />
+          )}
+        </Panel>
       </div>
 
       <PerformanceBox agentId={agentId} />

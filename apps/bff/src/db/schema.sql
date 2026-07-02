@@ -133,6 +133,37 @@ ALTER TABLE agents ADD COLUMN IF NOT EXISTS budget TEXT;
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS schedule TEXT;
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS permissions JSONB NOT NULL DEFAULT '[]';
 
+-- Hire-wizard operating spec: a human-grade setup captured across the steps —
+-- role overview, reference playbook, weekly + calendar plan, connected systems,
+-- and a structured budget. Legacy plan/routine/budget text stay in sync for
+-- back-compat with the cockpit's summary views.
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS overview TEXT;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS playbook JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS weekly_plan JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS calendar_playbooks JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS connections JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS budget_config JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+-- Agent activity log (feeds the cockpit Performance box) and communications
+-- (Latest communication block). Declared here because the cockpit routes that
+-- read/write them shipped without their DDL — their absence made
+-- DELETE /api/agents (which clears them) fail with 500 ("relation ... does not exist").
+CREATE TABLE IF NOT EXISTS agent_activity (
+  id       BIGSERIAL PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  kind     TEXT NOT NULL,                       -- goal | task | routine | scheduled | workflow
+  at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS agent_comms (
+  id       BIGSERIAL PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  channel  TEXT NOT NULL,                       -- slack | email
+  party    TEXT,
+  subject  TEXT,
+  preview  TEXT,
+  at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- Human-in-the-loop approvals inbox. Produced when an agent (or the Execute-mode
 -- chat) hits an irreversible action or needs a clarifying answer; resolved by the
 -- operator in the Approvals inbox. Each resolve also appends to the system ledger.

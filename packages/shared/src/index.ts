@@ -35,12 +35,64 @@ export interface Agent {
   budget?: string; // spend cap, e.g. "$500/mo"
   schedule?: string; // when/how often it runs (its calendar)
   permissions?: AgentPermission[]; // granted capabilities
+  // ---- Wizard-captured operating spec (human-grade hire) ----
+  overview?: string; // step 1 — what this role is about (generic explainer)
+  playbook?: AgentPlaybook; // step 2 — reference doc (Notion / uploaded file / text)
+  weeklyPlan?: WeeklyPlan; // step 3 — per-day focus + daily repeatable tasks
+  calendarPlaybooks?: CalendarPlaybook[]; // step 3 — calendar-triggered scenarios
+  connections?: string[]; // step 4 — enabled connection ids (see ConnectionCatalogItem)
+  budgetConfig?: BudgetConfig; // step 5 — comprehensive, structured budget
   createdAt?: string;
 }
 
 export interface AgentPermission {
   label: string;
   allowed: boolean;
+}
+
+// ---- Wizard sub-types ----
+export interface AgentPlaybook {
+  kind: "notion" | "file" | "text" | "none";
+  name?: string; // display title
+  url?: string; // notion url (kind=notion)
+  sourceId?: string; // knowledge_sources id when attached
+}
+
+export type WeekdayKey = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
+
+export interface WeeklyPlan {
+  days: Partial<Record<WeekdayKey, string[]>>; // per-day focus / tasks
+  daily: string[]; // repeatable every-day tasks
+}
+
+export interface CalendarPlaybook {
+  id: string;
+  name: string; // scenario name, e.g. "Product demo call"
+  trigger: string; // e.g. "meeting" or a keyword matched against calendar events
+  steps: string[]; // ordered steps to run
+}
+
+export interface BudgetConfig {
+  currency: string; // e.g. "USD"
+  monthlyCap?: number; // total spend cap / month
+  perActionLimit?: number; // max spend per single action
+  approvalThreshold?: number; // spend above this routes to the Approvals inbox
+  allowPayments: boolean; // may it move money (Stripe / back office)?
+  tokenBudgetUsd?: number; // LLM spend cap
+  maxMessagesPerDay?: number;
+  maxBrowserSessionsPerDay?: number;
+  notes?: string; // free-text authority summary
+}
+
+// Catalog of connectable systems, mapped to real Hermes toolsets. `live` marks
+// whether the connection is actually wired now vs. configured-pending.
+export interface ConnectionCatalogItem {
+  id: string;
+  label: string;
+  category: "runtime" | "messaging" | "email" | "productivity" | "payments" | "dev";
+  hermesToolset?: string;
+  live: boolean;
+  note?: string;
 }
 
 export interface AgentPerformance {
@@ -75,6 +127,12 @@ export interface NewAgent {
   budget?: string;
   schedule?: string;
   permissions?: AgentPermission[];
+  overview?: string;
+  playbook?: AgentPlaybook;
+  weeklyPlan?: WeeklyPlan;
+  calendarPlaybooks?: CalendarPlaybook[];
+  connections?: string[];
+  budgetConfig?: BudgetConfig;
 }
 
 export interface RunStep {
