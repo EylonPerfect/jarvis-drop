@@ -7,7 +7,7 @@ import { api } from "../api/client";
 import { useApi } from "../api/hooks";
 import { Panel, Badge, Button, Icon } from "../ds";
 import { AgentBuilder } from "./Agents";
-import type { AiProvider, NewAgent } from "@jarvis/shared";
+import type { AiProvider, NewAgent, Agent, AgentPermission } from "@jarvis/shared";
 
 type Role = { ic: string; name: string; dept: string; blurb: string; budget: string; tools: string[]; grants: string };
 
@@ -81,7 +81,28 @@ export default function HireAgent() {
   };
 
   const hire = (name: string) => {
-    if (picked) api.post("/api/agents", { name, role: picked.blurb, icon: picked.ic, model: activeModel }).catch(() => {});
+    if (picked) {
+      // Persist the template's real config, not just the marketing blurb. The
+      // grants string is a "·"-separated list of capabilities — split it into
+      // individual permission rows so it matches the AgentPermission shape used
+      // in the cockpit. POST now persists budget/permissions too (BFF fix), so a
+      // single call is enough.
+      const permissions: AgentPermission[] = picked.grants
+        .split("·")
+        .map((g) => g.trim())
+        .filter(Boolean)
+        .map((label) => ({ label, allowed: true }));
+      const agent: NewAgent = {
+        name,
+        role: picked.name, // real role title, not the long blurb
+        icon: picked.ic,
+        model: activeModel,
+        tools: picked.tools,
+        budget: picked.budget,
+        permissions,
+      };
+      api.post<Agent>("/api/agents", agent).catch(() => {});
+    }
     setHired((h) => [...h, name]);
     setPicked(null);
     notify("✓ " + name + " hired — now in Your Team, on standby.");

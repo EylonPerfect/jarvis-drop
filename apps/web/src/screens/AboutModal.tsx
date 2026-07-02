@@ -1,10 +1,11 @@
 import { type ReactNode, useState } from "react";
 import { Icon, Logo, Button } from "../ds";
 
-function LinkRow({ ic, label, sub }: { ic: string; label: string; sub?: string }) {
+function LinkRow({ ic, label, sub, href, external }: { ic: string; label: string; sub?: string; href: string; external?: boolean }) {
   return (
     <a
-      href="#"
+      href={href}
+      {...(external ? { target: "_blank", rel: "noopener noreferrer" } : {})}
       style={{
         display: "flex",
         alignItems: "center",
@@ -102,13 +103,13 @@ export function AboutModal({ onClose }: { onClose: () => void }) {
               J.A.R.V.I.S. is independently designed, built and maintained by a single developer. Feedback, ideas and bug reports go straight to the person who writes the code — say hello!
             </p>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-              <LinkRow ic="box" label="Portfolio" />
-              <LinkRow ic="linkedin" label="LinkedIn" />
-              <LinkRow ic="globe" label="jarvis.adreesumer.com" />
-              <LinkRow ic="mail" label="Email me" />
+              <LinkRow ic="box" label="Portfolio" href="https://adreesumer.com" external />
+              <LinkRow ic="linkedin" label="LinkedIn" href="https://www.linkedin.com/in/adrees-umer" external />
+              <LinkRow ic="globe" label="jarvis.adreesumer.com" href="https://jarvis.adreesumer.com" external />
+              <LinkRow ic="mail" label="Email me" href="mailto:adrees4234@gmail.com" />
             </div>
             <div style={{ marginTop: 8 }}>
-              <LinkRow ic="message-circle" label="Follow the Jarvis AI Assistant channel on WhatsApp" sub="Updates, tips &amp; release news" />
+              <LinkRow ic="message-circle" label="Follow the Jarvis AI Assistant channel on WhatsApp" sub="Updates, tips &amp; release news" href="https://whatsapp.com/channel" external />
             </div>
             <div
               style={{

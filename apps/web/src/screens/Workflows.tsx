@@ -162,7 +162,17 @@ export default function Workflows() {
               action={<Button size="sm" variant="secondary" icon={<Icon name="plus" size={13} />} onClick={() => setAdding(true)}>New Workflow</Button>}
             />
           ) : (
-            flows.map((f, i) => <FlowCard key={f.id ?? i} wf={f} onRan={reloadRuns} onChanged={reload} />)
+            flows.map((f, i) => (
+              <FlowCard
+                key={f.id ?? i}
+                wf={f}
+                onRan={() => {
+                  reloadRuns();
+                  reloadStats();
+                }}
+                onChanged={reload}
+              />
+            ))
           )}
         </div>
       </Panel>

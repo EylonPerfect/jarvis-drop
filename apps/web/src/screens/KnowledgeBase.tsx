@@ -218,22 +218,22 @@ export default function KnowledgeBase() {
             <StatTile value={stats.indexing} label="Indexing" tone="warn" />
           </div>
         </Panel>
-        <Panel title="Relationship map" eyebrow>
+        <Panel title="Indexed sources" eyebrow>
           {sources.length === 0 ? (
-            <EmptyState icon="git-branch" compact title="No relationships yet" hint="Connections between sources appear here once your knowledge base has indexed content." />
+            <EmptyState icon="database" compact title="Nothing indexed yet" hint="Add a source to start building your knowledge base." />
           ) : (
             <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "16px 14px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)" }}>
-              <span style={{ width: 40, height: 40, flex: "0 0 40px", display: "grid", placeItems: "center", borderRadius: "var(--r-sm)", color: "var(--jv-cyan)", background: "rgba(41,211,245,0.08)" }}><Icon name="git-branch" size={19} /></span>
+              <span style={{ width: 40, height: 40, flex: "0 0 40px", display: "grid", placeItems: "center", borderRadius: "var(--r-sm)", color: "var(--jv-cyan)", background: "rgba(41,211,245,0.08)" }}><Icon name="database" size={19} /></span>
               <div>
                 <div style={{ font: "var(--fw-bold) 20px var(--font-display)", color: "var(--jv-cyan)" }}>{sources.length}</div>
-                <div style={{ font: "var(--fw-medium) 11px var(--font-hud)", letterSpacing: "0.10em", textTransform: "uppercase", color: "var(--jv-text-muted)", marginTop: 2 }}>Linked sources</div>
+                <div style={{ font: "var(--fw-medium) 11px var(--font-hud)", letterSpacing: "0.10em", textTransform: "uppercase", color: "var(--jv-text-muted)", marginTop: 2 }}>Sources in the index</div>
               </div>
             </div>
           )}
         </Panel>
         <Panel title="Collections" eyebrow bodyStyle={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {collections.length === 0 ? (
-            <EmptyState icon="folder" compact title="No collections" hint="Group related sources into collections to organize your knowledge base." />
+            <EmptyState icon="folder" compact title="No collections" hint="Collections are derived from indexed sources — they appear here once your knowledge base has grouped content." />
           ) : (
             collections.map((col) => (
               <div key={col.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 12px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)" }}>

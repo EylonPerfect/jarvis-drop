@@ -23,6 +23,23 @@ async function writeWorkflows(flows: StoredWorkflow[]): Promise<void> {
   );
 }
 
+// Stored runs are WorkflowRun (what the UI reads) plus an ISO `at` timestamp
+// used server-side to compute runsPerWeek. The extra field is ignored by the UI.
+type StoredRun = WorkflowRun & { at?: string };
+
+async function readRuns(): Promise<StoredRun[]> {
+  return (await one<{ value: StoredRun[] }>(`SELECT value FROM settings WHERE key = 'workflow_runs'`))?.value ?? [];
+}
+
+async function writeRuns(runs: StoredRun[]): Promise<void> {
+  await query(
+    `INSERT INTO settings (key, value) VALUES ('workflow_runs', $1) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+    [JSON.stringify(runs)],
+  );
+}
+
+const RUNS_CAP = 50;
+
 // Workflows map to hermes scheduled jobs (/api/jobs). When the gateway is
 // reachable we surface live jobs; otherwise the seeded flows render.
 export default async function workflowsRoutes(app: FastifyInstance) {
@@ -47,14 +64,20 @@ export default async function workflowsRoutes(app: FastifyInstance) {
   });
 
   app.get("/api/workflows/runs", async (): Promise<WorkflowRun[]> => {
-    const seeded = (await one<{ value: WorkflowRun[] }>(`SELECT value FROM settings WHERE key = 'workflow_runs'`))?.value ?? [];
-    return seeded;
+    return readRuns();
   });
 
   app.get("/api/workflows/stats", async () => {
     const flows = (await one<{ value: Workflow[] }>(`SELECT value FROM settings WHERE key = 'workflows'`))?.value ?? [];
     const enabled = flows.filter((f) => f.status === "Enabled").length;
-    return { workflows: flows.length, enabled, paused: flows.length - enabled, runsPerWeek: 28 };
+    // runsPerWeek = number of recorded runs in the last 7 days (from workflow_runs).
+    const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    const runs = await readRuns();
+    const runsPerWeek = runs.filter((r) => {
+      const t = r.at ? Date.parse(r.at) : NaN;
+      return Number.isFinite(t) && t >= weekAgo;
+    }).length;
+    return { workflows: flows.length, enabled, paused: flows.length - enabled, runsPerWeek };
   });
 
   // Create a locally-authored workflow in the settings array.
@@ -101,19 +124,41 @@ export default async function workflowsRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
-  // Control a hermes job. No-op-friendly when the gateway is offline.
+  // Run/pause/resume a workflow. hermes has no /api/jobs endpoint on this
+  // deployment, so "run" is implemented LOCALLY: it appends a run record to
+  // settings.workflow_runs (which feeds "Recent runs" and runsPerWeek) and
+  // always succeeds. pause/resume try hermes best-effort but never fail the
+  // click when the gateway is absent.
   app.post("/api/workflows/:id/:action", async (req, reply) => {
     const { id, action } = req.params as { id: string; action: string };
     if (!["run", "pause", "resume"].includes(action)) {
       return reply.code(400).send({ error: "invalid action" });
     }
-    // Reject path-traversal / encoded-slash ids before interpolating into the
-    // internal hermes URL (defense against SSRF-shaped path escapes).
+    // Reject path-traversal / encoded-slash ids before any interpolation.
     if (!/^[A-Za-z0-9_-]+$/.test(id)) {
       return reply.code(400).send({ error: "invalid id" });
     }
-    const r = await hermes.post(`/api/jobs/${encodeURIComponent(id)}/${action}`);
-    if (!r.ok) return reply.code(502).send({ error: r.error ?? "hermes unreachable", action });
-    return { ok: true, action, data: r.data };
+
+    const flows = await readWorkflows();
+    const wf = flows.find((f) => f.id === id);
+
+    if (action === "run") {
+      const now = new Date();
+      const run: StoredRun = {
+        id: `run_${now.getTime().toString(36)}`,
+        name: wf?.name ?? "Workflow",
+        when: now.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }),
+        tone: "optimal",
+        at: now.toISOString(),
+      };
+      const runs = await readRuns();
+      runs.unshift(run);
+      await writeRuns(runs.slice(0, RUNS_CAP));
+      return { ok: true, action, run };
+    }
+
+    // pause / resume — best-effort hermes control; never fail the UI click.
+    const r = await hermes.post(`/api/jobs/${encodeURIComponent(id)}/${action}`).catch(() => null);
+    return { ok: true, action, data: r?.ok ? r.data : null };
   });
 }

@@ -407,7 +407,7 @@ export default function CommandCenter({ onNav }: { onNav: (v: ViewId) => void })
         <Panel title="Live Intelligence Feed" eyebrow action={<Badge status="live" solid>Live</Badge>} active style={{ height: "100%" }}>
           <Feed />
           <div style={{ textAlign: "center", marginTop: 12 }}>
-            <ViewAll>View All Intelligence</ViewAll>
+            <ViewAll onClick={() => onNav("ledger")}>View All Intelligence</ViewAll>
           </div>
         </Panel>
       </div>

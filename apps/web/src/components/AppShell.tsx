@@ -1,5 +1,5 @@
 import { type ReactNode, useEffect, useState } from "react";
-import { Icon, Logo, Badge, Input, Button, Waveform } from "../ds";
+import { Icon, Logo, Badge, Waveform } from "../ds";
 import { useApi } from "../api/hooks";
 import { api } from "../api/client";
 import type { SessionCost, AiProvider } from "@jarvis/shared";
@@ -166,26 +166,6 @@ function Rail({ active, onNav }: { active: ViewId; onNav: (id: ViewId) => void }
         ))}
       </nav>
       <div style={{ flex: "0 0 8px" }} />
-      <button
-        style={{
-          marginTop: 10,
-          height: 38,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          gap: 8,
-          borderRadius: "var(--r-sm)",
-          border: "1px solid var(--jv-border)",
-          background: "rgba(41,211,245,0.05)",
-          color: "var(--jv-text-soft)",
-          font: "var(--fw-semibold) 12px var(--font-hud)",
-          letterSpacing: "0.08em",
-          textTransform: "uppercase",
-          cursor: "pointer",
-        }}
-      >
-        <Icon name="zap" size={15} color="var(--jv-cyan)" /> Focus Mode
-      </button>
     </aside>
   );
 }
@@ -268,7 +248,7 @@ function ModelSelect() {
   );
 }
 
-function TopBar({ onAbout }: { onAbout: () => void }) {
+function TopBar({ onAbout, onNav }: { onAbout: () => void; onNav: (id: ViewId) => void }) {
   return (
     <header
       style={{
@@ -301,13 +281,15 @@ function TopBar({ onAbout }: { onAbout: () => void }) {
         <Clock />
         <TeamCost />
       </div>
-      <Input icon={<Icon name="search" size={16} />} placeholder="Search…" wrapStyle={{ width: 240, height: 36 }} />
       <ModelSelect />
-      {["layout-grid", "bell", "info", "settings"].map((n) => (
+      {(["layout-grid", "bell", "info", "settings"] as const).map((n) => {
+        const nav: Partial<Record<typeof n, ViewId>> = { "layout-grid": "command", bell: "approvals", settings: "aicore" };
+        const title = n === "info" ? "About J.A.R.V.I.S." : n === "layout-grid" ? "Command Center" : n === "bell" ? "Approvals" : "AI Core";
+        return (
         <button
           key={n}
-          onClick={n === "info" ? onAbout : undefined}
-          title={n === "info" ? "About J.A.R.V.I.S." : undefined}
+          onClick={n === "info" ? onAbout : () => onNav(nav[n]!)}
+          title={title}
           style={{
             width: 36,
             height: 36,
@@ -322,7 +304,8 @@ function TopBar({ onAbout }: { onAbout: () => void }) {
         >
           <Icon name={n} size={17} />
         </button>
-      ))}
+        );
+      })}
       <div
         style={{
           display: "flex",
@@ -392,7 +375,6 @@ function Dock() {
           <Waveform height={20} bars={10} active color="var(--jv-cyan-300)" />
         </div>
       </div>
-      <Button variant="secondary" icon={<Icon name="play" size={14} />}>Executive Briefing</Button>
     </footer>
   );
 }
@@ -415,7 +397,7 @@ export function AppShell({
       <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
         <Rail active={active} onNav={onNav} />
         <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
-          <TopBar onAbout={onAbout} />
+          <TopBar onAbout={onAbout} onNav={onNav} />
           <main style={{ flex: 1, overflowY: "auto", padding: 18 }}>{children}</main>
         </div>
       </div>

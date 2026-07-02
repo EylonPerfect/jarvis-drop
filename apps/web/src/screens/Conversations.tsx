@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Icon, Input, EmptyState } from "../ds";
 import { useApi } from "../api/hooks";
-import { streamChat } from "../api/client";
+import { api, streamChat } from "../api/client";
 import type { Conversation, ChatMessage } from "@jarvis/shared";
 
 const MODES: [string, string, string, string][] = [
@@ -48,6 +48,7 @@ export default function Conversations() {
   const [draft, setDraft] = useState("");
   const [thread, setThread] = useState<ChatMessage[]>([]);
   const [busy, setBusy] = useState(false);
+  const [loadingThread, setLoadingThread] = useState(false);
   const endRef = useRef<HTMLDivElement | null>(null);
   // Generation token: stray deltas from an abandoned turn no-op instead of
   // appending to a newly-opened conversation.
@@ -63,6 +64,29 @@ export default function Conversations() {
     : sessions;
 
   const sessionId = sel != null ? filtered[sel]?.sessionId ?? null : null;
+
+  // Load a past conversation's transcript when one is selected. New-chat (sel
+  // null) leaves the thread as-is so streaming sends aren't clobbered.
+  useEffect(() => {
+    if (sel == null || !sessionId) return;
+    const turn = ++turnRef.current; // invalidate any in-flight stream/load
+    let alive = true;
+    setThread([]);
+    setLoadingThread(true);
+    api
+      .get<ChatMessage[]>(`/api/memory/conversations/${encodeURIComponent(sessionId)}`)
+      .then((msgs) => {
+        if (alive && turn === turnRef.current) setThread(Array.isArray(msgs) ? msgs : []);
+      })
+      .catch(() => {
+        if (alive && turn === turnRef.current) setThread([]);
+      })
+      .finally(() => alive && turn === turnRef.current && setLoadingThread(false));
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, sel]);
 
   const send = async () => {
     const text = draft.trim();
@@ -169,6 +193,16 @@ export default function Conversations() {
             </div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 12, maxWidth: 760, margin: "0 auto" }}>
+              {loadingThread && thread.length === 0 && (
+                <div style={{ alignSelf: "center", padding: "20px 0", color: "var(--jv-text-muted)", font: "var(--fw-regular) 12.5px var(--font-body)" }}>
+                  Loading conversation…
+                </div>
+              )}
+              {!loadingThread && thread.length === 0 && sel !== null && (
+                <div style={{ alignSelf: "center", padding: "20px 0", color: "var(--jv-text-muted)", font: "var(--fw-regular) 12.5px var(--font-body)" }}>
+                  No messages in this conversation yet.
+                </div>
+              )}
               {thread.map((m, i) =>
                 m.who === "you" ? (
                   <div

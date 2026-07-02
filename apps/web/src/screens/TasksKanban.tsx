@@ -14,14 +14,35 @@ const COL_META: { id: TaskColumn; label: string; icon: string; tone: "info" | "w
 const toneVar = (t: string) =>
   t === "info" ? "cyan" : t === "warn" ? "amber" : t === "critical" ? "red" : "green";
 
-function Card({ task, onDelete }: { task: Task; onDelete: () => void }) {
+function Card({
+  task,
+  onDelete,
+  onMove,
+  canMovePrev,
+  canMoveNext,
+}: {
+  task: Task;
+  onDelete: () => void;
+  onMove: (dir: -1 | 1) => void;
+  canMovePrev: boolean;
+  canMoveNext: boolean;
+}) {
   const link = task.link;
   return (
-    <div style={{ padding: 12, borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)", display: "flex", flexDirection: "column", gap: 8 }}>
+    <div
+      draggable
+      onDragStart={(e) => {
+        e.dataTransfer.setData("text/plain", task.id);
+        e.dataTransfer.effectAllowed = "move";
+      }}
+      style={{ padding: 12, borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)", display: "flex", flexDirection: "column", gap: 8, cursor: "grab" }}
+    >
       <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
         <span style={{ font: "var(--fw-semibold) 12.5px/1.35 var(--font-body)", color: "var(--jv-text)" }}>{task.title}</span>
         <div style={{ display: "flex", alignItems: "flex-start", gap: 6, flex: "0 0 auto" }}>
           <Tag priority={task.priority} />
+          {canMovePrev && <IconButton icon="chevron-left" tone="muted" title="Move left" size={24} onClick={() => onMove(-1)} />}
+          {canMoveNext && <IconButton icon="chevron-right" tone="muted" title="Move right" size={24} onClick={() => onMove(1)} />}
           <IconButton icon="trash-2" tone="danger" title="Delete" size={24} onClick={onDelete} />
         </div>
       </div>
@@ -75,6 +96,26 @@ export default function TasksKanban() {
     }
   };
 
+  // Move a task to a target column (drag-drop or ◀/▶ fallback). No-op if the
+  // target matches the current column.
+  const moveTask = async (id: string, column: TaskColumn) => {
+    const t = tasks.find((x) => x.id === id);
+    if (!t || t.column === column) return;
+    try {
+      await api.patch<Task>(`/api/tasks/${id}`, { column });
+      reload();
+    } catch {
+      /* offline — ignore */
+    }
+  };
+
+  // Move a card one column left/right in the COL_META order.
+  const shiftTask = (t: Task, dir: -1 | 1) => {
+    const i = COL_META.findIndex((c) => c.id === t.column);
+    const next = COL_META[i + dir];
+    if (next) moveTask(t.id, next.id);
+  };
+
   const clearBoard = async () => {
     try {
       await api.del("/api/tasks");
@@ -106,11 +147,19 @@ export default function TasksKanban() {
           <Input icon={<Icon name="filter" size={15} />} placeholder="Filter tasks…" value={filter} onChange={(e) => setFilter(e.target.value)} />
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
-          {COL_META.map((c) => {
+          {COL_META.map((c, ci) => {
             const cv = toneVar(c.tone);
             const cards = byCol(c.id);
             return (
-              <div key={c.id}>
+              <div
+                key={c.id}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  const id = e.dataTransfer.getData("text/plain");
+                  if (id) moveTask(id, c.id);
+                }}
+              >
                 <div
                   style={{
                     display: "flex",
@@ -131,7 +180,16 @@ export default function TasksKanban() {
                   {cards.length === 0 ? (
                     <EmptyState compact icon={c.icon} title="Nothing here" hint={null} />
                   ) : (
-                    cards.map((t) => <Card key={t.id} task={t} onDelete={() => removeTask(t.id)} />)
+                    cards.map((t) => (
+                      <Card
+                        key={t.id}
+                        task={t}
+                        onDelete={() => removeTask(t.id)}
+                        onMove={(dir) => shiftTask(t, dir)}
+                        canMovePrev={ci > 0}
+                        canMoveNext={ci < COL_META.length - 1}
+                      />
+                    ))
                   )}
                 </div>
               </div>

@@ -7,7 +7,7 @@ import type { ReactNode } from "react";
 import { Panel, Badge, Button, Icon, EmptyState, IconButton, StatTile } from "../ds";
 import { useApi } from "../api/hooks";
 import { api } from "../api/client";
-import type { Agent, AgentPermission, AgentPerformance, AgentComm } from "@jarvis/shared";
+import type { Agent, AgentPermission, AgentPerformance, AgentComm, LedgerEntry } from "@jarvis/shared";
 
 const TOOL_CHOICES = ["web_search", "code_interpreter", "filesystem", "github", "memory.query", "calendar", "gmail", "whatsapp", "shell", "vision"];
 
@@ -142,7 +142,10 @@ export default function AgentCockpit({ agentId, onExit }: { agentId: string; onE
   const { data, reload } = useApi<Agent[]>("/api/agents");
   const agent = (data ?? []).find((a) => a.id === agentId);
 
-  const [controlled, setControlled] = useState(false);
+  // Global recent tool ledger (system-wide; the entry shape has no agent field).
+  const { data: ledgerData } = useApi<LedgerEntry[]>("/api/system/ledger");
+  const ledger = ledgerData ?? [];
+
   const [editing, setEditing] = useState<string | null>(null);
 
   // Editable buffers, seeded from the agent.
@@ -204,7 +207,7 @@ export default function AgentCockpit({ agentId, onExit }: { agentId: string; onE
           <div style={{ font: "var(--fw-bold) 15px var(--font-body)", color: "var(--jv-text)" }}>{agent?.name ?? "Agent"}</div>
           <div style={{ font: "11px var(--font-mono)", color: "var(--jv-text-muted)" }}>{agent?.role ?? "Cockpit · live drill-down"}</div>
         </div>
-        <Badge status={controlled ? "info" : agent?.status === "optimal" ? "live" : "standby"} solid>{controlled ? "Operator" : agent?.status === "optimal" ? "Running" : "Standby"}</Badge>
+        <Badge status={agent?.status === "optimal" ? "live" : "standby"} solid>{agent?.status === "optimal" ? "Running" : "Standby"}</Badge>
         <button onClick={() => save({ status: "optimal", statusLabel: "Active" })} style={{ display: "flex", alignItems: "center", gap: 6, padding: "0 13px", height: 34, borderRadius: "var(--r-sm)", border: "1px solid var(--jv-border)", background: "transparent", color: "var(--jv-text-soft)", font: "var(--fw-semibold) 11px var(--font-hud)", letterSpacing: "0.06em", textTransform: "uppercase", cursor: "pointer" }}><Icon name="play" size={14} />Activate</button>
         <button onClick={() => save({ status: "standby", statusLabel: "Standby" })} style={{ display: "flex", alignItems: "center", gap: 6, padding: "0 13px", height: 34, borderRadius: "var(--r-sm)", border: "1px solid color-mix(in srgb, var(--jv-red) 40%, transparent)", background: "color-mix(in srgb, var(--jv-red) 12%, transparent)", color: "var(--jv-red)", font: "var(--fw-semibold) 11px var(--font-hud)", letterSpacing: "0.06em", textTransform: "uppercase", cursor: "pointer" }}><Icon name="octagon-x" size={14} />Stop</button>
       </div>
@@ -225,21 +228,12 @@ export default function AgentCockpit({ agentId, onExit }: { agentId: string; onE
           </Panel>
         </div>
 
-        {/* CENTER — live session */}
-        <div style={{ display: "flex", flexDirection: "column", borderRadius: "var(--r-md)", background: "var(--jv-void)", border: `1px solid ${controlled ? "var(--jv-border-cyan)" : "var(--jv-border)"}`, overflow: "hidden", boxShadow: controlled ? "0 0 24px rgba(41,211,245,0.15)" : "var(--panel-shadow)", minHeight: 360 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 13px", borderBottom: "1px solid var(--jv-hairline)", background: "rgba(10,22,38,0.6)" }}>
-            <div style={{ display: "flex", gap: 5 }}>{["#fb5b6e", "#fbbf24", "#34d399"].map((cc) => <span key={cc} style={{ width: 9, height: 9, borderRadius: "50%", background: cc }} />)}</div>
-            <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 7, padding: "5px 11px", borderRadius: "var(--r-pill)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)", font: "11px var(--font-mono)", color: "var(--jv-text-faint)" }}><Icon name="lock" size={11} color="var(--jv-text-faint)" />about:blank</div>
-            <span style={{ display: "flex", alignItems: "center", gap: 5, font: "var(--fw-medium) 10px var(--font-hud)", letterSpacing: "0.06em", textTransform: "uppercase", color: controlled ? "var(--jv-cyan-300)" : "var(--jv-text-faint)" }}><span style={{ width: 6, height: 6, borderRadius: "50%", background: "currentColor", boxShadow: "0 0 6px currentColor" }} />{controlled ? "You" : "Agent"} driving</span>
-          </div>
+        {/* CENTER — live session. No backend session stream exists yet, so we show
+            an honest empty state rather than a fake browser chrome that implies a
+            live remote session. */}
+        <div style={{ display: "flex", flexDirection: "column", borderRadius: "var(--r-md)", background: "var(--jv-void)", border: "1px solid var(--jv-border)", overflow: "hidden", boxShadow: "var(--panel-shadow)", minHeight: 360 }}>
           <div style={{ flex: 1, display: "grid", placeItems: "center", padding: 16 }}>
             <EmptyState icon="monitor" title="No agent session running" hint="When this agent starts a task, its live session streams here." />
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 14px", borderTop: "1px solid var(--jv-hairline)", background: "rgba(10,22,38,0.6)" }}>
-            <span style={{ flex: 1, font: "11px var(--font-mono)", color: "var(--jv-text-muted)" }}>{controlled ? "You have control — the agent is watching." : "Streaming the agent's session live."}</span>
-            {controlled
-              ? <Button size="sm" variant="secondary" icon={<Icon name="corner-up-left" size={13} />} onClick={() => setControlled(false)}>Hand back</Button>
-              : <Button size="sm" variant="primary" icon={<Icon name="hand" size={13} />} onClick={() => setControlled(true)}>Take control</Button>}
           </div>
         </div>
 
@@ -269,8 +263,22 @@ export default function AgentCockpit({ agentId, onExit }: { agentId: string; onE
               <EmptyState compact icon="wrench" title="No tools granted" hint="Choose the skills & tools this agent may call." />
             )}
           </Panel>
-          <Panel title="Recent ledger" eyebrow style={{ flex: 1, minHeight: 0 }}>
-            <EmptyState compact icon="receipt" title="No activity yet" hint="This agent's actions and costs will be logged here." />
+          <Panel title="Recent ledger" eyebrow style={{ flex: 1, minHeight: 0 }} bodyStyle={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {ledger.length === 0 ? (
+              <EmptyState compact icon="receipt" title="No activity yet" hint="This agent's actions and costs will be logged here." />
+            ) : (
+              ledger.map((e, i) => {
+                const cv = e.tone === "green" ? "green" : e.tone === "red" ? "red" : e.tone === "amber" ? "amber" : "cyan";
+                return (
+                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, font: "var(--fw-medium) 12px var(--font-body)" }}>
+                    <span style={{ width: 6, height: 6, borderRadius: "50%", flex: "0 0 auto", background: `var(--jv-${cv})` }} />
+                    <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--jv-text-soft)" }}>{e.tool}</span>
+                    <span style={{ font: "var(--fw-semibold) 10px var(--font-hud)", letterSpacing: "0.06em", textTransform: "uppercase", color: `var(--jv-${cv})` }}>{e.status}</span>
+                    <span style={{ font: "11px var(--font-mono)", color: "var(--jv-text-faint)" }}>{e.duration}</span>
+                  </div>
+                );
+              })
+            )}
           </Panel>
         </div>
       </div>

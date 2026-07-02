@@ -41,9 +41,16 @@ export default function SystemMonitor() {
   const logs = logsData ?? [];
 
   const prefix = modFilter.trim();
-  const shown = logs.filter(
-    (l) => (lvl === "All" || l.level === lvl) && (prefix === "" || l.module.startsWith(prefix)),
-  );
+  // The server ignores ?range, so filter the visible window client-side too.
+  const windowMs: Record<string, number> = { "5m": 5 * 60_000, "1h": 3_600_000, "24h": 86_400_000 };
+  const cutoff = Date.now() - (windowMs[range] ?? Infinity);
+  const shown = logs.filter((l) => {
+    if (lvl !== "All" && l.level !== lvl) return false;
+    if (prefix !== "" && !l.module.startsWith(prefix)) return false;
+    const ts = Date.parse(l.ts);
+    if (!Number.isNaN(ts) && ts < cutoff) return false; // keep unparseable timestamps
+    return true;
+  });
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1.4fr", gap: 16, alignItems: "start" }}>

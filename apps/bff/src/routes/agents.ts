@@ -41,8 +41,8 @@ export default async function agentsRoutes(app: FastifyInstance) {
     const id = `ag_${Date.now().toString(36)}`;
     const maxSort = await one<{ m: number }>(`SELECT COALESCE(MAX(sort), -1) + 1 AS m FROM agents`);
     await query(
-      `INSERT INTO agents (id, icon, name, role, status, status_label, model, tools, collaborators, autonomy, instructions, plan, routine, sort)
-       VALUES ($1,$2,$3,$4,'standby','Standby',$5,$6,$7,$8,$9,$10,$11,$12)`,
+      `INSERT INTO agents (id, icon, name, role, status, status_label, model, tools, collaborators, autonomy, instructions, plan, routine, budget, schedule, permissions, sort)
+       VALUES ($1,$2,$3,$4,'standby','Standby',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
       [
         id,
         b.icon || "bot",
@@ -55,6 +55,9 @@ export default async function agentsRoutes(app: FastifyInstance) {
         b.instructions ?? null,
         b.plan ?? null,
         b.routine ?? null,
+        b.budget ?? null,
+        b.schedule ?? null,
+        JSON.stringify(b.permissions ?? []),
         maxSort?.m ?? 0,
       ],
     );

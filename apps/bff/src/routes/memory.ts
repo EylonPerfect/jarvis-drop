@@ -1,7 +1,29 @@
 import type { FastifyInstance } from "fastify";
 import { query, one } from "../db/pool.js";
 import { hermes } from "../hermes.js";
-import type { MemoryFact, StyleProfile, VectorStoreStatus, SessionCost, Conversation } from "@jarvis/shared";
+import type { MemoryFact, StyleProfile, VectorStoreStatus, SessionCost, Conversation, ChatMessage } from "@jarvis/shared";
+
+// Map an arbitrary hermes/stored message shape onto the UI's ChatMessage.
+// The UI thread only distinguishes "you" (the operator) from "jarvis" (agent).
+function toChatMessages(raw: unknown): ChatMessage[] {
+  const arr = Array.isArray(raw)
+    ? raw
+    : Array.isArray((raw as any)?.messages)
+      ? (raw as any).messages
+      : Array.isArray((raw as any)?.turns)
+        ? (raw as any).turns
+        : [];
+  return (arr as any[])
+    .map((m): ChatMessage | null => {
+      const role = String(m?.role ?? m?.who ?? m?.author ?? "").toLowerCase();
+      const content = m?.content ?? m?.text ?? m?.message ?? "";
+      const text = typeof content === "string" ? content : JSON.stringify(content);
+      if (!text) return null;
+      const who: ChatMessage["who"] = role === "user" || role === "you" || role === "human" ? "you" : "jarvis";
+      return { who, text };
+    })
+    .filter((m): m is ChatMessage => m !== null);
+}
 
 export default async function memoryRoutes(app: FastifyInstance) {
   app.get("/api/memory/vector-store", async (): Promise<VectorStoreStatus> => {
@@ -77,6 +99,34 @@ export default async function memoryRoutes(app: FastifyInstance) {
       }));
     }
     const seeded = (await one<{ value: Conversation[] }>(`SELECT value FROM settings WHERE key = 'conversations'`))?.value ?? [];
-    return seeded.map((c, i) => ({ id: `c_${i}`, title: c.title, date: c.date }));
+    // Give seeded rows a stable id AND sessionId so selection has something to fetch.
+    return seeded.map((c, i) => {
+      const id = c.id ?? `c_${i}`;
+      return { id, title: c.title, date: c.date, sessionId: c.sessionId ?? id };
+    });
+  });
+
+  // Transcript for a single conversation. Live hermes sessions are relayed and
+  // mapped to ChatMessage[]; seeded conversations may carry their own messages
+  // in settings. Missing per-message data returns 200 [] so the UI never errors.
+  app.get("/api/memory/conversations/:id", async (req): Promise<ChatMessage[]> => {
+    const { id } = req.params as { id: string };
+
+    // 1. Try live hermes session detail (mirrors the list's hermes source).
+    if (/^[A-Za-z0-9_-]+$/.test(id)) {
+      const live = await hermes.get<any>(`/api/sessions/${encodeURIComponent(id)}`);
+      if (live.ok && live.data) {
+        const msgs = toChatMessages(live.data.session ?? live.data);
+        if (msgs.length) return msgs;
+      }
+    }
+
+    // 2. Fall back to any seeded per-conversation messages stored in settings.
+    const seeded = (await one<{ value: Conversation[] }>(`SELECT value FROM settings WHERE key = 'conversations'`))?.value ?? [];
+    const hit = seeded.find((c, i) => (c.id ?? `c_${i}`) === id || c.sessionId === id);
+    if (hit && (hit as any).messages) return toChatMessages((hit as any).messages);
+
+    // 3. No per-message store — return empty gracefully.
+    return [];
   });
 }
