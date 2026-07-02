@@ -7,8 +7,17 @@ const API_KEY = import.meta.env.VITE_BFF_API_KEY;
 const authHeaders = (): Record<string, string> => (API_KEY ? { "X-API-Key": API_KEY } : {});
 
 async function j<T>(path: string, init?: RequestInit): Promise<T> {
+  // Only advertise a JSON body when we're actually sending one. Sending
+  // Content-Type: application/json with no body makes Fastify reject the
+  // request with 400 (empty JSON body) — which broke bodyless POST/DELETE
+  // calls like the provider "Test connection" and clear-all endpoints.
+  const hasBody = init?.body != null;
   const res = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json", ...authHeaders(), ...(init?.headers ?? {}) },
+    headers: {
+      ...(hasBody ? { "Content-Type": "application/json" } : {}),
+      ...authHeaders(),
+      ...(init?.headers ?? {}),
+    },
     ...init,
   });
   if (!res.ok) throw new Error(`${init?.method ?? "GET"} ${path} → ${res.status}`);
