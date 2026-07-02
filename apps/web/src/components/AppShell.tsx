@@ -50,6 +50,7 @@ const SECTIONS: NavSection[] = [
       { id: "spend", icon: "circle-dollar-sign", label: "Spend" },
       { id: "ledger", icon: "scroll-text", label: "Ledger" },
       { id: "tasks", icon: "list-checks", label: "Tasks" },
+      { id: "calendar", icon: "calendar", label: "Calendar" },
     ],
   },
   {
@@ -57,7 +58,6 @@ const SECTIONS: NavSection[] = [
     items: [
       { id: "aicore", icon: "cpu", label: "AI Core" },
       { id: "integrations", icon: "plug", label: "Integrations" },
-      { id: "calendar", icon: "calendar", label: "Calendar" },
       { id: "memory", icon: "database", label: "Memory" },
       { id: "conversations", icon: "message-square", label: "Conversations" },
       { id: "knowledge", icon: "network", label: "Knowledge Base" },
