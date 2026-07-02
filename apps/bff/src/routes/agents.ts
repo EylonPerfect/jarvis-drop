@@ -1,7 +1,31 @@
 import type { FastifyInstance } from "fastify";
 import { query, one } from "../db/pool.js";
 import { hermes } from "../hermes.js";
+import { getActiveProvider, completeProviderChat } from "../lib/providers.js";
 import type { Agent, AgentRun, RuntimeStats, NewAgent } from "@jarvis/shared";
+
+// Pull a JSON object out of an LLM reply (tolerates ```json fences / prose).
+function parseSpec(text: string): { plan?: string; routine?: string; instructions?: string } | null {
+  const m = text.match(/\{[\s\S]*\}/);
+  if (!m) return null;
+  try {
+    const j = JSON.parse(m[0]);
+    return typeof j === "object" && j ? j : null;
+  } catch {
+    return null;
+  }
+}
+
+// Deterministic fallback when no provider is connected (or the LLM reply can't
+// be parsed) — still role-aware so the autofill is never empty.
+function fallbackSpec(name: string, role: string): { plan: string; routine: string; instructions: string } {
+  const who = name || "This agent";
+  return {
+    plan: `Own everything related to ${role}. Deliver dependable outcomes end-to-end and escalate anything that needs a human decision. "Done" means the work is completed accurately and logged.`,
+    routine: `1. Review new inputs and requests relevant to ${role}\n2. Decide the next action; draft it for approval if it's irreversible\n3. Execute the action or hand off to a teammate\n4. Log what was done to the ledger and surface any blockers\n5. Report a short summary`,
+    instructions: `You are ${who}, responsible for ${role}. Be concise, accurate, and proactive. Think step by step and show brief reasoning. Ask before any irreversible action, cite your sources, and never fabricate results. Stay strictly within your role and hand off when a task belongs to another agent.`,
+  };
+}
 
 function rowToAgent(r: any): Agent {
   return {
@@ -31,6 +55,47 @@ export default async function agentsRoutes(app: FastifyInstance) {
   app.get("/api/agents", async () => {
     const rows = await query(`SELECT * FROM agents ORDER BY sort, created_at`);
     return rows.map(rowToAgent);
+  });
+
+  // Autofill the agent builder from a role: generate a plan, routine and system
+  // instructions via the active AI Core provider. Falls back to a role-aware
+  // template if no provider is connected or the reply can't be parsed.
+  app.post("/api/agents/suggest", async (req, reply) => {
+    const b = req.body as { name?: string; role?: string };
+    const role = (b?.role ?? "").trim();
+    const name = (b?.name ?? "").trim();
+    if (!role) return reply.code(400).send({ error: "role is required" });
+
+    const active = await getActiveProvider();
+    if (active) {
+      const sys =
+        "You design autonomous AI agents. Given an agent's name and role, write its operating spec. " +
+        'Respond with ONLY minified JSON, no markdown, exactly: {"plan":string,"routine":string,"instructions":string}. ' +
+        "plan = 1-2 sentences on the agent's goal and what 'done' looks like. " +
+        "routine = 3-6 numbered recurring steps it follows, each on its own line (use \\n). " +
+        "instructions = 2-4 sentence system prompt for how it should think, its tone, guardrails and style. " +
+        "Be specific to the role. No text outside the JSON.";
+      const user = `Agent name: ${name || "(unnamed)"}\nRole: ${role}`;
+      try {
+        const r = await completeProviderChat(active, [
+          { role: "system", content: sys },
+          { role: "user", content: user },
+        ]);
+        const spec = r.ok && r.content ? parseSpec(r.content) : null;
+        if (spec && (spec.plan || spec.routine || spec.instructions)) {
+          const fb = fallbackSpec(name, role);
+          return {
+            plan: (spec.plan ?? fb.plan).toString(),
+            routine: (spec.routine ?? fb.routine).toString(),
+            instructions: (spec.instructions ?? fb.instructions).toString(),
+            source: "ai" as const,
+          };
+        }
+      } catch {
+        /* fall through to template */
+      }
+    }
+    return { ...fallbackSpec(name, role), source: "template" as const };
   });
 
   app.post("/api/agents", async (req, reply) => {

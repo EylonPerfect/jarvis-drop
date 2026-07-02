@@ -2,7 +2,10 @@ import { useEffect, useState } from "react";
 import type { CSSProperties } from "react";
 import { Button, Icon } from "../ds";
 import { useApi } from "../api/hooks";
+import { api } from "../api/client";
 import type { AiProvider, Agent, NewAgent } from "@jarvis/shared";
+
+interface SuggestResult { plan: string; routine: string; instructions: string; source: "ai" | "template" }
 
 // Shared agent-builder form used by both the Roster (modal) and Hire an Agent
 // (inline). Model choices come from the providers connected in AI Core;
@@ -83,10 +86,31 @@ export function AgentForm({
   const [plan, setPlan] = useState("");
   const [routine, setRoutine] = useState("");
   const [instr, setInstr] = useState("");
+  const [suggesting, setSuggesting] = useState(false);
+  const [suggestNote, setSuggestNote] = useState<string | null>(null);
 
   useEffect(() => {
     if (!model && activeModel) setModel(activeModel);
   }, [activeModel, model]);
+
+  // Autofill plan / routine / instructions from the role via the LLM
+  // (POST /api/agents/suggest). Falls back to a role-aware template server-side.
+  const suggest = async () => {
+    if (!role.trim() || suggesting) return;
+    setSuggesting(true);
+    setSuggestNote(null);
+    try {
+      const r = await api.post<SuggestResult>("/api/agents/suggest", { name: name.trim(), role: role.trim() });
+      setPlan(r.plan);
+      setRoutine(r.routine);
+      setInstr(r.instructions);
+      setSuggestNote(r.source === "ai" ? "Drafted by your AI Core model — edit as needed." : "Drafted from a template (connect a model in AI Core for tailored drafts).");
+    } catch {
+      setSuggestNote("Couldn't generate a suggestion — try again.");
+    } finally {
+      setSuggesting(false);
+    }
+  };
 
   const toggle = (arr: string[], set: (v: string[]) => void, v: string) => set(arr.includes(v) ? arr.filter((x) => x !== v) : [...arr, v]);
   const ready = name.trim() !== "" && role.trim() !== "";
@@ -195,6 +219,35 @@ export function AgentForm({
           ))}
         </div>
       </Field>
+
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 12,
+          margin: "4px 0 14px",
+          padding: "10px 12px",
+          borderRadius: "var(--r-sm)",
+          background: "var(--jv-surface-2)",
+          border: "1px dashed var(--jv-border-cyan)",
+        }}
+      >
+        <div style={{ minWidth: 0 }}>
+          <div style={{ font: "var(--fw-semibold) 12px var(--font-body)", color: "var(--jv-text)" }}>Autofill from role</div>
+          <div style={{ font: "var(--fw-regular) 11px var(--font-body)", color: suggestNote ? "var(--jv-cyan-300)" : "var(--jv-text-faint)", marginTop: 2 }}>
+            {suggestNote ?? "Draft the plan, routine & system instructions from this agent's role."}
+          </div>
+        </div>
+        <Button
+          variant="ghost"
+          icon={<Icon name={suggesting ? "loader" : "sparkles"} size={14} />}
+          disabled={!role.trim() || suggesting}
+          onClick={suggest}
+        >
+          {suggesting ? "Generating…" : "Suggest"}
+        </Button>
+      </div>
 
       <Field label="Plan · what is its job?" hint="The goal this agent is working toward — what 'done' looks like.">
         <textarea
