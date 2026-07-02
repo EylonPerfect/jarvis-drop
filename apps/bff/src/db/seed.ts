@@ -45,15 +45,15 @@ const reminders: Array<[string, string, string, string, number]> = [
 ];
 
 const timeEntries: Array<[string, string, string, number, string, number]> = [
-  ["te1", "Command Center V1 — HUD layout", "Jarvis Design", 142, "Design", 0],
-  ["te2", "Voice pipeline latency profiling", "Jarvis Core", 90, "Core dev", 1],
-  ["te3", "Design review prep", "Jarvis Design", 55, "Design", 2],
-  ["te4", "Code review — PR #482", "Jarvis Core", 69, "Review", 3],
-  ["te5", "Release notes for v3.0.0", "Jarvis Core", 35, "Docs", 4],
+  ["te1", "Command Center V1 — HUD layout", "Living Shadow Design", 142, "Design", 0],
+  ["te2", "Voice pipeline latency profiling", "Living Shadow Core", 90, "Core dev", 1],
+  ["te3", "Design review prep", "Living Shadow Design", 55, "Design", 2],
+  ["te4", "Code review — PR #482", "Living Shadow Core", 69, "Review", 3],
+  ["te5", "Release notes for v3.0.0", "Living Shadow Core", 35, "Docs", 4],
 ];
 
 const memoryFacts: Array<[string, string, string, number, number]> = [
-  ["mf1", "Role", "Founder-engineer building the Jarvis assistant", 98, 0],
+  ["mf1", "Role", "Founder-engineer building the Living Shadow assistant", 98, 0],
   ["mf2", "Location", "Bhimber, Azad Kashmir, Pakistan", 96, 1],
   ["mf3", "Timezone", "Asia/Karachi (UTC+5)", 95, 2],
   ["mf4", "Focus", "Command Center V1 + cascading voice interface", 92, 3],
@@ -224,7 +224,7 @@ const settings: Array<[string, unknown]> = [
     "personal_intelligence",
     {
       prose:
-        "You are a hands-on founder-engineer building Jarvis, a local-first AI assistant for Windows. You think like a 30-year senior architect: you value honest, direct recommendations over agreement, and you push for enterprise-grade structure (strict line caps, Alembic migrations, layered modules). Your current focus is the Command Center V1 design pass and the cascading voice interface.",
+        "You are a hands-on founder-engineer building Living Shadow, a local-first AI assistant for Windows. You think like a 30-year senior architect: you value honest, direct recommendations over agreement, and you push for enterprise-grade structure (strict line caps, Alembic migrations, layered modules). Your current focus is the Command Center V1 design pass and the cascading voice interface.",
       interactions: 1342,
       chunks: 287,
       tokens: 41280,

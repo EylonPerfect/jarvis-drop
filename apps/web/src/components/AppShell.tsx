@@ -284,7 +284,7 @@ function TopBar({ onAbout, onNav }: { onAbout: () => void; onNav: (id: ViewId) =
       <ModelSelect />
       {(["layout-grid", "bell", "info", "settings"] as const).map((n) => {
         const nav: Partial<Record<typeof n, ViewId>> = { "layout-grid": "command", bell: "approvals", settings: "aicore" };
-        const title = n === "info" ? "About J.A.R.V.I.S." : n === "layout-grid" ? "Command Center" : n === "bell" ? "Approvals" : "AI Core";
+        const title = n === "info" ? "About Living Shadow" : n === "layout-grid" ? "Command Center" : n === "bell" ? "Approvals" : "AI Core";
         return (
         <button
           key={n}
@@ -369,7 +369,7 @@ function Dock() {
         >
           <Waveform height={20} bars={10} active color="var(--jv-cyan-300)" />
           <div style={{ textAlign: "center" }}>
-            <div style={{ font: "var(--fw-bold) 14px var(--font-hud)", letterSpacing: "0.18em", color: "var(--jv-cyan-300)" }}>TALK TO JARVIS</div>
+            <div style={{ font: "var(--fw-bold) 14px var(--font-hud)", letterSpacing: "0.1em", color: "var(--jv-cyan-300)", whiteSpace: "nowrap" }}>TALK TO LIVING SHADOW</div>
             <div style={{ font: "var(--fw-medium) 10px var(--font-body)", color: "var(--jv-text-soft)" }}>I am listening…</div>
           </div>
           <Waveform height={20} bars={10} active color="var(--jv-cyan-300)" />

@@ -86,7 +86,7 @@ export function Logo({
     <span style={{ display: "inline-flex", alignItems: "center", gap: 12, ...style }}>
       {svg}
       <span>
-        <span style={{ display: "block", font: `var(--fw-bold) ${size * 0.46}px/1 var(--font-display)`, letterSpacing: "0.22em", color: "var(--jv-text)" }}>JARVIS</span>
+        <span style={{ display: "block", font: `var(--fw-bold) ${size * 0.4}px/1 var(--font-display)`, letterSpacing: "0.08em", color: "var(--jv-text)", whiteSpace: "nowrap" }}>Living Shadow</span>
         {subtitle && (
           <span style={{ display: "block", font: "var(--fw-medium) 9px/1 var(--font-hud)", letterSpacing: "0.30em", color: "var(--jv-text-muted)", marginTop: 5 }}>
             {subtitle}

@@ -164,7 +164,7 @@ function VoiceCore() {
     <div style={{ position: "relative", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", minHeight: 480 }}>
       <div style={{ position: "absolute", width: 580, height: 580, borderRadius: "50%", background: `radial-gradient(circle at 50% 45%, color-mix(in srgb, ${ACCENT} 12%, transparent), transparent 62%)`, pointerEvents: "none" }} />
       <div style={{ position: "relative", textAlign: "center", marginBottom: 24 }}>
-        <div style={{ font: "var(--fw-bold) 42px/1 var(--font-display)", letterSpacing: "0.34em", color: ACCENT, textShadow: "var(--glow-cyan-lg)" }}>JARVIS</div>
+        <div style={{ font: "var(--fw-bold) 42px/1 var(--font-display)", letterSpacing: "0.16em", color: ACCENT, textShadow: "var(--glow-cyan-lg)", whiteSpace: "nowrap" }}>LIVING SHADOW</div>
         <div style={{ font: "var(--fw-medium) 11px/1 var(--font-hud)", letterSpacing: "0.44em", color: "var(--jv-cyan-100)", marginTop: 10 }}>AI CORE · v3.0.0</div>
       </div>
       <RadialVoiceViz active={active} level={speech.level} bars={96} size={300} color={ACCENT} onClick={toggle} />
@@ -183,8 +183,8 @@ function VoiceCore() {
         {out.supported && (
           <button
             onClick={toggleVoiceOut}
-            aria-label={voiceOut ? "Mute JARVIS voice" : "Unmute JARVIS voice"}
-            title={voiceOut ? "JARVIS voice on" : "JARVIS voice muted"}
+            aria-label={voiceOut ? "Mute Living Shadow voice" : "Unmute Living Shadow voice"}
+            title={voiceOut ? "Living Shadow voice on" : "Living Shadow voice muted"}
             style={{ display: "grid", placeItems: "center", width: 28, height: 28, borderRadius: "50%", cursor: "pointer", background: voiceOut ? "var(--grad-cyan-soft)" : "var(--jv-surface-3)", border: `1px solid ${voiceOut ? "var(--jv-border-cyan)" : "var(--jv-border-soft)"}`, color: voiceOut ? ACCENT : "var(--jv-text-muted)" }}
           >
             <Icon name={voiceOut ? "volume-2" : "volume-x"} size={14} />
@@ -210,14 +210,14 @@ function VoiceCore() {
         )}
         {!displayedYou && !reply && !busy && !voiceProblem && (
           <div style={{ textAlign: "center", font: "var(--fw-regular) 12.5px/1.5 var(--font-body)", color: "var(--jv-text-faint)" }}>
-            Tap the core and speak — JARVIS replies out loud.
+            Tap the core and speak — Living Shadow replies out loud.
           </div>
         )}
         {voiceProblem && (
           <div style={{ display: "flex", gap: 9, padding: "11px 13px", borderRadius: "var(--r-sm)", background: "color-mix(in srgb, var(--jv-amber) 8%, transparent)", border: "1px solid color-mix(in srgb, var(--jv-amber) 34%, transparent)" }}>
             <Icon name="alert-triangle" size={15} color="var(--jv-amber)" style={{ flex: "0 0 15px", marginTop: 1 }} />
             <div style={{ font: "var(--fw-regular) 12px/1.5 var(--font-body)", color: "var(--jv-text-soft)" }}>
-              {voiceProblem} <span style={{ color: "var(--jv-text-faint)" }}>You can still type to JARVIS below.</span>
+              {voiceProblem} <span style={{ color: "var(--jv-text-faint)" }}>You can still type to Living Shadow below.</span>
             </div>
           </div>
         )}
@@ -230,7 +230,7 @@ function VoiceCore() {
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && submitDraft()}
-            placeholder="Type to talk to JARVIS…"
+            placeholder="Type to talk to Living Shadow…"
             style={{ flex: 1, background: "none", border: "none", outline: "none", color: "var(--jv-text)", font: "var(--fw-medium) 13.5px var(--font-body)" }}
           />
           <button onClick={submitDraft} disabled={busy || !draft.trim()} style={{ width: 36, height: 36, flex: "0 0 36px", display: "grid", placeItems: "center", borderRadius: "50%", background: draft.trim() ? "var(--jv-cyan)" : "var(--jv-surface-3)", border: "none", color: draft.trim() ? "var(--accent-contrast)" : "var(--jv-text-muted)", cursor: busy ? "default" : "pointer" }}>

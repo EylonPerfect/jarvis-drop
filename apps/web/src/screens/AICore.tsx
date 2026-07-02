@@ -210,7 +210,7 @@ export default function AICore() {
             <Badge status="info" dot={false}><Icon name="shield" size={11} style={{ marginRight: 4 }} />keys stored server-side</Badge>
           </div>
           <div style={{ font: "var(--fw-semibold) 11px var(--font-hud)", letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--jv-cyan-300)", marginBottom: 8 }}>AI Control Center</div>
-          <p style={{ margin: "0 0 16px", maxWidth: 620, font: "var(--fw-regular) 13.5px/1.6 var(--font-body)", color: "var(--jv-text-soft)" }}>Connect any OpenAI-compatible provider — OpenAI, Groq, OpenRouter (for Claude), DeepSeek, Together, or a local Ollama. The active provider is what JARVIS speaks through in the Command Center. Keys never leave the server.</p>
+          <p style={{ margin: "0 0 16px", maxWidth: 620, font: "var(--fw-regular) 13.5px/1.6 var(--font-body)", color: "var(--jv-text-soft)" }}>Connect any OpenAI-compatible provider — OpenAI, Groq, OpenRouter (for Claude), DeepSeek, Together, or a local Ollama. The active provider is what Living Shadow speaks through in the Command Center. Keys never leave the server.</p>
           <div style={{ display: "flex", gap: 10 }}>
             <Button variant="primary" icon={<Icon name="plus" size={14} />} onClick={() => setAdding((a) => !a)}>Connect a provider</Button>
             <Button variant="ghost" icon={<Icon name="refresh-cw" size={14} />} onClick={refreshAll}>Refresh</Button>
@@ -270,7 +270,7 @@ export default function AICore() {
           <EmptyState
             icon="plug"
             title="No AI providers connected"
-            hint="Connect an OpenAI-compatible provider to give JARVIS a model to think and speak with. For Claude, use OpenRouter with model anthropic/claude-3.5-sonnet."
+            hint="Connect an OpenAI-compatible provider to give Living Shadow a model to think and speak with. For Claude, use OpenRouter with model anthropic/claude-3.5-sonnet."
             action={<Button size="sm" variant="primary" icon={<Icon name="plus" size={13} />} onClick={() => setAdding(true)}>Connect a provider</Button>}
           />
         ) : (

@@ -121,7 +121,7 @@ export default function SystemMonitor() {
         </div>
         <div style={{ borderRadius: "var(--r-sm)", background: "var(--jv-void)", border: "1px solid var(--jv-border-soft)", overflow: "hidden" }}>
           {shown.length === 0 && (
-            <EmptyState compact icon="file-text" title="No logs" hint={logs.length === 0 ? "Log output appears here as JARVIS runs." : "No logs match the current filters."} />
+            <EmptyState compact icon="file-text" title="No logs" hint={logs.length === 0 ? "Log output appears here as Living Shadow runs." : "No logs match the current filters."} />
           )}
           {shown.map((l, i) => (
             <div key={i} style={{ display: "flex", alignItems: "baseline", gap: 12, padding: "8px 14px", borderBottom: i < shown.length - 1 ? "1px solid var(--jv-hairline)" : "none", font: "12px/1.4 var(--font-mono)" }}>
