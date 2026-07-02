@@ -49,18 +49,22 @@ async function doLogin(): Promise<boolean> {
     const stateCookie = parseSetCookie(g.headers["set-cookie"] as any);
     await g.body.dump();
 
-    // 2. POST credentials to the JS form's real submit endpoint (/auth/basic),
-    //    carrying the state cookie. A successful login sets a session cookie;
-    //    a failure redirects back to /login with no new cookie.
-    const form = new URLSearchParams({
-      username: config.hermes.dashUser ?? "",
-      password: config.hermes.dashPass ?? "",
-      next: "",
-    }).toString();
+    // 2. POST credentials as JSON to the JS form's real submit endpoint
+    //    (/auth/password-login). The live template does:
+    //      fetch('/auth/password-login', {method:'POST',
+    //        headers:{'Content-Type':'application/json'},
+    //        body: JSON.stringify({provider:'basic',username,password,next})})
+    //    A successful login returns 200 + a session Set-Cookie; a bad password
+    //    returns 401 with no cookie.
     const p = await request(`${base}${loginPath}`, {
       method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded", ...(stateCookie ? { cookie: stateCookie } : {}) },
-      body: form,
+      headers: { "content-type": "application/json", ...(stateCookie ? { cookie: stateCookie } : {}) },
+      body: JSON.stringify({
+        provider: "basic",
+        username: config.hermes.dashUser ?? "",
+        password: config.hermes.dashPass ?? "",
+        next: "",
+      }),
       maxRedirections: 0,
     });
     const loginCookie = parseSetCookie(p.headers["set-cookie"] as any);
@@ -68,10 +72,10 @@ async function doLogin(): Promise<boolean> {
     const status = p.statusCode;
     await p.body.dump();
 
-    // Success signal: the login set a session cookie AND didn't bounce us back
-    // to the login page. Keep the merged jar either way for the follow-up call.
+    // Success signal: 2xx AND a session cookie was set. A wrong password yields
+    // 401 with no cookie; a bounce to /login also means failure.
     const bouncedToLogin = /\/login(\?|$)/.test(location);
-    const ok = !!loginCookie && !bouncedToLogin;
+    const ok = status >= 200 && status < 300 && !!loginCookie && !bouncedToLogin;
     sessionCookie = mergeCookies(stateCookie, loginCookie);
 
     lastLogin = {
@@ -140,7 +144,14 @@ async function call<T>(method: string, path: string, body?: unknown, sessionKey?
       res = await send();
     }
     const status = res.statusCode;
+    const ctype = String((res.headers["content-type"] as string | undefined) ?? "");
     const text = await res.body.text();
+    // The Hostinger dashboard serves its SPA index.html (200, text/html) for any
+    // path it doesn't recognise as an API route. That is NOT a real API
+    // response, so treat HTML as "endpoint absent" rather than a false success.
+    if (ctype.includes("text/html")) {
+      return { ok: false, status, data: null, error: `hermes ${status} (html/SPA — not an API route)` };
+    }
     let data: T | null = null;
     if (text) {
       try {
@@ -162,12 +173,20 @@ export const hermes = {
   patch: <T>(path: string, body?: unknown, sessionKey?: string) => call<T>("PATCH", path, body, sessionKey),
   del: <T>(path: string, sessionKey?: string) => call<T>("DELETE", path, undefined, sessionKey),
 
-  health: () => call<any>("GET", HERMES_ENDPOINTS.health),
-  healthDetailed: () => call<any>("GET", HERMES_ENDPOINTS.healthDetailed),
+  // The Hostinger dashboard exposes a REST surface under /api/* — NOT the
+  // OpenAI-style /v1/* the standalone gateway serves. Point each accessor at
+  // the endpoint that actually exists on this deployment (verified live):
+  //   /api/status   → version, gateway_running, update info
+  //   /api/skills   → installed skills
+  //   /api/config   → model, toolsets, providers, concurrency
+  // Endpoints with no dashboard equivalent (models, capabilities) keep their
+  // /v1 path and simply resolve to ok:false here (callers all null-check).
+  health: () => call<any>("GET", "/api/status"),
+  healthDetailed: () => call<any>("GET", "/api/status"),
   models: () => call<any>("GET", HERMES_ENDPOINTS.models),
   capabilities: () => call<any>("GET", HERMES_ENDPOINTS.capabilities),
-  skills: () => call<any>("GET", HERMES_ENDPOINTS.skills),
-  toolsets: () => call<any>("GET", HERMES_ENDPOINTS.toolsets),
+  skills: () => call<any>("GET", "/api/skills"),
+  toolsets: () => call<any>("GET", "/api/config"),
 
   /**
    * Streaming chat. Relays the gateway's SSE body to the caller. Re-logs in
@@ -208,13 +227,12 @@ export const hermes = {
   },
 };
 
-/** Reachability probe: the proxy/gateway exposes /health or /v1/models;
- * the dashboard answers /v1/models once logged in. Any success = reachable. */
+/** Reachability probe: the Hostinger dashboard answers /api/status with JSON
+ * (version + gateway state) once the session cookie is valid. A JSON 200 with a
+ * version field means we authenticated and the agent is reachable. */
 export async function hermesReachable(): Promise<boolean> {
-  const h = await hermes.health();
-  if (h.ok) return true;
-  const m = await hermes.models();
-  return m.ok;
+  const s = await hermes.get<any>("/api/status");
+  return s.ok && !!s.data && typeof s.data === "object" && "version" in s.data;
 }
 
 const snippet = (v: unknown, n = 240): string => {
