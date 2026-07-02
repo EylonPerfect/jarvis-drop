@@ -55,6 +55,15 @@ const fieldStyle = {
   boxSizing: "border-box" as const,
 };
 
+function Labeled({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+      <span style={{ font: "var(--fw-semibold) 10px var(--font-hud)", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--jv-text-muted)" }}>{label}</span>
+      {children}
+    </label>
+  );
+}
+
 type TestState = { ok: boolean; detail: string } | "testing" | undefined;
 
 function ProviderRow({ p, onActivate, onTest, onDelete, test }: { p: AiProvider; onActivate: () => void; onTest: () => void; onDelete: () => void; test: TestState }) {
@@ -94,7 +103,9 @@ export default function AICore() {
   const [stream, setStream] = useState(state.streaming);
   const [verify, setVerify] = useState(state.verification);
 
-  const [form, setForm] = useState({ name: "", baseUrl: "", apiKey: "", model: "" });
+  // Pre-filled with OpenAI defaults so a user who only has a secret key can just
+  // paste it and connect. Quick-fill chips swap these for another provider.
+  const [form, setForm] = useState({ name: "OpenAI", baseUrl: "https://api.openai.com/v1", apiKey: "", model: "gpt-4o-mini" });
   const [adding, setAdding] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -198,12 +209,23 @@ export default function AICore() {
                   style={{ padding: "4px 10px", borderRadius: "var(--r-pill)", cursor: "pointer", font: "var(--fw-semibold) 11px var(--font-body)", color: "var(--jv-cyan-100)", background: "var(--grad-cyan-soft)", border: "1px solid var(--jv-border-cyan)" }}>{p.label}</button>
               ))}
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-              <input style={fieldStyle} placeholder="Name (e.g. OpenAI)" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
-              <input style={fieldStyle} placeholder="Model (e.g. gpt-4o-mini)" value={form.model} onChange={(e) => setForm((f) => ({ ...f, model: e.target.value }))} />
+            <div style={{ font: "var(--fw-regular) 12px/1.5 var(--font-body)", color: "var(--jv-text-muted)" }}>
+              For OpenAI you only need to paste your <b style={{ color: "var(--jv-text-soft)" }}>secret key</b> below — the base URL and model are already filled in. Connecting a different provider? Use a Quick-fill chip above.
             </div>
-            <input style={fieldStyle} placeholder="Base URL (e.g. https://api.openai.com/v1)" value={form.baseUrl} onChange={(e) => setForm((f) => ({ ...f, baseUrl: e.target.value }))} />
-            <input style={fieldStyle} type="password" placeholder="API key" value={form.apiKey} onChange={(e) => setForm((f) => ({ ...f, apiKey: e.target.value }))} />
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <Labeled label="Provider name">
+                <input style={fieldStyle} placeholder="OpenAI" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
+              </Labeled>
+              <Labeled label="Model">
+                <input style={fieldStyle} placeholder="gpt-4o-mini" value={form.model} onChange={(e) => setForm((f) => ({ ...f, model: e.target.value }))} />
+              </Labeled>
+            </div>
+            <Labeled label="API base URL">
+              <input style={fieldStyle} placeholder="https://api.openai.com/v1" value={form.baseUrl} onChange={(e) => setForm((f) => ({ ...f, baseUrl: e.target.value }))} />
+            </Labeled>
+            <Labeled label="Secret key  ·  from your provider">
+              <input style={fieldStyle} type="password" placeholder="sk-…" value={form.apiKey} onChange={(e) => setForm((f) => ({ ...f, apiKey: e.target.value }))} />
+            </Labeled>
             {error && <div style={{ font: "var(--fw-medium) 12px var(--font-body)", color: "var(--jv-red-400)" }}>{error}</div>}
             <div style={{ display: "flex", justifyContent: "flex-end" }}>
               <Button variant="primary" icon={<Icon name={saving ? "loader" : "plus"} size={14} />} onClick={addProvider} disabled={saving}>Connect provider</Button>
