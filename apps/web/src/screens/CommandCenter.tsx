@@ -164,8 +164,7 @@ function VoiceCore() {
     <div style={{ position: "relative", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", minHeight: 480 }}>
       <div style={{ position: "absolute", width: 580, height: 580, borderRadius: "50%", background: `radial-gradient(circle at 50% 45%, color-mix(in srgb, ${ACCENT} 12%, transparent), transparent 62%)`, pointerEvents: "none" }} />
       <div style={{ position: "relative", textAlign: "center", marginBottom: 24 }}>
-        <div style={{ font: "var(--fw-bold) 42px/1 var(--font-display)", letterSpacing: "0.16em", color: ACCENT, textShadow: "var(--glow-cyan-lg)", whiteSpace: "nowrap" }}>LIVING SHADOW</div>
-        <div style={{ font: "var(--fw-medium) 11px/1 var(--font-hud)", letterSpacing: "0.44em", color: "var(--jv-cyan-100)", marginTop: 10 }}>AI CORE · v3.0.0</div>
+        <div style={{ font: "var(--fw-medium) 11px/1 var(--font-hud)", letterSpacing: "0.44em", color: "var(--jv-cyan-100)" }}>AI CORE · v3.0.0</div>
       </div>
       <RadialVoiceViz active={active} level={speech.level} bars={96} size={300} color={ACCENT} onClick={toggle} />
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 24 }}>

@@ -54,12 +54,18 @@ export async function testConnection(p: AiProviderRow): Promise<{ ok: boolean; s
     return { ok: false, status: 0, detail: `Unreachable: ${err instanceof Error ? err.message : String(err)}` };
   }
 
-  // 2. a real (tiny) chat completion — validates the model + chat path
+  // 2. a real (tiny) chat completion — validates the model + chat path.
+  // NOTE: no max_tokens cap — newer OpenAI models (GPT-5.x / o-series) reject
+  // `max_tokens` (require `max_completion_tokens`), and other OpenAI-compatible
+  // providers may not know `max_completion_tokens`. Omitting the cap works for
+  // all of them; a one-word "ping" reply is cheap regardless. The real chat path
+  // (streamProviderChat/completeProviderChat) already sends no cap, so this
+  // mirrors exactly what production chat does.
   try {
     const res = await request(joinUrl(p.base_url, "/chat/completions"), {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${p.api_key}` },
-      body: JSON.stringify({ model: p.model, messages: [{ role: "user", content: "ping" }], max_tokens: 1, stream: false }),
+      body: JSON.stringify({ model: p.model, messages: [{ role: "user", content: "ping" }], stream: false }),
       headersTimeout: 30_000,
       bodyTimeout: 30_000,
       maxRedirections: 2,
