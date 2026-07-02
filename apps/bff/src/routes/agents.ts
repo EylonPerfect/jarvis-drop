@@ -2,7 +2,42 @@ import type { FastifyInstance } from "fastify";
 import { query, one } from "../db/pool.js";
 import { hermes } from "../hermes.js";
 import { getActiveProvider, completeProviderChat } from "../lib/providers.js";
+import { config } from "../config.js";
+import { getCompany } from "./company.js";
 import type { Agent, AgentRun, RuntimeStats, NewAgent, ConnectionCatalogItem } from "@jarvis/shared";
+
+// Live company research: fetch the company website (via the server-side Chrome)
+// and return a text snippet, so the AI discovery can ground its recommendations
+// in who the company actually is. Cached per-domain for an hour.
+const researchCache = new Map<string, { text: string; at: number }>();
+async function researchCompany(domain: string): Promise<string> {
+  const d = (domain || "").trim();
+  if (!d) return "";
+  const cached = researchCache.get(d);
+  if (cached && Date.now() - cached.at < 3_600_000) return cached.text;
+  try {
+    const url = /^https?:\/\//i.test(d) ? d : `https://${d}`;
+    const r = await fetch(`${config.browserless.url}/content?token=${encodeURIComponent(config.browserless.token)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url }),
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!r.ok) return "";
+    const html = await r.text();
+    const text = html
+      .replace(/<script[\s\S]*?<\/script>/gi, " ")
+      .replace(/<style[\s\S]*?<\/style>/gi, " ")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 2500);
+    researchCache.set(d, { text, at: Date.now() });
+    return text;
+  } catch {
+    return "";
+  }
+}
 
 // Pull a JSON object out of an LLM reply (tolerates ```json fences / prose).
 function parseJson<T = any>(text: string): T | null {
@@ -168,6 +203,10 @@ export default async function agentsRoutes(app: FastifyInstance) {
     const track = b?.track === "scratch" ? "scratch" : "clone";
     const transcript = Array.isArray(b?.transcript) ? b.transcript.filter((m) => m && typeof m.content === "string") : [];
 
+    // Company context (set-once profile) + live website research → tailored recs.
+    const company = await getCompany();
+    const research = await researchCompany(company.domain);
+
     const subject =
       track === "clone"
         ? `an AI clone of an existing employee${name ? ` named ${name}` : ""}${title ? `, whose role is "${title}"` : ""}`
@@ -177,7 +216,9 @@ export default async function agentsRoutes(app: FastifyInstance) {
       `Cover: day-to-day work; the ACCESS they need (Slack, an email address, the demo environment, and anything else the role requires); who they report to (manager); which recurring company/team meetings they must join; the tools/systems they use; goals and what "great" looks like; and edge cases. ` +
       `Respond with ONLY minified JSON, no markdown: {"understanding":<0-100 int>,"done":<bool>,"nextQuestion":<string>,"summary":<string>,"profile":{"overview":<string>,"goals":[{"objective":<string>,"metric":<string>}],"reportsTo":{"name":<string>,"email":<string>},"meetings":[{"name":<string>,"cadence":<string>}],"access":[{"item":<string>,"status":"needed"|"pending"|"granted","note":<string>}],"connections":<string[]>,"tools":<string[]>,"routine":<string[]>}}. ` +
       `"understanding" starts low and grows as answers arrive. Set "done":true when understanding>=85 or the operator says they're finished. ` +
-      `Always keep "access" seeded with at least Slack, an email address, and a demo environment, plus role-specific items. connections/tools are lowercase ids like email,calendar,slack,notetaker,crm,drive,browser,web,web_search,gmail. Ask exactly one question per turn.`;
+      `Always keep "access" seeded with at least Slack, an email address, and a demo environment, plus role-specific items. connections/tools are lowercase ids like email,calendar,slack,notetaker,crm,drive,browser,web,web_search,gmail. Ask exactly one question per turn. ` +
+      `This hire is for ${company.name}${company.domain ? ` (${company.domain})` : ""}${company.industry ? `, industry: ${company.industry}` : ""}${company.size ? `, size: ${company.size}` : ""}${company.coreBusiness ? `, core business: ${company.coreBusiness}` : ""}. Use what you know about this company PLUS the website snippet to PROACTIVELY RECOMMEND a tailored setup — suggest specific responsibilities, tools, connections, goals, access items and meetings that fit THIS company. Don't just ask: pre-fill the profile with concrete, company-specific recommendations the operator can accept or tweak, and put a short rationale (why these fit ${company.name}) in "summary". Still confirm and ask about genuine gaps.` +
+      (research ? ` Company website snippet (for grounding): """${research}"""` : "");
     const convo = transcript.length
       ? transcript.map((m) => `${m.role === "assistant" ? "INTERVIEWER" : "OPERATOR"}: ${m.content}`).join("\n")
       : "(no answers yet — ask your first question and return an initial profile skeleton)";
@@ -187,7 +228,7 @@ export default async function agentsRoutes(app: FastifyInstance) {
       try {
         const r = await completeProviderChat(active, [
           { role: "system", content: sys },
-          { role: "user", content: `Name: ${name || "(unknown)"}\nTitle: ${title || "(unknown)"}\nTrack: ${track}\n\nConversation so far:\n${convo}` },
+          { role: "user", content: `Company: ${company.name} — ${company.industry || "industry n/a"} (${company.size || "size n/a"})\nAgent name: ${name || "(unknown)"}\nTitle: ${title || "(unknown)"}\nTrack: ${track}\n\nConversation so far:\n${convo}` },
         ]);
         const j = r.ok && r.content ? parseJson<any>(r.content) : null;
         if (j && typeof j === "object" && j.nextQuestion) {

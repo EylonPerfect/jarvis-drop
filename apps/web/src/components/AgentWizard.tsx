@@ -7,9 +7,6 @@ import type {
   AiProvider,
   NewAgent,
   AgentPermission,
-  WeeklyPlan,
-  WeekdayKey,
-  CalendarPlaybook,
   BudgetConfig,
   ConnectionCatalogItem,
   BuildTrack,
@@ -25,44 +22,44 @@ import type {
 } from "@jarvis/shared";
 
 // ============================================================
-// AgentWizard — a TWO-TRACK "Hire an Agent" flow. Drop-in for AgentForm:
+// AgentWizard — a SINGLE unified "Hire an Agent" flow. Drop-in for AgentForm:
 // exposes the SAME props (submitLabel / onSubmit / onCancel / resetOnSubmit)
 // so the Roster modal and Hire screen never change.
 //
-// Step 0 chooses a track:
-//   • TRACK A — "Clone an existing employee": mirror a real person's systems.
-//   • TRACK B — "Build from scratch": teach a new agent by example.
+// The AI interview (BreathingDiscovery) is the DEFAULT, open entry point.
+// Optional accelerators — a role template or a "clone an existing employee"
+// toggle — seed the interview so it CONFIRMS what's known and only asks the
+// company-specific gaps. The build track is INFERRED: "clone" when the clone
+// toggle was used, else "scratch". onSubmit compiles one NewAgent (see submit()).
 //
-// Both tracks reuse AgentForm's field / chip / icon-picker / model-select /
-// TaskList / calendar-playbook / budget / permissions / connection-catalog
-// patterns and the ✨ Suggest logic; onSubmit compiles either track into a
-// single NewAgent (see submit()).
+// Steps: 1 Define with AI · 2 Access & onboarding · 3 Examples (optional) ·
+//        4 Guardrails & budget · 5 Review & deploy.
 // ============================================================
 
-interface SuggestResult { plan: string; routine: string; instructions: string; source: "ai" | "template" }
-interface SuggestOverview extends SuggestResult { overview: string }
-interface PlaybookSuggest { name: string; trigger: string; steps: string[]; source: "ai" | "template" }
 interface FileUploadResult { id: string; url: string; mime: string; size: number }
+
+// Company profile the AI researches to tailor its recommendations. Not exported
+// from @jarvis/shared, so mirror the /api/company shape locally.
+interface CompanyProfile {
+  name: string;
+  domain: string;
+  industry: string;
+  size: string;
+  coreBusiness: string;
+  notes?: string;
+}
 
 const ICON_CHOICES = ["bot", "code", "search", "database", "globe", "list-checks", "shield-check", "mail", "calendar", "pen-tool", "bar-chart-3", "terminal", "phone", "heart-handshake", "user-search", "life-buoy", "settings-2"];
 const TOOL_CHOICES = ["web_search", "code_interpreter", "filesystem", "github", "memory.query", "calendar", "gmail", "whatsapp", "shell", "vision"];
 const AUTONOMY_CHOICES = ["Ask before acting", "Act, then report", "Fully autonomous"];
 const PERMISSION_LABELS = ["Read knowledge base", "Send messages", "Control browser", "Send email", "Execute tools", "Spend budget", "Make payments"];
-const WEEKDAYS: { key: WeekdayKey; label: string }[] = [
-  { key: "mon", label: "Mon" },
-  { key: "tue", label: "Tue" },
-  { key: "wed", label: "Wed" },
-  { key: "thu", label: "Thu" },
-  { key: "fri", label: "Fri" },
-  { key: "sat", label: "Sat" },
-  { key: "sun", label: "Sun" },
-];
 
-// Step lists per track — the progress header renders the active track's list.
-const CLONE_STEPS = ["Who to clone", "Discover", "Connect systems", "Onboarding", "Goals", "Guardrails", "Review & deploy"];
-const SCRATCH_STEPS = ["Role & template", "Teach by example", "Playbooks & routine", "Access", "Goals & review"];
+// Single unified flow — the AI interview is the default, open entry point.
+// The old Clone-vs-Scratch chooser and manual self-define form are gone; the
+// build track is inferred (clone if the clone toggle was used, else scratch).
+const WIZARD_STEPS = ["Define with AI", "Access & onboarding", "Examples", "Guardrails & budget", "Review & deploy"];
 
-// What each connection teaches a clone (shown on the connect-cards in track A).
+// What each connection teaches a clone (used to compile clone instructions).
 const LEARNS: Record<string, string> = {
   calendar: "cadence & availability",
   email: "writing style & contacts",
@@ -72,8 +69,6 @@ const LEARNS: Record<string, string> = {
   crm: "pipeline & accounts",
   drive: "docs & references",
 };
-// The systems a clone should emphasise first.
-const CLONE_EMPHASIS = ["calendar", "email", "slack", "notetaker", "policies"];
 
 // ---- Role templates for the from-scratch track ----
 interface RoleTemplate {
@@ -198,47 +193,7 @@ function Chip({ active, onClick, children }: { active: boolean; onClick: () => v
   );
 }
 
-// A small removable list built from an add-input. Reused for weekly-day tasks,
-// daily tasks and calendar-playbook steps.
-function TaskList({ items, onAdd, onRemove, placeholder }: { items: string[]; onAdd: (v: string) => void; onRemove: (i: number) => void; placeholder: string }) {
-  const [draft, setDraft] = useState("");
-  const add = () => {
-    const v = draft.trim();
-    if (!v) return;
-    onAdd(v);
-    setDraft("");
-  };
-  return (
-    <div>
-      {items.length > 0 && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 8 }}>
-          {items.map((t, i) => (
-            <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)" }}>
-              <span style={{ flex: 1, minWidth: 0, font: "var(--fw-regular) 12px/1.4 var(--font-body)", color: "var(--jv-text-soft)" }}>{t}</span>
-              <button onClick={() => onRemove(i)} title="Remove" style={{ background: "none", border: "none", color: "var(--jv-text-faint)", cursor: "pointer", display: "grid", placeItems: "center" }}>
-                <Icon name="x" size={13} />
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-      <div style={{ display: "flex", gap: 8 }}>
-        <input
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), add())}
-          placeholder={placeholder}
-          style={{ ...inputStyle, height: 34 }}
-        />
-        <Button variant="ghost" size="sm" icon={<Icon name="plus" size={13} />} disabled={!draft.trim()} onClick={add}>
-          Add
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-// Goals editor: a list of {objective, metric} rows. Shared by both tracks.
+// Goals editor: a list of {objective, metric} rows.
 function GoalsEditor({ goals, setGoals }: { goals: AgentGoal[]; setGoals: (fn: (prev: AgentGoal[]) => AgentGoal[]) => void }) {
   const [objective, setObjective] = useState("");
   const [metric, setMetric] = useState("");
@@ -367,12 +322,20 @@ function BreathingDiscovery({
   name,
   title,
   track,
+  seed,
+  companyName,
   onApply,
   onSkip,
 }: {
   name: string;
   title: string;
   track: BuildTrack;
+  // Optional synthetic first turn: when a template/clone accelerator is picked
+  // we prime the transcript so the interviewer CONFIRMS what's known and only
+  // asks the company-specific gaps — starting understanding higher.
+  seed?: string;
+  // The company the AI is tailoring to — used to label the rationale/recommendations.
+  companyName?: string;
   onApply: (profile: DiscoverProfile) => void;
   onSkip: () => void;
 }) {
@@ -411,11 +374,15 @@ function BreathingDiscovery({
     }
   };
 
-  // On mount: kick off with an empty transcript to get the first question.
+  // On mount: kick off the interview. If a template/clone accelerator seeded a
+  // starting point, prepend it as a synthetic first turn so understanding starts
+  // higher and the interviewer only asks the company-specific gaps.
   useEffect(() => {
     if (started.current) return;
     started.current = true;
-    void ask([]);
+    const initial: DiscoverTurn[] = seed?.trim() ? [{ role: "user", content: seed.trim() }] : [];
+    if (initial.length) setTranscript(initial);
+    void ask(initial);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -481,10 +448,20 @@ function BreathingDiscovery({
           <div style={{ font: "var(--fw-medium) 13.5px/1.5 var(--font-body)", color: "var(--jv-text)", minHeight: 20 }}>
             {busy && !question ? "Waking up — reading the room…" : question || (ready ? "That's enough to build from — apply below or keep going." : "…")}
           </div>
-          {summary && (
-            <div style={{ font: "var(--fw-regular) 11.5px/1.5 var(--font-body)", color: "var(--jv-text-muted)", marginTop: 8, paddingTop: 8, borderTop: "1px solid var(--jv-hairline)" }}>{summary}</div>
-          )}
         </div>
+
+        {/* Company-tailored rationale — the AI's "why this fits" recommendation */}
+        {summary && (
+          <div style={{ marginTop: 10, padding: "12px 14px", borderRadius: "var(--r-md)", background: "var(--grad-cyan-soft)", border: "1px solid var(--jv-border-cyan)" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 6 }}>
+              <Icon name="sparkles" size={13} color="var(--jv-cyan)" />
+              <span style={{ font: "var(--fw-semibold) 9px var(--font-hud)", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--jv-cyan-300)" }}>
+                {companyName ? `Recommended for ${companyName}` : "Why this fits"}
+              </span>
+            </div>
+            <div style={{ font: "var(--fw-regular) 11.5px/1.55 var(--font-body)", color: "var(--jv-text-soft)" }}>{summary}</div>
+          </div>
+        )}
 
         {/* Answer box */}
         <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
@@ -515,7 +492,9 @@ function BreathingDiscovery({
       <div style={{ padding: "14px 16px", borderRadius: "var(--r-md)", background: "var(--jv-surface-2)", border: "1px solid var(--jv-border-soft)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
           <Icon name="scan-line" size={14} color="var(--jv-cyan)" />
-          <span style={{ font: "var(--fw-semibold) 10px var(--font-hud)", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--jv-cyan-300)" }}>What I've learned</span>
+          <span style={{ font: "var(--fw-semibold) 10px var(--font-hud)", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--jv-cyan-300)" }}>
+            {companyName ? `Recommended setup for ${companyName}` : "Recommended setup"}
+          </span>
         </div>
 
         {profile.overview && (
@@ -728,11 +707,45 @@ export function AgentWizard({
   const { data: catalogData } = useApi<ConnectionCatalogItem[]>("/api/agents/connection-catalog");
   const catalog = catalogData ?? [];
 
-  // ---- Track chooser ----
-  // track === null → the chooser (step 0). Once picked, step counts within track.
-  const [track, setTrack] = useState<BuildTrack | null>(null);
+  // ---- Company context — the AI researches this to tailor its recommendations ----
+  const { data: companyData, reload: reloadCompany } = useApi<CompanyProfile>("/api/company");
+  const company = companyData ?? undefined;
+  const companyName = company?.name?.trim() || undefined;
+  const [companyEditing, setCompanyEditing] = useState(false);
+  const [companyForm, setCompanyForm] = useState<CompanyProfile>({ name: "", domain: "", industry: "", size: "", coreBusiness: "" });
+  const [companySaving, setCompanySaving] = useState(false);
+
+  const openCompanyEdit = () => {
+    setCompanyForm({
+      name: company?.name ?? "",
+      domain: company?.domain ?? "",
+      industry: company?.industry ?? "",
+      size: company?.size ?? "",
+      coreBusiness: company?.coreBusiness ?? "",
+      notes: company?.notes,
+    });
+    setCompanyEditing(true);
+  };
+  const saveCompany = async () => {
+    setCompanySaving(true);
+    try {
+      await api.put("/api/company", companyForm);
+      reloadCompany();
+      setCompanyEditing(false);
+    } catch {
+      /* keep the form open so the user can retry; DS stays quiet like siblings */
+    } finally {
+      setCompanySaving(false);
+    }
+  };
+
+  // ---- Single unified flow ----
+  // No chooser. The build track is inferred: "clone" once the clone toggle is
+  // used, else "scratch" (the default).
   const [step, setStep] = useState(0);
-  const stepTitles = track === "clone" ? CLONE_STEPS : SCRATCH_STEPS;
+  const stepTitles = WIZARD_STEPS;
+  const [cloneMode, setCloneMode] = useState(false); // the "Clone an existing employee" toggle
+  const track: BuildTrack = cloneMode ? "clone" : "scratch";
 
   // ---- Common identity ----
   const [name, setName] = useState("");
@@ -757,31 +770,21 @@ export function AgentWizard({
   // ---- Onboarding (living artifact: manager, meetings, access checklist) ----
   const [onboarding, setOnboarding] = useState<Onboarding>({});
 
-  // ---- Discovery ("breathing artifact") — scratch opens it inline via a toggle ----
-  const [discoverOpen, setDiscoverOpen] = useState(false);
+  // ---- Discovery ("breathing artifact") — the DEFAULT, open entry point ----
+  // interviewStarted flips true once the user advances past the interview (via
+  // "Build from this" or "Skip"), so we can re-show it on going Back.
+  const [profileApplied, setProfileApplied] = useState(false);
+  // A stable session key so remounting the interview only happens when the
+  // starting point (template/clone) meaningfully changes.
+  const [interviewSeq, setInterviewSeq] = useState(0);
 
-  // ---- Scratch track: ✨ Suggest + template + evidence ----
+  // ---- Template + evidence + stash (compiled instructions/plan/routine) ----
   const [templateKey, setTemplateKey] = useState<string>("");
-  const [suggesting, setSuggesting] = useState(false);
-  const [suggestNote, setSuggestNote] = useState<string | null>(null);
   const [stashPlan, setStashPlan] = useState("");
   const [stashRoutine, setStashRoutine] = useState("");
   const [stashInstr, setStashInstr] = useState("");
   const [evidence, setEvidence] = useState<EvidenceItem[]>([]);
   const [uploadingIdx, setUploadingIdx] = useState<number | null>(null);
-
-  // ---- Scratch track: plan / routine / calendar (reused from the old wizard) ----
-  const [days, setDays] = useState<Partial<Record<WeekdayKey, string[]>>>({});
-  const [daily, setDaily] = useState<string[]>([]);
-  const [calendarPlaybooks, setCalendarPlaybooks] = useState<CalendarPlaybook[]>([]);
-  const [scenarioOpen, setScenarioOpen] = useState(false);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [scScenario, setScScenario] = useState("");
-  const [scName, setScName] = useState("");
-  const [scTrigger, setScTrigger] = useState("");
-  const [scSteps, setScSteps] = useState("");
-  const [scBusy, setScBusy] = useState(false);
-  const [scNote, setScNote] = useState<string | null>(null);
 
   const fileRefs = useRef<Record<number, HTMLInputElement | null>>({});
 
@@ -789,34 +792,54 @@ export function AgentWizard({
     if (!model && activeModel) setModel(activeModel);
   }, [activeModel, model]);
 
-  // ---- ✨ Suggest (scratch B1) — fills overview + stashes plan/routine/instructions ----
-  const suggest = async () => {
-    if (!role.trim() || suggesting) return;
-    setSuggesting(true);
-    setSuggestNote(null);
-    try {
-      const r = await api.post<SuggestOverview>("/api/agents/suggest", { name: name.trim(), role: role.trim() });
-      setOverview(r.overview ?? r.plan ?? "");
-      setStashPlan(r.plan ?? "");
-      setStashRoutine(r.routine ?? "");
-      setStashInstr(r.instructions ?? "");
-      setSuggestNote(r.source === "ai" ? "Drafted by your AI Core model — edit as needed." : "Drafted from a template (connect a model in AI Core for tailored drafts).");
-    } catch {
-      setSuggestNote("Couldn't generate a suggestion — try again.");
-    } finally {
-      setSuggesting(false);
-    }
-  };
-
-  // ---- Template picker (scratch B1) — seeds evidence behaviors + tools/connections ----
+  // ---- Template picker — seeds evidence behaviors + tools/connections + icon/role,
+  // then re-primes the interview so it confirms what's known and asks the gaps. ----
   const pickTemplate = (t: RoleTemplate) => {
+    // Selecting a template turns clone mode off (they're mutually-exclusive accelerators).
+    setCloneMode(false);
     setTemplateKey(t.key);
     setIcon(t.icon);
-    if (t.key !== "blank" && !role.trim()) setRole(t.label);
+    if (t.key !== "blank") setRole(t.label);
+    // scratch: keep template-seeded evidence behaviors.
     setEvidence(t.behaviors.map((b) => ({ behavior: b.behavior, instruction: b.instruction, examples: [] })));
     // Pre-check recommended tools + connections.
     setTools((prev) => Array.from(new Set([...prev, ...t.tools])));
     setConnections((prev) => Array.from(new Set([...prev, ...t.connections])));
+    // Re-run the interview from a higher starting point.
+    setProfileApplied(false);
+    setInterviewSeq((n) => n + 1);
+  };
+
+  // ---- Clone toggle — turns clone mode on/off; clearing it drops back to blank scratch ----
+  const setClonePatch = (patch: Partial<CloneSource>) => {
+    setClone((c) => ({ ...c, ...patch }));
+  };
+  const toggleCloneMode = (on: boolean) => {
+    setCloneMode(on);
+    if (on) {
+      // Picking clone clears any template accelerator; keep the interview honest.
+      setTemplateKey("");
+      setEvidence([]);
+    } else {
+      setClone({});
+    }
+    setProfileApplied(false);
+    setInterviewSeq((n) => n + 1);
+  };
+
+  // Build the synthetic first turn that primes the interview to CONFIRM the known
+  // starting point and only ask the company-specific gaps. Empty when nothing picked.
+  const buildSeed = (): string | undefined => {
+    if (cloneMode) {
+      const cn = clone.name?.trim();
+      const ct = clone.title?.trim();
+      if (!cn && !ct) return undefined;
+      return `Starting point: cloning ${cn || "an existing employee"}${ct ? `, ${ct}` : ""}. Confirm these and ask only the company-specific gaps.`;
+    }
+    const t = ROLE_TEMPLATES.find((x) => x.key === templateKey);
+    if (!t || t.key === "blank") return undefined;
+    const responsibilities = t.behaviors.map((b) => b.behavior).join(", ");
+    return `Starting point: ${t.label}. Typical responsibilities: ${responsibilities || "define from scratch"}. Confirm these and ask only the company-specific gaps.`;
   };
 
   // ---- Evidence editing (scratch B2) ----
@@ -847,98 +870,62 @@ export function AgentWizard({
   const groundedCount = evidence.filter((e) => e.examples.length > 0).length;
   const readiness = behaviorCount === 0 ? 0 : Math.round((groundedCount / behaviorCount) * 100);
 
-  // ---- Calendar playbooks (scratch B3) ----
-  const resetScenario = () => {
-    setScenarioOpen(false);
-    setEditingId(null);
-    setScScenario("");
-    setScName("");
-    setScTrigger("");
-    setScSteps("");
-    setScNote(null);
-  };
-
-  const suggestScenario = async () => {
-    if (!scScenario.trim() || scBusy) return;
-    setScBusy(true);
-    setScNote(null);
-    try {
-      const r = await api.post<PlaybookSuggest>("/api/agents/suggest-playbook", { role: role.trim(), scenario: scScenario.trim() });
-      setScName(r.name ?? "");
-      setScTrigger(r.trigger ?? "");
-      setScSteps((r.steps ?? []).join("\n"));
-      setScNote(r.source === "ai" ? "Drafted by your AI Core model — edit as needed." : "Drafted from a template — edit as needed.");
-    } catch {
-      setScNote("Couldn't generate that scenario — try again.");
-    } finally {
-      setScBusy(false);
-    }
-  };
-
-  const saveScenario = () => {
-    const steps = scSteps.split("\n").map((s) => s.trim()).filter(Boolean);
-    if (!scName.trim()) return;
-    const entry: CalendarPlaybook = { id: editingId ?? `pb_${Date.now()}`, name: scName.trim(), trigger: scTrigger.trim(), steps };
-    setCalendarPlaybooks((prev) => (editingId ? prev.map((p) => (p.id === editingId ? entry : p)) : [...prev, entry]));
-    resetScenario();
-  };
-
-  const editScenario = (pb: CalendarPlaybook) => {
-    setEditingId(pb.id);
-    setScenarioOpen(true);
-    setScScenario("");
-    setScName(pb.name);
-    setScTrigger(pb.trigger);
-    setScSteps(pb.steps.join("\n"));
-    setScNote(null);
-  };
-
   // ---- Discovery → wizard-state mapping ----
-  // Clone track: apply everything (incl. onboarding) and advance to the pre-filled
-  // remaining steps. Scratch track: pre-fill overview/goals/connections/tools only
-  // (evidence is left to the user) and close the inline panel.
+  // Maps the interview profile onto wizard state, then advances into the
+  // pre-filled remaining steps. Runs for both tracks; for scratch we KEEP any
+  // template-seeded evidence (grounding is refined on the Examples step).
   const applyProfile = (profile: DiscoverProfile) => {
     if (profile.overview) setOverview(profile.overview);
     if (profile.goals?.length) setGoals(() => profile.goals ?? []);
     if (profile.connections?.length) setConnections((prev) => Array.from(new Set([...prev, ...(profile.connections ?? [])])));
     if (profile.tools?.length) setTools((prev) => Array.from(new Set([...prev, ...(profile.tools ?? [])])));
-    if (track === "clone") {
-      setOnboarding({
-        reportsTo: profile.reportsTo,
-        meetings: profile.meetings ?? [],
-        access: profile.access ?? [],
-      });
-      // Advance from the Discover step (index 1) into the pre-filled remainder.
-      setStep(2);
-    } else {
-      setDiscoverOpen(false);
+    setOnboarding((prev) => ({
+      reportsTo: profile.reportsTo ?? prev.reportsTo,
+      meetings: profile.meetings?.length ? profile.meetings : prev.meetings ?? [],
+      access: profile.access?.length ? profile.access : prev.access ?? [],
+    }));
+    // Adopt the agent name from the interview overview if we still lack one
+    // (scratch only — clone derives its name from cloneSource).
+    if (!cloneMode && !name.trim() && profile.overview) {
+      // Best-effort: use the first clause of the overview as a working name.
+      const guess = profile.overview.split(/[—.:]/)[0]?.trim();
+      if (guess && guess.length <= 48) setName(guess);
     }
+    setProfileApplied(true);
+    setStep(1); // advance into the pre-filled remainder (Access & onboarding)
+  };
+
+  // Advance with whatever's captured, without applying a completed profile.
+  const skipInterview = () => {
+    setProfileApplied(true);
+    setStep(1);
   };
 
   // ---- helpers ----
   const toggleTool = (v: string) => setTools((arr) => (arr.includes(v) ? arr.filter((x) => x !== v) : [...arr, v]));
   const togglePermission = (label: string) => setPermissions((prev) => prev.map((p) => (p.label === label ? { ...p, allowed: !p.allowed } : p)));
   const toggleConnection = (id: string) => setConnections((arr) => (arr.includes(id) ? arr.filter((x) => x !== id) : [...arr, id]));
-  const addDayTask = (key: WeekdayKey, v: string) => setDays((d) => ({ ...d, [key]: [...(d[key] ?? []), v] }));
-  const removeDayTask = (key: WeekdayKey, i: number) => setDays((d) => ({ ...d, [key]: (d[key] ?? []).filter((_, j) => j !== i) }));
 
   const liveCount = connections.filter((id) => catalog.find((c) => c.id === id)?.live).length;
   const pendingCount = connections.length - liveCount;
   const grantedCount = permissions.filter((p) => p.allowed).length;
-  const weeklyTaskCount = WEEKDAYS.reduce((n, d) => n + (days[d.key] ?? []).length, 0) + daily.length;
 
-  // ---- validity ----
-  const cloneValid = clone.name?.trim() !== "" && clone.name != null;
-  const scratchValid = name.trim() !== "" && role.trim() !== "";
-  const isValid = track === "clone" ? cloneValid : scratchValid;
-  const canNext = isValid; // step-1 is the gated step in both tracks; later steps are optional.
+  // ---- name / validity ----
+  // Deploy requires a name + role. Clone derives them from cloneSource; scratch
+  // captures the name on the review step (or from the interview).
+  const deployName = cloneMode
+    ? (clone.name?.trim() ? `${clone.name.trim()} (AI clone)` : "")
+    : name.trim();
+  const deployRoleOk = cloneMode ? (clone.title?.trim() || role.trim()) : role.trim();
+  const isValid = deployName !== "" && !!deployRoleOk;
 
   const reset = () => {
-    setTrack(null);
     setStep(0);
+    setCloneMode(false);
     setName("");
     setRole("");
     setIcon("bot");
+    setModel(activeModel);
     setAutonomy(AUTONOMY_CHOICES[0]);
     setOverview("");
     setGoals([]);
@@ -948,32 +935,20 @@ export function AgentWizard({
     setBudget({ currency: "USD", allowPayments: false });
     setClone({});
     setOnboarding({});
-    setDiscoverOpen(false);
+    setProfileApplied(false);
     setTemplateKey("");
-    setSuggestNote(null);
     setStashPlan("");
     setStashRoutine("");
     setStashInstr("");
     setEvidence([]);
     setUploadingIdx(null);
-    setDays({});
-    setDaily([]);
-    setCalendarPlaybooks([]);
-    resetScenario();
+    setInterviewSeq((n) => n + 1);
   };
 
-  // ---- submit: compile the active track into one NewAgent ----
+  // ---- submit: compile the flow into one NewAgent (track inferred) ----
   const submit = () => {
-    if (!track || !isValid) return;
+    if (!isValid) return;
 
-    const weeklyPlan: WeeklyPlan = { days, daily };
-    const scheduleStr = WEEKDAYS.filter((d) => (days[d.key] ?? []).length > 0)
-      .map((d) => `${d.label}: ${(days[d.key] ?? []).join(", ")}`)
-      .join("; ");
-    const routineLines = [
-      ...daily,
-      ...calendarPlaybooks.map((pb) => `On ${pb.trigger || "trigger"} → ${pb.name} (${pb.steps.length} step${pb.steps.length === 1 ? "" : "s"})`),
-    ];
     const budgetStr = budget.monthlyCap != null ? `${budget.currency} ${budget.monthlyCap}/mo` : undefined;
 
     let finalName = name.trim();
@@ -981,7 +956,7 @@ export function AgentWizard({
     let finalOverview = overview.trim();
     let finalInstructions = "";
     let finalPlan = "";
-    let finalRoutine = routineLines.length ? routineLines.join("\n") : "";
+    let finalRoutine = "";
 
     if (track === "clone") {
       const cn = (clone.name ?? "").trim();
@@ -1025,7 +1000,7 @@ export function AgentWizard({
       ].filter(Boolean).join("\n\n");
       finalInstructions = compiled || stashInstr.trim();
       finalPlan = stashPlan.trim() || finalOverview;
-      finalRoutine = finalRoutine || stashRoutine.trim();
+      finalRoutine = stashRoutine.trim();
     }
 
     const agent: NewAgent = {
@@ -1039,8 +1014,6 @@ export function AgentWizard({
       connections,
       permissions,
       budgetConfig: budget,
-      weeklyPlan,
-      calendarPlaybooks,
       goals: goals.length ? goals : undefined,
       buildTrack: track,
       cloneSource: track === "clone" ? clone : undefined,
@@ -1051,75 +1024,14 @@ export function AgentWizard({
       plan: finalPlan || undefined,
       routine: finalRoutine || undefined,
       budget: budgetStr,
-      schedule: scheduleStr || undefined,
     };
     onSubmit(agent);
     if (resetOnSubmit) reset();
   };
 
   // ============================================================
-  // RENDER
+  // RENDER — single unified flow. The AI interview is step 1 (default + open).
   // ============================================================
-
-  // ---- Step 0 · track chooser ----
-  if (track === null) {
-    const cardStyle: CSSProperties = {
-      flex: 1,
-      textAlign: "left",
-      padding: "22px 20px",
-      borderRadius: "var(--r-md)",
-      background: "var(--jv-surface-2)",
-      border: "1px solid var(--jv-border)",
-      cursor: "pointer",
-      transition: "all var(--t)",
-    };
-    return (
-      <div>
-        <div style={{ marginBottom: 20 }}>
-          <div style={{ font: "var(--fw-bold) 15px var(--font-body)", color: "var(--jv-text)" }}>How do you want to hire?</div>
-          <div style={{ font: "var(--fw-regular) 12px var(--font-body)", color: "var(--jv-text-muted)", marginTop: 4 }}>
-            Choose a starting point — you can shape everything after.
-          </div>
-        </div>
-        <div style={{ display: "flex", gap: 14 }}>
-          <button
-            onClick={() => { setTrack("clone"); setStep(0); }}
-            style={cardStyle}
-            onMouseEnter={(e) => (e.currentTarget.style.borderColor = "var(--jv-border-cyan)")}
-            onMouseLeave={(e) => (e.currentTarget.style.borderColor = "var(--jv-border)")}
-          >
-            <span style={{ width: 44, height: 44, display: "grid", placeItems: "center", borderRadius: "var(--r-sm)", color: "var(--jv-cyan)", background: "var(--grad-cyan-soft)", border: "1px solid var(--jv-border-cyan)", marginBottom: 14 }}>
-              <Icon name="user-round" size={22} />
-            </span>
-            <div style={{ font: "var(--fw-bold) 14px var(--font-body)", color: "var(--jv-text)" }}>Clone an existing employee</div>
-            <div style={{ font: "var(--fw-regular) 12px/1.5 var(--font-body)", color: "var(--jv-text-muted)", marginTop: 6 }}>
-              Mirror a real person's systems — calendar, email, Slack, notetaker — so the agent works the way they do.
-            </div>
-          </button>
-          <button
-            onClick={() => { setTrack("scratch"); setStep(0); }}
-            style={cardStyle}
-            onMouseEnter={(e) => (e.currentTarget.style.borderColor = "var(--jv-border-cyan)")}
-            onMouseLeave={(e) => (e.currentTarget.style.borderColor = "var(--jv-border)")}
-          >
-            <span style={{ width: 44, height: 44, display: "grid", placeItems: "center", borderRadius: "var(--r-sm)", color: "var(--jv-cyan)", background: "var(--grad-cyan-soft)", border: "1px solid var(--jv-border-cyan)", marginBottom: 14 }}>
-              <Icon name="sparkles" size={22} />
-            </span>
-            <div style={{ font: "var(--fw-bold) 14px var(--font-body)", color: "var(--jv-text)" }}>Build from scratch</div>
-            <div style={{ font: "var(--fw-regular) 12px/1.5 var(--font-body)", color: "var(--jv-text-muted)", marginTop: 6 }}>
-              Start from a role template and teach a new agent by example — good examples, screenshots, and what to avoid.
-            </div>
-          </button>
-        </div>
-        {onCancel && (
-          <div style={{ display: "flex", marginTop: 18, paddingTop: 16, borderTop: "1px solid var(--jv-hairline)" }}>
-            <Button variant="ghost" onClick={onCancel}>Cancel</Button>
-          </div>
-        )}
-      </div>
-    );
-  }
-
   return (
     <div>
       {/* Progress header */}
@@ -1148,401 +1060,120 @@ export function AgentWizard({
         <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
           <div style={{ font: "var(--fw-bold) 15px var(--font-body)", color: "var(--jv-text)" }}>{stepTitles[step]}</div>
           <div style={{ font: "var(--fw-semibold) 10px var(--font-hud)", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--jv-text-muted)" }}>
-            {track === "clone" ? "Clone" : "From scratch"} · Step {step + 1} of {stepTitles.length}
+            {cloneMode ? "Clone" : "From scratch"} · Step {step + 1} of {stepTitles.length}
           </div>
         </div>
       </div>
 
-      {/* ================= TRACK A — CLONE ================= */}
-      {track === "clone" && step === 0 && (
+      {/* ================= STEP 1 · DEFINE WITH AI ================= */}
+      {step === 0 && (
         <div>
-          <p style={{ margin: "0 0 16px", font: "var(--fw-regular) 12.5px/1.55 var(--font-body)", color: "var(--jv-text-muted)" }}>
-            Who are we cloning? The agent takes on this person's name, role and systems.
+          <p style={{ margin: "0 0 14px", font: "var(--fw-regular) 12.5px/1.55 var(--font-body)", color: "var(--jv-text-muted)" }}>
+            Let the AI interview you — it's already running below. It forms the access checklist, manager, meetings and goals as you answer, then pre-fills the rest. Optionally start from a template or clone an existing employee to jump ahead.
           </p>
-          <Field label="Full name">
-            <input value={clone.name ?? ""} onChange={(e) => setClone((c) => ({ ...c, name: e.target.value }))} placeholder="e.g. Dana Rivera" style={inputStyle} />
-          </Field>
-          <Field label="Title / role">
-            <input value={clone.title ?? ""} onChange={(e) => { const v = e.target.value; setClone((c) => ({ ...c, title: v })); if (!role.trim()) setRole(v); }} placeholder="e.g. Senior Account Executive" style={inputStyle} />
-          </Field>
-          <Field label="Work email">
-            <input value={clone.email ?? ""} onChange={(e) => setClone((c) => ({ ...c, email: e.target.value }))} placeholder="e.g. dana@company.com" style={inputStyle} />
-          </Field>
-          <Field label="Icon">
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              {ICON_CHOICES.map((ic) => (
-                <button key={ic} onClick={() => setIcon(ic)} title={ic} style={{ width: 38, height: 38, display: "grid", placeItems: "center", borderRadius: "var(--r-sm)", cursor: "pointer", color: icon === ic ? "var(--jv-cyan-300)" : "var(--jv-text-muted)", background: icon === ic ? "var(--grad-cyan-soft)" : "var(--jv-void)", border: `1px solid ${icon === ic ? "var(--jv-border-cyan)" : "var(--jv-border)"}` }}>
-                  <Icon name={ic} size={17} />
-                </button>
-              ))}
-            </div>
-          </Field>
-        </div>
-      )}
 
-      {track === "clone" && step === 1 && (
-        <div>
-          <p style={{ margin: "0 0 16px", font: "var(--fw-regular) 12.5px/1.55 var(--font-body)", color: "var(--jv-text-muted)" }}>
-            Let the AI interview you about {clone.name?.trim() || "this person"}. As you answer, it forms {clone.name?.trim() ? "their" : "the"} access checklist, manager, meetings and goals — then pre-fills the rest of the wizard.
-          </p>
-          <BreathingDiscovery
-            key={`clone-${clone.name ?? ""}`}
-            name={clone.name?.trim() || ""}
-            title={clone.title?.trim() || role.trim()}
-            track="clone"
-            onApply={applyProfile}
-            onSkip={() => setStep(2)}
-          />
-        </div>
-      )}
-
-      {track === "clone" && step === 2 && (
-        <div>
-          <p style={{ margin: "0 0 16px", font: "var(--fw-regular) 12.5px/1.55 var(--font-body)", color: "var(--jv-text-muted)" }}>
-            Connect {clone.name?.trim() || "their"} systems. Each one teaches the clone how they work — start with calendar, email, Slack, their notetaker and policies.
-          </p>
-          {catalog.length === 0 ? (
-            <div style={{ font: "var(--fw-regular) 12px var(--font-body)", color: "var(--jv-text-faint)" }}>No connections available.</div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-              {Array.from(new Set(catalog.map((c) => c.category))).map((cat) => (
-                <div key={cat}>
-                  <div style={{ font: "var(--fw-semibold) 9px var(--font-hud)", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--jv-text-muted)", marginBottom: 6 }}>{cat}</div>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                    {catalog.filter((c) => c.category === cat).map((c) => {
-                      const on = connections.includes(c.id);
-                      const emphasis = CLONE_EMPHASIS.includes(c.id);
-                      return (
-                        <button
-                          key={c.id}
-                          onClick={() => toggleConnection(c.id)}
-                          style={{
-                            textAlign: "left",
-                            display: "flex",
-                            flexDirection: "column",
-                            gap: 6,
-                            padding: "11px 12px",
-                            borderRadius: "var(--r-sm)",
-                            cursor: "pointer",
-                            background: on ? "var(--grad-cyan-soft)" : "var(--jv-surface-3)",
-                            border: `1px solid ${on ? "var(--jv-border-cyan)" : emphasis ? "var(--jv-border)" : "var(--jv-border-soft)"}`,
-                          }}
-                        >
-                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                            <Icon name={on ? "check-circle-2" : "plug"} size={15} color={on ? "var(--jv-cyan)" : "var(--jv-text-muted)"} />
-                            <span style={{ flex: 1, minWidth: 0, font: "var(--fw-semibold) 12.5px var(--font-body)", color: "var(--jv-text)" }}>{c.label}</span>
-                            <span style={{ padding: "2px 8px", borderRadius: "var(--r-pill)", font: "var(--fw-semibold) 9px var(--font-hud)", letterSpacing: "0.08em", textTransform: "uppercase", color: c.live ? "var(--jv-green)" : "var(--jv-text-muted)", background: c.live ? "color-mix(in srgb, var(--jv-green) 14%, transparent)" : "var(--jv-void)", border: `1px solid ${c.live ? "color-mix(in srgb, var(--jv-green) 40%, transparent)" : "var(--jv-border-soft)"}` }}>
-                              {c.live ? "Live" : "Configured — pending"}
-                            </span>
-                          </div>
-                          {LEARNS[c.id] && (
-                            <div style={{ font: "var(--fw-medium) 11px var(--font-body)", color: "var(--jv-cyan-300)" }}>Learns: {LEARNS[c.id]}</div>
-                          )}
-                          {c.note && <div style={{ font: "var(--fw-regular) 10.5px var(--font-body)", color: "var(--jv-text-faint)" }}>{c.note}</div>}
-                        </button>
-                      );
-                    })}
+          {/* Company context banner — the AI researches this company to tailor its setup */}
+          <div style={{ marginBottom: 16, padding: "12px 14px", borderRadius: "var(--r-md)", background: "var(--jv-surface-2)", border: "1px solid var(--jv-border-cyan)" }}>
+            {!companyEditing ? (
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <span style={{ width: 36, height: 36, display: "grid", placeItems: "center", borderRadius: "var(--r-sm)", color: "var(--jv-cyan)", background: "var(--grad-cyan-soft)", border: "1px solid var(--jv-border-cyan)", flex: "0 0 auto" }}>
+                  <Icon name="building-2" size={17} />
+                </span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ font: "var(--fw-bold) 13px var(--font-body)", color: "var(--jv-text)" }}>Tailoring to {companyName ?? "your company"}</div>
+                  <div style={{ font: "var(--fw-regular) 11px var(--font-body)", color: "var(--jv-text-muted)", marginTop: 1 }}>
+                    {[company?.industry?.trim(), company?.size?.trim()].filter(Boolean).join(" · ") || "Set your company so the AI can research it"}
+                  </div>
+                  <div style={{ font: "var(--fw-regular) 10.5px var(--font-body)", color: "var(--jv-text-faint)", marginTop: 3 }}>
+                    The AI researches this company — its website and business — to recommend a company-tailored setup below.
                   </div>
                 </div>
-              ))}
-            </div>
-          )}
-          <div style={{ marginTop: 14, font: "var(--fw-regular) 11px var(--font-body)", color: "var(--jv-text-muted)" }}>
-            {liveCount} live · {pendingCount} pending selected.
-          </div>
-        </div>
-      )}
-
-      {track === "clone" && step === 3 && (
-        <div>
-          <p style={{ margin: "0 0 16px", font: "var(--fw-regular) 12.5px/1.55 var(--font-body)", color: "var(--jv-text-muted)" }}>
-            {clone.name?.trim() ? `${clone.name.trim()}'s` : "The"} living onboarding — pre-filled from the interview. Refine the access checklist, who they report to, and which meetings to join.
-          </p>
-          <OnboardingEditor onboarding={onboarding} setOnboarding={setOnboarding} />
-        </div>
-      )}
-
-      {track === "clone" && step === 4 && (
-        <div>
-          <Field label="Goals" hint="What should this clone achieve — and how do you measure it?">
-            <GoalsEditor goals={goals} setGoals={setGoals} />
-          </Field>
-        </div>
-      )}
-
-      {track === "clone" && step === 5 && (
-        <div>
-          <Field label="Permissions" hint="What this agent is allowed to do. Denied by default — grant only what it needs.">
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {permissions.map((p) => (
-                <div key={p.label} style={{ display: "flex", alignItems: "center", gap: 12, padding: "9px 12px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)" }}>
-                  <Icon name="shield-check" size={15} color={p.allowed ? "var(--jv-green)" : "var(--jv-text-faint)"} />
-                  <span style={{ flex: 1, font: "var(--fw-medium) 12.5px var(--font-body)", color: "var(--jv-text-soft)" }}>{p.label}</span>
-                  <span style={{ font: "var(--fw-semibold) 9px var(--font-hud)", letterSpacing: "0.1em", textTransform: "uppercase", color: p.allowed ? "var(--jv-green)" : "var(--jv-text-faint)" }}>{p.allowed ? "Allowed" : "Denied"}</span>
-                  <Switch checked={p.allowed} onChange={() => togglePermission(p.label)} />
-                </div>
-              ))}
-            </div>
-          </Field>
-          <Field label="Budget" hint="Light spending guardrails — full controls on the from-scratch track.">
-            <BudgetForm budget={budget} setBudget={setBudget} />
-          </Field>
-        </div>
-      )}
-
-      {track === "clone" && step === 6 && (
-        <div>
-          <Field label="Review & deploy">
-            <div style={{ padding: "14px 16px", borderRadius: "var(--r-md)", background: "var(--jv-surface-2)", border: "1px solid var(--jv-border-cyan)" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
-                <span style={{ width: 36, height: 36, display: "grid", placeItems: "center", borderRadius: "var(--r-sm)", color: "var(--jv-cyan)", background: "var(--grad-cyan-soft)", border: "1px solid var(--jv-border-cyan)" }}>
-                  <Icon name={icon} size={17} />
-                </span>
-                <div>
-                  <div style={{ font: "var(--fw-bold) 14px var(--font-body)", color: "var(--jv-text)" }}>{clone.name?.trim() ? `${clone.name.trim()} (AI clone)` : "AI clone"}</div>
-                  <div style={{ font: "var(--fw-regular) 11px var(--font-body)", color: "var(--jv-text-muted)" }}>{clone.title?.trim() || role || "Cloned employee"}</div>
-                </div>
-              </div>
-              {[
-                ["Cloning", clone.name?.trim() ? `${clone.name.trim()}${clone.email?.trim() ? ` · ${clone.email.trim()}` : ""}` : "—"],
-                ["Connected systems", `${liveCount} live · ${pendingCount} pending`],
-                ["Reports to", onboarding.reportsTo?.name || onboarding.reportsTo?.email || "—"],
-                ["Access checklist", onboarding.access?.length ? `${onboarding.access.length} item${onboarding.access.length === 1 ? "" : "s"}` : "—"],
-                ["Meetings to join", onboarding.meetings?.length ? String(onboarding.meetings.length) : "—"],
-                ["Goals", goals.length ? goals.map((g) => g.objective).join("; ") : "—"],
-                ["Granted permissions", `${grantedCount} of ${permissions.length}`],
-                ["Budget", budget.monthlyCap != null ? `${budget.currency} ${budget.monthlyCap}/mo${budget.allowPayments ? " · payments on" : ""}` : "No cap set"],
-              ].map(([k, v]) => (
-                <div key={k} style={{ display: "flex", gap: 12, padding: "6px 0", borderTop: "1px solid var(--jv-hairline)" }}>
-                  <span style={{ flex: "0 0 150px", font: "var(--fw-semibold) 10px var(--font-hud)", letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--jv-text-muted)" }}>{k}</span>
-                  <span style={{ flex: 1, minWidth: 0, font: "var(--fw-regular) 12px/1.5 var(--font-body)", color: "var(--jv-text-soft)" }}>{v}</span>
-                </div>
-              ))}
-            </div>
-          </Field>
-        </div>
-      )}
-
-      {/* ================= TRACK B — FROM SCRATCH ================= */}
-      {track === "scratch" && step === 0 && (
-        <div>
-          {/* AI interview accelerator — pre-fills overview / goals / connections / tools */}
-          <div style={{ marginBottom: 16, padding: discoverOpen ? "14px 16px" : "10px 12px", borderRadius: "var(--r-md)", background: "var(--jv-surface-2)", border: "1px dashed var(--jv-border-cyan)" }}>
-            {!discoverOpen ? (
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ font: "var(--fw-semibold) 12px var(--font-body)", color: "var(--jv-text)" }}>Not sure where to start?</div>
-                  <div style={{ font: "var(--fw-regular) 11px var(--font-body)", color: "var(--jv-text-faint)", marginTop: 2 }}>Let the AI interview you and pre-fill overview, goals, connections and tools.</div>
-                </div>
-                <Button variant="secondary" icon={<Icon name="sparkles" size={14} />} disabled={!name.trim() && !role.trim()} onClick={() => setDiscoverOpen(true)}>
-                  Let AI interview you
-                </Button>
+                <Button variant="ghost" size="sm" icon={<Icon name="pencil" size={13} />} onClick={openCompanyEdit}>Edit</Button>
               </div>
             ) : (
               <div>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-                  <span style={{ font: "var(--fw-semibold) 10px var(--font-hud)", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--jv-cyan-300)" }}>AI discovery interview</span>
-                  <Button variant="ghost" size="sm" icon={<Icon name="x" size={13} />} onClick={() => setDiscoverOpen(false)}>Close</Button>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+                  <Icon name="building-2" size={14} color="var(--jv-cyan)" />
+                  <span style={{ font: "var(--fw-semibold) 10px var(--font-hud)", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--jv-cyan-300)" }}>Company context</span>
+                  <span style={{ font: "var(--fw-regular) 11px var(--font-body)", color: "var(--jv-text-faint)" }}>the AI researches this to tailor recommendations</span>
                 </div>
-                <BreathingDiscovery
-                  key={`scratch-${name}-${role}`}
-                  name={name.trim() || role.trim()}
-                  title={role.trim()}
-                  track="scratch"
-                  onApply={applyProfile}
-                  onSkip={() => setDiscoverOpen(false)}
-                />
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
+                  <input value={companyForm.name} onChange={(e) => setCompanyForm((f) => ({ ...f, name: e.target.value }))} placeholder="Company name" style={inputStyle} />
+                  <input value={companyForm.domain} onChange={(e) => setCompanyForm((f) => ({ ...f, domain: e.target.value }))} placeholder="Domain — e.g. goperfectmatch.com" style={inputStyle} />
+                  <input value={companyForm.industry} onChange={(e) => setCompanyForm((f) => ({ ...f, industry: e.target.value }))} placeholder="Industry" style={inputStyle} />
+                  <input value={companyForm.size} onChange={(e) => setCompanyForm((f) => ({ ...f, size: e.target.value }))} placeholder="Size — e.g. 11–50" style={inputStyle} />
+                </div>
+                <textarea value={companyForm.coreBusiness} onChange={(e) => setCompanyForm((f) => ({ ...f, coreBusiness: e.target.value }))} placeholder="Core business — what the company does" style={{ ...areaStyle, marginBottom: 10 }} />
+                <div style={{ display: "flex", gap: 8 }}>
+                  <Button variant="primary" size="sm" icon={<Icon name={companySaving ? "loader" : "check"} size={13} />} disabled={companySaving || !companyForm.name.trim()} onClick={saveCompany}>
+                    {companySaving ? "Saving…" : "Save"}
+                  </Button>
+                  <Button variant="ghost" size="sm" disabled={companySaving} onClick={() => setCompanyEditing(false)}>Cancel</Button>
+                </div>
               </div>
             )}
           </div>
 
-          <Field label="Role template" hint="Seeds behaviors, tools and connections. Pick Blank to define your own.">
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+          {/* Start from… — optional accelerators */}
+          <div style={{ marginBottom: 16, padding: "14px 16px", borderRadius: "var(--r-md)", background: "var(--jv-surface-2)", border: "1px solid var(--jv-border-soft)" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+              <Icon name="rocket" size={14} color="var(--jv-cyan)" />
+              <span style={{ font: "var(--fw-semibold) 10px var(--font-hud)", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--jv-cyan-300)" }}>Start from…</span>
+              <span style={{ font: "var(--fw-regular) 11px var(--font-body)", color: "var(--jv-text-faint)" }}>optional — the interview runs either way</span>
+            </div>
+
+            {/* Template chips */}
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12, opacity: cloneMode ? 0.5 : 1, pointerEvents: cloneMode ? "none" : "auto" }}>
               {ROLE_TEMPLATES.map((t) => {
-                const on = templateKey === t.key;
+                const on = !cloneMode && templateKey === t.key;
                 return (
-                  <button key={t.key} onClick={() => pickTemplate(t)} style={{ textAlign: "left", display: "flex", alignItems: "center", gap: 10, padding: "11px 12px", borderRadius: "var(--r-sm)", cursor: "pointer", background: on ? "var(--grad-cyan-soft)" : "var(--jv-surface-3)", border: `1px solid ${on ? "var(--jv-border-cyan)" : "var(--jv-border-soft)"}` }}>
-                    <Icon name={t.icon} size={17} color={on ? "var(--jv-cyan)" : "var(--jv-text-muted)"} />
-                    <span style={{ font: "var(--fw-semibold) 12px var(--font-body)", color: on ? "var(--jv-text)" : "var(--jv-text-soft)" }}>{t.label}</span>
+                  <button key={t.key} onClick={() => pickTemplate(t)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 12px", borderRadius: "var(--r-pill)", cursor: "pointer", background: on ? "var(--grad-cyan-soft)" : "var(--jv-void)", border: `1px solid ${on ? "var(--jv-border-cyan)" : "var(--jv-border)"}` }}>
+                    <Icon name={t.icon} size={14} color={on ? "var(--jv-cyan)" : "var(--jv-text-muted)"} />
+                    <span style={{ font: `${on ? "var(--fw-semibold)" : "var(--fw-medium)"} 12px var(--font-body)`, color: on ? "var(--jv-cyan-300)" : "var(--jv-text-soft)" }}>{t.label}</span>
                   </button>
                 );
               })}
             </div>
-          </Field>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-            <Field label="Agent name">
-              <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Finance Agent" style={inputStyle} />
-            </Field>
-            <Field label="Role">
-              <input value={role} onChange={(e) => setRole(e.target.value)} placeholder="e.g. Tracks spend & budgets" style={inputStyle} />
-            </Field>
-          </div>
-
-          <Field label="Icon">
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              {ICON_CHOICES.map((ic) => (
-                <button key={ic} onClick={() => setIcon(ic)} title={ic} style={{ width: 38, height: 38, display: "grid", placeItems: "center", borderRadius: "var(--r-sm)", cursor: "pointer", color: icon === ic ? "var(--jv-cyan-300)" : "var(--jv-text-muted)", background: icon === ic ? "var(--grad-cyan-soft)" : "var(--jv-void)", border: `1px solid ${icon === ic ? "var(--jv-border-cyan)" : "var(--jv-border)"}` }}>
-                  <Icon name={ic} size={17} />
-                </button>
-              ))}
+            {/* Clone toggle */}
+            <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 12px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: `1px solid ${cloneMode ? "var(--jv-border-cyan)" : "var(--jv-border-soft)"}` }}>
+              <Icon name="user-round" size={15} color={cloneMode ? "var(--jv-cyan)" : "var(--jv-text-muted)"} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ font: "var(--fw-semibold) 12.5px var(--font-body)", color: "var(--jv-text)" }}>Clone an existing employee</div>
+                <div style={{ font: "var(--fw-regular) 10.5px var(--font-body)", color: "var(--jv-text-faint)", marginTop: 1 }}>Mirror a real person — the agent takes their name, role and systems.</div>
+              </div>
+              <Switch checked={cloneMode} onChange={toggleCloneMode} />
             </div>
-          </Field>
 
-          <Field label="Autonomy">
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              {AUTONOMY_CHOICES.map((a) => (
-                <Chip key={a} active={autonomy === a} onClick={() => setAutonomy(a)}>{a}</Chip>
-              ))}
-            </div>
-          </Field>
-
-          <Field label="Reasoning model" hint="Comes from the providers you connected in AI Core.">
-            {models.length ? (
-              <select value={model} onChange={(e) => setModel(e.target.value)} style={{ ...inputStyle, appearance: "none", cursor: "pointer", maxWidth: 360 }}>
-                {models.map((m) => {
-                  const p = providers.find((pr) => pr.model === m);
-                  return <option key={m} value={m}>{m}{p ? ` · ${p.name}` : ""}{p?.active ? " (active)" : ""}</option>;
-                })}
-              </select>
-            ) : (
-              <div style={{ ...inputStyle, maxWidth: 360, display: "flex", alignItems: "center", gap: 7, color: "var(--jv-text-muted)", font: "var(--fw-regular) 12px var(--font-body)" }}>
-                <Icon name="plug" size={13} /> No model connected — add one in AI Core
+            {cloneMode && (
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginTop: 12 }}>
+                <input value={clone.name ?? ""} onChange={(e) => setClonePatch({ name: e.target.value })} placeholder="Full name — e.g. Dana Rivera" style={inputStyle} />
+                <input value={clone.title ?? ""} onChange={(e) => { const v = e.target.value; setClonePatch({ title: v }); if (!role.trim()) setRole(v); }} placeholder="Title — e.g. Senior AE" style={inputStyle} />
+                <input value={clone.email ?? ""} onChange={(e) => setClonePatch({ email: e.target.value })} placeholder="Work email" style={inputStyle} />
               </div>
             )}
-          </Field>
-
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, margin: "4px 0 14px", padding: "10px 12px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-2)", border: "1px dashed var(--jv-border-cyan)" }}>
-            <div style={{ minWidth: 0 }}>
-              <div style={{ font: "var(--fw-semibold) 12px var(--font-body)", color: "var(--jv-text)" }}>Autofill from role</div>
-              <div style={{ font: "var(--fw-regular) 11px var(--font-body)", color: suggestNote ? "var(--jv-cyan-300)" : "var(--jv-text-faint)", marginTop: 2 }}>
-                {suggestNote ?? "Draft the overview (and plan / routine / instructions) from this agent's role."}
-              </div>
-            </div>
-            <Button variant="ghost" icon={<Icon name={suggesting ? "loader" : "sparkles"} size={14} />} disabled={!role.trim() || suggesting} onClick={suggest}>
-              {suggesting ? "Generating…" : "Suggest"}
-            </Button>
           </div>
 
-          <Field label="Overview · what is this role about?" hint="A plain-language explainer of what this teammate is responsible for.">
-            <textarea value={overview} onChange={(e) => setOverview(e.target.value)} placeholder="e.g. Owns spend visibility across every team — tracks budgets, flags overruns and keeps finance in the loop." style={{ ...areaStyle, height: 90 }} />
-          </Field>
+          {/* The breathing interview — DEFAULT, always mounted/open */}
+          <BreathingDiscovery
+            key={`iv-${interviewSeq}`}
+            name={cloneMode ? (clone.name?.trim() || "") : (name.trim() || role.trim())}
+            title={cloneMode ? (clone.title?.trim() || role.trim()) : role.trim()}
+            track={track}
+            seed={buildSeed()}
+            companyName={companyName}
+            onApply={applyProfile}
+            onSkip={skipInterview}
+          />
         </div>
       )}
 
-      {track === "scratch" && step === 1 && (
+      {/* ================= STEP 2 · ACCESS & ONBOARDING ================= */}
+      {step === 1 && (
         <div>
-          <p style={{ margin: "0 0 14px", font: "var(--fw-regular) 12.5px/1.55 var(--font-body)", color: "var(--jv-text-muted)" }}>
-            Teach the agent by example. For each behavior, add good examples (a screenshot or text) and, optionally, what to avoid. This grounding is what makes the agent work.
+          <p style={{ margin: "0 0 16px", font: "var(--fw-regular) 12.5px/1.55 var(--font-body)", color: "var(--jv-text-muted)" }}>
+            Pre-filled from the interview — refine as needed. Connect the systems this agent should reach, then set who they report to, the access checklist and which meetings to join.
           </p>
-
-          {/* Readiness score */}
-          <div style={{ marginBottom: 16, padding: "12px 14px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-2)", border: "1px solid var(--jv-border-soft)" }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-              <span style={{ font: "var(--fw-semibold) 10px var(--font-hud)", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--jv-cyan-300)" }}>Readiness score</span>
-              <span style={{ font: "var(--fw-bold) 13px var(--font-mono)", color: readiness >= 60 ? "var(--jv-green)" : "var(--jv-amber)" }}>{readiness}%</span>
-            </div>
-            <div style={{ height: 8, borderRadius: "var(--r-pill)", background: "var(--jv-void)", overflow: "hidden", border: "1px solid var(--jv-border-soft)" }}>
-              <div style={{ width: `${readiness}%`, height: "100%", background: readiness >= 60 ? "var(--jv-green)" : "var(--grad-cyan)", transition: "width var(--t)" }} />
-            </div>
-            <div style={{ font: "var(--fw-regular) 11px var(--font-body)", color: "var(--jv-text-faint)", marginTop: 6 }}>
-              {groundedCount} of {behaviorCount || 0} behaviors have at least one example.{readiness < 60 ? " Add more examples for a sharper agent — you can still deploy." : ""}
-            </div>
-          </div>
-
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            {evidence.map((e, i) => (
-              <EvidenceCard
-                key={i}
-                idx={i}
-                item={e}
-                uploading={uploadingIdx === i}
-                fileRef={(el) => { fileRefs.current[i] = el; }}
-                onPickFile={() => fileRefs.current[i]?.click()}
-                onPatch={(patch) => patchBehavior(i, patch)}
-                onAddExample={(ex) => addExample(i, ex)}
-                onRemoveExample={(k) => removeExample(i, k)}
-                onRemove={() => removeBehavior(i)}
-                onUpload={(file, caption) => uploadScreenshot(i, file, caption)}
-              />
-            ))}
-            <Button variant="ghost" size="sm" icon={<Icon name="plus" size={13} />} onClick={addBehavior}>Add behavior</Button>
-          </div>
-        </div>
-      )}
-
-      {track === "scratch" && step === 2 && (
-        <div>
-          <Field label="Weekly plan" hint="What this agent focuses on each day of the week.">
-            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              {WEEKDAYS.map((d) => (
-                <div key={d.key} style={{ padding: "10px 12px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-2)", border: "1px solid var(--jv-border-soft)" }}>
-                  <div style={{ font: "var(--fw-semibold) 10px var(--font-hud)", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--jv-cyan-300)", marginBottom: 8 }}>{d.label}</div>
-                  <TaskList items={days[d.key] ?? []} onAdd={(v) => addDayTask(d.key, v)} onRemove={(i) => removeDayTask(d.key, i)} placeholder={`Add a ${d.label} task…`} />
-                </div>
-              ))}
-            </div>
-          </Field>
-
-          <Field label="Daily repeatable tasks" hint="Runs every day, regardless of weekday.">
-            <TaskList items={daily} onAdd={(v) => setDaily((arr) => [...arr, v])} onRemove={(i) => setDaily((arr) => arr.filter((_, j) => j !== i))} placeholder="Add a daily task…" />
-          </Field>
-
-          <Field label="Calendar playbooks" hint="Scenarios triggered off your calendar — e.g. meeting → present product → screen-share → send Stripe link.">
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {calendarPlaybooks.map((pb) => (
-                <div key={pb.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 13px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)" }}>
-                  <Icon name="calendar" size={15} color="var(--jv-cyan)" />
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ font: "var(--fw-semibold) 13px var(--font-body)", color: "var(--jv-text)" }}>{pb.name}</div>
-                    <div style={{ font: "var(--fw-regular) 11px var(--font-body)", color: "var(--jv-text-muted)", marginTop: 1 }}>{pb.trigger || "no trigger"} · {pb.steps.length} step{pb.steps.length === 1 ? "" : "s"}</div>
-                  </div>
-                  <button onClick={() => editScenario(pb)} title="Edit" style={{ background: "none", border: "none", color: "var(--jv-text-faint)", cursor: "pointer", display: "grid", placeItems: "center" }}><Icon name="pen-tool" size={13} /></button>
-                  <button onClick={() => setCalendarPlaybooks((prev) => prev.filter((p) => p.id !== pb.id))} title="Remove" style={{ background: "none", border: "none", color: "var(--jv-text-faint)", cursor: "pointer", display: "grid", placeItems: "center" }}><Icon name="x" size={14} /></button>
-                </div>
-              ))}
-
-              {scenarioOpen ? (
-                <div style={{ padding: "14px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-2)", border: "1px dashed var(--jv-border-cyan)" }}>
-                  {!editingId && (
-                    <Field label="Describe the scenario" hint="We'll draft a name, trigger and steps you can edit.">
-                      <div style={{ display: "flex", gap: 8 }}>
-                        <input value={scScenario} onChange={(e) => setScScenario(e.target.value)} placeholder="e.g. product demo call with a prospect" style={inputStyle} />
-                        <Button variant="ghost" icon={<Icon name={scBusy ? "loader" : "sparkles"} size={14} />} disabled={!scScenario.trim() || scBusy} onClick={suggestScenario}>{scBusy ? "…" : "Suggest"}</Button>
-                      </div>
-                    </Field>
-                  )}
-                  {scNote && <div style={{ font: "var(--fw-regular) 11px var(--font-body)", color: "var(--jv-cyan-300)", margin: "-6px 0 12px" }}>{scNote}</div>}
-                  <Field label="Name"><input value={scName} onChange={(e) => setScName(e.target.value)} placeholder="e.g. Product demo call" style={inputStyle} /></Field>
-                  <Field label="Trigger" hint="A keyword matched against calendar events, e.g. 'meeting' or 'demo'."><input value={scTrigger} onChange={(e) => setScTrigger(e.target.value)} placeholder="e.g. meeting" style={inputStyle} /></Field>
-                  <Field label="Steps · one per line"><textarea value={scSteps} onChange={(e) => setScSteps(e.target.value)} placeholder={"Present the product\nShare screen\nSend Stripe link from back office"} style={{ ...areaStyle, height: 100 }} /></Field>
-                  <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-                    <Button variant="ghost" size="sm" onClick={resetScenario}>Cancel</Button>
-                    <Button variant="secondary" size="sm" icon={<Icon name="check" size={13} />} disabled={!scName.trim()} onClick={saveScenario}>{editingId ? "Save changes" : "Add scenario"}</Button>
-                  </div>
-                </div>
-              ) : (
-                <Button variant="ghost" size="sm" icon={<Icon name="plus" size={13} />} onClick={() => { resetScenario(); setScenarioOpen(true); }}>Add scenario</Button>
-              )}
-            </div>
-          </Field>
-        </div>
-      )}
-
-      {track === "scratch" && step === 3 && (
-        <div>
-          <Field label="Permissions" hint="What this agent is allowed to do. Denied by default — grant only what it needs.">
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {permissions.map((p) => (
-                <div key={p.label} style={{ display: "flex", alignItems: "center", gap: 12, padding: "9px 12px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)" }}>
-                  <Icon name="shield-check" size={15} color={p.allowed ? "var(--jv-green)" : "var(--jv-text-faint)"} />
-                  <span style={{ flex: 1, font: "var(--fw-medium) 12.5px var(--font-body)", color: "var(--jv-text-soft)" }}>{p.label}</span>
-                  <span style={{ font: "var(--fw-semibold) 9px var(--font-hud)", letterSpacing: "0.1em", textTransform: "uppercase", color: p.allowed ? "var(--jv-green)" : "var(--jv-text-faint)" }}>{p.allowed ? "Allowed" : "Denied"}</span>
-                  <Switch checked={p.allowed} onChange={() => togglePermission(p.label)} />
-                </div>
-              ))}
-            </div>
-          </Field>
 
           <Field label="Connections" hint="Systems this agent can reach. Live are wired now; pending are configured but not yet active.">
             {catalog.length === 0 ? (
@@ -1573,44 +1204,145 @@ export function AgentWizard({
             )}
           </Field>
 
-          <Field label="Skills & tools" hint={`${tools.length} selected — what this agent is allowed to call.`}>
+          <div style={{ marginTop: 4 }}>
+            <OnboardingEditor onboarding={onboarding} setOnboarding={setOnboarding} />
+          </div>
+        </div>
+      )}
+
+      {/* ================= STEP 3 · EXAMPLES (optional grounding) ================= */}
+      {step === 2 && (
+        <div>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 8, margin: "0 0 6px" }}>
+            <span style={{ font: "var(--fw-bold) 13px var(--font-body)", color: "var(--jv-text)" }}>Strengthen with examples</span>
+            <span style={{ padding: "1px 8px", borderRadius: "var(--r-pill)", font: "var(--fw-semibold) 9px var(--font-hud)", letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--jv-text-muted)", border: "1px solid var(--jv-border-soft)" }}>Optional</span>
+          </div>
+          <p style={{ margin: "0 0 14px", font: "var(--fw-regular) 12.5px/1.55 var(--font-body)", color: "var(--jv-text-muted)" }}>
+            Ground each behavior with good examples (a screenshot or text) and, optionally, what to avoid. This sharpens the agent — you can skip it and deploy without any.
+          </p>
+
+          {/* Readiness score */}
+          <div style={{ marginBottom: 16, padding: "12px 14px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-2)", border: "1px solid var(--jv-border-soft)" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+              <span style={{ font: "var(--fw-semibold) 10px var(--font-hud)", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--jv-cyan-300)" }}>Readiness score</span>
+              <span style={{ font: "var(--fw-bold) 13px var(--font-mono)", color: readiness >= 60 ? "var(--jv-green)" : "var(--jv-amber)" }}>{readiness}%</span>
+            </div>
+            <div style={{ height: 8, borderRadius: "var(--r-pill)", background: "var(--jv-void)", overflow: "hidden", border: "1px solid var(--jv-border-soft)" }}>
+              <div style={{ width: `${readiness}%`, height: "100%", background: readiness >= 60 ? "var(--jv-green)" : "var(--grad-cyan)", transition: "width var(--t)" }} />
+            </div>
+            <div style={{ font: "var(--fw-regular) 11px var(--font-body)", color: "var(--jv-text-faint)", marginTop: 6 }}>
+              {behaviorCount === 0
+                ? "No behaviors yet — add one to teach by example, or skip this step."
+                : `${groundedCount} of ${behaviorCount} behaviors have at least one example.${readiness < 60 ? " Add more for a sharper agent — you can still deploy." : ""}`}
+            </div>
+          </div>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {evidence.map((e, i) => (
+              <EvidenceCard
+                key={i}
+                idx={i}
+                item={e}
+                uploading={uploadingIdx === i}
+                fileRef={(el) => { fileRefs.current[i] = el; }}
+                onPickFile={() => fileRefs.current[i]?.click()}
+                onPatch={(patch) => patchBehavior(i, patch)}
+                onAddExample={(ex) => addExample(i, ex)}
+                onRemoveExample={(k) => removeExample(i, k)}
+                onRemove={() => removeBehavior(i)}
+                onUpload={(file, caption) => uploadScreenshot(i, file, caption)}
+              />
+            ))}
+            <Button variant="ghost" size="sm" icon={<Icon name="plus" size={13} />} onClick={addBehavior}>Add behavior</Button>
+          </div>
+        </div>
+      )}
+
+      {/* ================= STEP 4 · GUARDRAILS & BUDGET ================= */}
+      {step === 3 && (
+        <div>
+          <p style={{ margin: "0 0 16px", font: "var(--fw-regular) 12.5px/1.55 var(--font-body)", color: "var(--jv-text-muted)" }}>
+            Set the operating guardrails. Sensible defaults are applied — grant only the permissions this agent needs and cap what it may spend.
+          </p>
+
+          <Field label="Permissions" hint="What this agent is allowed to do. Denied by default — grant only what it needs.">
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {permissions.map((p) => (
+                <div key={p.label} style={{ display: "flex", alignItems: "center", gap: 12, padding: "9px 12px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)" }}>
+                  <Icon name="shield-check" size={15} color={p.allowed ? "var(--jv-green)" : "var(--jv-text-faint)"} />
+                  <span style={{ flex: 1, font: "var(--fw-medium) 12.5px var(--font-body)", color: "var(--jv-text-soft)" }}>{p.label}</span>
+                  <span style={{ font: "var(--fw-semibold) 9px var(--font-hud)", letterSpacing: "0.1em", textTransform: "uppercase", color: p.allowed ? "var(--jv-green)" : "var(--jv-text-faint)" }}>{p.allowed ? "Allowed" : "Denied"}</span>
+                  <Switch checked={p.allowed} onChange={() => togglePermission(p.label)} />
+                </div>
+              ))}
+            </div>
+          </Field>
+
+          <Field label="Budget & authority" hint="Hard limits on what this agent may spend and do.">
+            <BudgetForm budget={budget} setBudget={setBudget} />
+          </Field>
+
+          {/* Operational settings — model + autonomy (defaults applied, edit if needed) */}
+          <Field label="Reasoning model" hint="Defaults to your active AI Core provider. Comes from the providers you connected.">
+            {models.length ? (
+              <select value={model} onChange={(e) => setModel(e.target.value)} style={{ ...inputStyle, appearance: "none", cursor: "pointer", maxWidth: 360 }}>
+                {models.map((m) => {
+                  const p = providers.find((pr) => pr.model === m);
+                  return <option key={m} value={m}>{m}{p ? ` · ${p.name}` : ""}{p?.active ? " (active)" : ""}</option>;
+                })}
+              </select>
+            ) : (
+              <div style={{ ...inputStyle, maxWidth: 360, display: "flex", alignItems: "center", gap: 7, color: "var(--jv-text-muted)", font: "var(--fw-regular) 12px var(--font-body)" }}>
+                <Icon name="plug" size={13} /> No model connected — add one in AI Core
+              </div>
+            )}
+          </Field>
+
+          <Field label="Autonomy" hint="How much this agent may do on its own. Defaults to Ask before acting.">
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              {TOOL_CHOICES.map((t) => (
-                <Chip key={t} active={tools.includes(t)} onClick={() => toggleTool(t)}>{t}</Chip>
+              {AUTONOMY_CHOICES.map((a) => (
+                <Chip key={a} active={autonomy === a} onClick={() => setAutonomy(a)}>{a}</Chip>
               ))}
             </div>
           </Field>
         </div>
       )}
 
-      {track === "scratch" && step === 4 && (
+      {/* ================= STEP 5 · REVIEW & DEPLOY ================= */}
+      {step === 4 && (
         <div>
-          <Field label="Goals" hint="What should this agent achieve — and how do you measure it?">
-            <GoalsEditor goals={goals} setGoals={setGoals} />
-          </Field>
-          <Field label="Budget & authority" hint="Hard limits on what this agent may spend and do.">
-            <BudgetForm budget={budget} setBudget={setBudget} />
-          </Field>
-          <Field label="Review">
+          {!cloneMode && (
+            <Field label="Agent name" hint="Give this teammate a name — required before you can deploy.">
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+                <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Finance Agent" style={inputStyle} />
+                <input value={role} onChange={(e) => setRole(e.target.value)} placeholder="Role — e.g. Tracks spend & budgets" style={inputStyle} />
+              </div>
+            </Field>
+          )}
+
+          <Field label="Review & deploy">
             <div style={{ padding: "14px 16px", borderRadius: "var(--r-md)", background: "var(--jv-surface-2)", border: "1px solid var(--jv-border-cyan)" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
                 <span style={{ width: 36, height: 36, display: "grid", placeItems: "center", borderRadius: "var(--r-sm)", color: "var(--jv-cyan)", background: "var(--grad-cyan-soft)", border: "1px solid var(--jv-border-cyan)" }}>
                   <Icon name={icon} size={17} />
                 </span>
                 <div>
-                  <div style={{ font: "var(--fw-bold) 14px var(--font-body)", color: "var(--jv-text)" }}>{name || "Unnamed agent"}</div>
-                  <div style={{ font: "var(--fw-regular) 11px var(--font-body)", color: "var(--jv-text-muted)" }}>{role || "—"}</div>
+                  <div style={{ font: "var(--fw-bold) 14px var(--font-body)", color: "var(--jv-text)" }}>{deployName || "Unnamed agent"}</div>
+                  <div style={{ font: "var(--fw-regular) 11px var(--font-body)", color: "var(--jv-text-muted)" }}>{(cloneMode ? clone.title?.trim() : role.trim()) || role || "—"}</div>
                 </div>
               </div>
               {[
-                ["Template", ROLE_TEMPLATES.find((t) => t.key === templateKey)?.label ?? "—"],
+                cloneMode
+                  ? ["Cloning", clone.name?.trim() ? `${clone.name.trim()}${clone.email?.trim() ? ` · ${clone.email.trim()}` : ""}` : "—"]
+                  : ["Template", ROLE_TEMPLATES.find((t) => t.key === templateKey)?.label ?? "—"],
                 ["Overview", overview.trim() ? overview.trim() : "—"],
-                ["Readiness", `${readiness}% · ${groundedCount}/${behaviorCount || 0} behaviors grounded`],
-                ["Weekly tasks", String(weeklyTaskCount)],
-                ["Calendar playbooks", String(calendarPlaybooks.length)],
+                ["Connected systems", `${liveCount} live · ${pendingCount} pending`],
+                ["Reports to", onboarding.reportsTo?.name || onboarding.reportsTo?.email || "—"],
+                ["Access checklist", onboarding.access?.length ? `${onboarding.access.length} item${onboarding.access.length === 1 ? "" : "s"}` : "—"],
+                ["Meetings to join", onboarding.meetings?.length ? String(onboarding.meetings.length) : "—"],
+                ["Readiness", cloneMode ? "—" : `${readiness}% · ${groundedCount}/${behaviorCount || 0} behaviors grounded`],
                 ["Goals", goals.length ? goals.map((g) => g.objective).join("; ") : "—"],
                 ["Granted permissions", `${grantedCount} of ${permissions.length}`],
-                ["Connections", `${liveCount} live · ${pendingCount} pending`],
                 ["Budget", budget.monthlyCap != null ? `${budget.currency} ${budget.monthlyCap}/mo${budget.allowPayments ? " · payments on" : ""}` : "No cap set"],
               ].map(([k, v]) => (
                 <div key={k} style={{ display: "flex", gap: 12, padding: "6px 0", borderTop: "1px solid var(--jv-hairline)" }}>
@@ -1619,6 +1351,11 @@ export function AgentWizard({
                 </div>
               ))}
             </div>
+            {!isValid && (
+              <div style={{ font: "var(--fw-regular) 11px var(--font-body)", color: "var(--jv-amber)", marginTop: 8 }}>
+                {cloneMode ? "Add the employee's name to deploy." : "Add a name and role to deploy."}
+              </div>
+            )}
           </Field>
         </div>
       )}
@@ -1627,10 +1364,7 @@ export function AgentWizard({
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginTop: 18, paddingTop: 16, borderTop: "1px solid var(--jv-hairline)" }}>
         <div>
           {step === 0 ? (
-            // First step of either track → back to the chooser.
-            <Button variant="ghost" icon={<Icon name="chevron-left" size={14} />} onClick={() => { setTrack(null); setStep(0); }}>
-              Back
-            </Button>
+            onCancel && <Button variant="ghost" onClick={onCancel}>Cancel</Button>
           ) : (
             <Button variant="ghost" icon={<Icon name="chevron-left" size={14} />} onClick={() => setStep((s) => s - 1)}>
               Back
@@ -1638,8 +1372,14 @@ export function AgentWizard({
           )}
         </div>
         <div style={{ display: "flex", gap: 10 }}>
-          {step < stepTitles.length - 1 ? (
-            <Button variant="primary" iconRight={<Icon name="chevron-right" size={14} />} disabled={!canNext} onClick={() => setStep((s) => s + 1)}>
+          {step === 0 ? (
+            // The interview drives step 1 via its own "Build from this" / "Skip"
+            // controls; expose a plain Continue too for when it's already applied.
+            <Button variant="secondary" iconRight={<Icon name="chevron-right" size={14} />} onClick={skipInterview}>
+              {profileApplied ? "Continue" : "Skip interview"}
+            </Button>
+          ) : step < stepTitles.length - 1 ? (
+            <Button variant="primary" iconRight={<Icon name="chevron-right" size={14} />} onClick={() => setStep((s) => s + 1)}>
               Next
             </Button>
           ) : (
