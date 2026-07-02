@@ -46,6 +46,10 @@ services:
       # reply falls back to the offline canned message.
       HERMES_DASH_USER: ${HERMES_DASH_USER:-}
       HERMES_DASH_PASS: ${HERMES_DASH_PASS:-}
+      # Server-side headless browser (real Chrome on the VPS) that the Command
+      # Center drives to actually open pages and stream them into the UI.
+      BROWSERLESS_URL: ${BROWSERLESS_URL:-http://browserless:3000}
+      BROWSERLESS_TOKEN: ${BROWSERLESS_TOKEN:-lsbrowser}
     extra_hosts:
       # Lets the container reach hermes bound on the VPS host (see DEPLOY.md).
       - "host.docker.internal:host-gateway"
@@ -68,6 +72,17 @@ services:
         condition: service_healthy
     ports:
       - "${WEB_PORT:-8080}:80"
+
+  # Real headless Chrome on the VPS. The BFF drives it (navigate + screenshot)
+  # so the Command Center can actually open a browser and show the live page.
+  browserless:
+    image: ghcr.io/browserless/chromium:latest
+    restart: unless-stopped
+    environment:
+      TOKEN: ${BROWSERLESS_TOKEN:-lsbrowser}
+      CONCURRENT: "3"
+      TIMEOUT: "60000"
+    # Internal only — reached by the BFF at http://browserless:3000
 
 volumes:
   jarvis_db:

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Panel, Badge, Button, Icon, EmptyState } from "../ds";
 import { useApi } from "../api/hooks";
-import { streamChat } from "../api/client";
+import { streamChat, api } from "../api/client";
 import { useSpeech, useVoiceOutput } from "../hooks/useSpeech";
 import type { ViewId } from "../components/AppShell";
 import type { Agent, FeedItem, SystemHealth, StatusStripItem } from "@jarvis/shared";
@@ -58,56 +58,97 @@ const SITE_ALIASES: Record<string, string> = {
 function detectBrowserCommand(text: string): { url: string; label: string } | null {
   const t = text.toLowerCase();
   const wantsBrowser =
-    /\bopen (a |the |up )?(browser|chrome|tab|page|website|site)\b/.test(t) ||
     /\b(go to|navigate to|pull up|browse to|take me to|visit)\b/.test(t) ||
-    (/\bopen\b/.test(t) && /\b(browser|website|site|url|page|link|\.com|\.io|\.ai|\.org)\b/.test(t));
+    (/\b(open|launch|start|show me|bring up|pull up|fire up)\b/.test(t) &&
+      /\b(browser|chrome|chromium|firefox|edge|safari|tab|new tab|website|web ?site|web ?page|the web|url|link|google|youtube|github|gmail|amazon|notion|linkedin|twitter|wikipedia|stripe|\.com|\.io|\.ai|\.org|\.net|\.co|\.dev)\b/.test(t));
   if (!wantsBrowser) return null;
+  // Explicit URL / domain wins.
   const m = text.match(/\bhttps?:\/\/\S+|\b([a-z0-9-]+\.)+(com|io|ai|org|net|co|dev|so|app|gov|edu)(\/\S*)?/i);
   if (m) {
     const raw = m[0].replace(/[.,)]+$/, "");
     const url = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
     return { url, label: url.replace(/^https?:\/\//, "") };
   }
+  // Named site alias (e.g. "open google chrome" → google.com).
   for (const [name, host] of Object.entries(SITE_ALIASES)) {
     if (new RegExp(`\\b${name}\\b`).test(t)) return { url: `https://${host}`, label: host };
   }
-  return { url: "about:blank", label: "new tab" };
+  // Bare "open a browser / open chrome" → a real new tab (Google as the home).
+  return { url: "https://www.google.com", label: "google.com" };
 }
 
 // BrowserStage — an animated browser window that opens in the center of the
 // Command Center when a voice command asks to open a browser. It scales in,
 // runs a load bar, and settles into a live session view. (Real remote browsing
 // runs on the Hermes `browser` toolset; this is the operator-facing view.)
+// A real server-side browser: the BFF drives a headless Chrome on the VPS and
+// relays live screenshots. This shows the actual rendered page (not a mock).
 function BrowserStage({ target, onClose }: { target: { url: string; label: string }; onClose: () => void }) {
   const [mounted, setMounted] = useState(false);
-  const [loaded, setLoaded] = useState(false);
+  const [url, setUrl] = useState(target.url);
+  const [addr, setAddr] = useState(target.label);
+  const [nonce, setNonce] = useState(1);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
   useEffect(() => {
-    setMounted(false);
-    setLoaded(false);
-    const a = window.setTimeout(() => setMounted(true), 30);
-    const b = window.setTimeout(() => setLoaded(true), 1400);
-    return () => {
-      window.clearTimeout(a);
-      window.clearTimeout(b);
-    };
-  }, [target.url]);
+    const t = window.setTimeout(() => setMounted(true), 30);
+    return () => window.clearTimeout(t);
+  }, []);
+  // Follow a new command target.
+  useEffect(() => {
+    setUrl(target.url);
+    setAddr(target.label);
+  }, [target.url, target.label]);
+  // Point the server-side browser at the page, then request a fresh frame.
+  useEffect(() => {
+    setLoading(true);
+    setError(null);
+    api.post("/api/browser/open", { url }).catch(() => {});
+    setNonce((n) => n + 1);
+  }, [url]);
+  // Live refresh — re-render the page on the server every few seconds.
+  useEffect(() => {
+    const id = window.setInterval(() => setNonce((n) => n + 1), 3000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  const shot = `/api/browser/screenshot?url=${encodeURIComponent(url)}&t=${nonce}`;
+  const displayLabel = url.replace(/^https?:\/\//, "");
+  const navigate = (raw: string) => {
+    const v = raw.trim();
+    if (!v) return;
+    const next = /^https?:\/\//i.test(v) ? v : /^[a-z0-9-]+(\.[a-z0-9-]+)+/i.test(v) ? `https://${v}` : `https://www.google.com/search?q=${encodeURIComponent(v)}`;
+    setUrl(next);
+  };
   const dot = (c: string) => <span style={{ width: 11, height: 11, borderRadius: "50%", background: c }} />;
+
   return (
     <div
       style={{
-        width: "100%", maxWidth: 840, height: "min(56vh, 480px)", display: "flex", flexDirection: "column",
+        width: "100%", maxWidth: 900, height: "min(60vh, 520px)", display: "flex", flexDirection: "column",
         borderRadius: "var(--r-lg)", overflow: "hidden", background: "var(--jv-void)",
         border: "1px solid var(--jv-border-cyan)", boxShadow: "var(--panel-shadow-active)",
         transform: mounted ? "scale(1)" : "scale(0.93)", opacity: mounted ? 1 : 0,
         transition: "transform 360ms cubic-bezier(0.34,1.15,0.64,1), opacity 300ms ease",
       }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", background: "var(--jv-surface-2)", borderBottom: "1px solid var(--jv-hairline)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", background: "var(--jv-surface-2)", borderBottom: "1px solid var(--jv-hairline)" }}>
         <div style={{ display: "flex", gap: 7 }}>{dot("var(--jv-red-400)")}{dot("var(--jv-amber)")}{dot("var(--jv-green)")}</div>
-        <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 8, padding: "7px 12px", borderRadius: "var(--r-pill)", background: "var(--jv-void)", border: "1px solid var(--jv-border-soft)", font: "var(--fw-medium) 12px var(--font-mono)", color: "var(--jv-text-soft)", minWidth: 0 }}>
-          <Icon name={loaded ? "lock" : "loader"} size={12} color="var(--jv-cyan)" />
-          <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{target.label}</span>
+        <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 8, padding: "6px 12px", borderRadius: "var(--r-pill)", background: "var(--jv-void)", border: "1px solid var(--jv-border-soft)", minWidth: 0 }}>
+          <Icon name="lock" size={12} color="var(--jv-cyan)" />
+          <input
+            value={addr}
+            onChange={(e) => setAddr(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") navigate(addr); }}
+            spellCheck={false}
+            aria-label="Address bar"
+            style={{ flex: 1, minWidth: 0, background: "none", border: "none", outline: "none", color: "var(--jv-text-soft)", font: "var(--fw-medium) 12px var(--font-mono)" }}
+          />
         </div>
+        <button onClick={() => setNonce((n) => n + 1)} title="Refresh" style={{ display: "grid", placeItems: "center", width: 26, height: 26, borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)", color: "var(--jv-text-muted)", cursor: "pointer" }}>
+          <Icon name={loading ? "loader" : "refresh-cw"} size={13} />
+        </button>
         <span style={{ display: "flex", alignItems: "center", gap: 6, font: "var(--fw-semibold) 10px var(--font-hud)", letterSpacing: "0.1em", color: "var(--jv-cyan-300)" }}>
           <span style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--jv-cyan)", boxShadow: "0 0 8px var(--jv-cyan)", animation: "jv-pulse 1.6s ease-out infinite" }} /> LIVE
         </span>
@@ -115,28 +156,37 @@ function BrowserStage({ target, onClose }: { target: { url: string; label: strin
           <Icon name="x" size={14} />
         </button>
       </div>
-      <div style={{ height: 2 }}>
-        <div style={{ height: "100%", width: loaded ? "100%" : mounted ? "80%" : "0%", background: "var(--jv-cyan)", boxShadow: "0 0 8px var(--jv-cyan)", transition: "width 1.3s ease-out", opacity: loaded ? 0 : 1 }} />
+      <div style={{ height: 2 }}>{loading && <div style={{ height: "100%", width: "60%", background: "var(--jv-cyan)", boxShadow: "0 0 8px var(--jv-cyan)", animation: "jv-pulse 1.2s ease-out infinite" }} />}</div>
+      <div style={{ flex: 1, position: "relative", overflow: "auto", background: "#0a0f1a" }}>
+        {!error && (
+          <img
+            src={shot}
+            alt={displayLabel}
+            onLoad={() => { setLoading(false); setError(null); }}
+            onError={() => { setLoading(false); setError("Couldn't render this page on the server."); }}
+            style={{ width: "100%", height: "auto", display: "block" }}
+          />
+        )}
+        {loading && !error && (
+          <div style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", pointerEvents: "none" }}>
+            <div style={{ textAlign: "center" }}>
+              <div style={{ width: 52, height: 52, margin: "0 auto 12px", borderRadius: "50%", display: "grid", placeItems: "center", background: "var(--grad-cyan-soft)", border: "1px solid var(--jv-border-cyan)", color: "var(--jv-cyan)" }}><Icon name="globe" size={24} /></div>
+              <div style={{ font: "var(--fw-semibold) 13px var(--font-body)", color: "var(--jv-text-soft)" }}>Rendering {displayLabel} on the server…</div>
+            </div>
+          </div>
+        )}
+        {error && (
+          <div style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", padding: 24 }}>
+            <div style={{ textAlign: "center", maxWidth: 360 }}>
+              <Icon name="alert-triangle" size={22} color="var(--jv-amber)" />
+              <div style={{ font: "var(--fw-regular) 12.5px/1.5 var(--font-body)", color: "var(--jv-text-soft)", marginTop: 8 }}>{error}</div>
+              <button onClick={() => { setError(null); setLoading(true); setNonce((n) => n + 1); }} style={{ marginTop: 12, padding: "7px 14px", borderRadius: "var(--r-sm)", background: "var(--grad-cyan-soft)", border: "1px solid var(--jv-border-cyan)", color: "var(--jv-cyan-300)", cursor: "pointer", font: "var(--fw-semibold) 12px var(--font-body)" }}>Retry</button>
+            </div>
+          </div>
+        )}
       </div>
-      <div style={{ flex: 1, position: "relative", display: "grid", placeItems: "center", background: "radial-gradient(circle at 50% 38%, color-mix(in srgb, var(--jv-cyan) 7%, transparent), transparent 70%)", overflow: "hidden" }}>
-        <div style={{ position: "absolute", inset: 0, padding: 22, display: "flex", flexDirection: "column", gap: 12, opacity: loaded ? 0.16 : 0.32, transition: "opacity 500ms" }}>
-          <div style={{ height: 32, width: "42%", borderRadius: 8, background: "var(--jv-surface-3)" }} />
-          <div style={{ height: 88, borderRadius: 10, background: "var(--jv-surface-2)" }} />
-          <div style={{ display: "flex", gap: 12 }}>
-            <div style={{ flex: 1, height: 58, borderRadius: 10, background: "var(--jv-surface-3)" }} />
-            <div style={{ flex: 1, height: 58, borderRadius: 10, background: "var(--jv-surface-3)" }} />
-            <div style={{ flex: 1, height: 58, borderRadius: 10, background: "var(--jv-surface-3)" }} />
-          </div>
-        </div>
-        <div style={{ position: "relative", textAlign: "center", padding: 20 }}>
-          <div style={{ width: 58, height: 58, margin: "0 auto 14px", borderRadius: "50%", display: "grid", placeItems: "center", background: "var(--grad-cyan-soft)", border: "1px solid var(--jv-border-cyan)", color: "var(--jv-cyan)" }}>
-            <Icon name={loaded ? "globe" : "loader"} size={26} />
-          </div>
-          <div style={{ font: "var(--fw-bold) 18px var(--font-display)", letterSpacing: "0.04em", color: "var(--jv-text)" }}>{loaded ? target.label : "Opening browser…"}</div>
-          <div style={{ font: "var(--fw-regular) 12.5px/1.5 var(--font-body)", color: "var(--jv-text-muted)", marginTop: 6, maxWidth: 360 }}>
-            {loaded ? "Living Shadow is driving this browser session." : "Establishing a live browser session…"}
-          </div>
-        </div>
+      <div style={{ padding: "6px 12px", background: "var(--jv-surface-2)", borderTop: "1px solid var(--jv-hairline)", font: "var(--fw-regular) 10.5px var(--font-body)", color: "var(--jv-text-faint)", textAlign: "center" }}>
+        Live browser running on the server · auto-refreshing
       </div>
     </div>
   );
@@ -167,8 +217,20 @@ function VoiceCore({ onModeChange }: { onModeChange?: (active: boolean) => void 
     const t = text.trim();
     if (!t) return;
     outRef.current.cancel(); // stop any in-flight speech
-    const bcmd = detectBrowserCommand(t); // "open a browser / go to X" → browser stage
-    if (bcmd) setBrowser(bcmd);
+    // "open a browser / go to X" → the app opens a REAL server-side browser and
+    // shows the live page. The LLM can't open apps, so don't ask it — act.
+    const bcmd = detectBrowserCommand(t);
+    if (bcmd) {
+      setBrowser(bcmd);
+      setYouText(t);
+      const ack = `Opening ${bcmd.label} in a live browser on the server.`;
+      setReply(ack);
+      if (voiceOutRef.current) {
+        speechRef.current?.pause();
+        outRef.current.speak(ack, { onEnd: () => speechRef.current?.resume() });
+      }
+      return;
+    }
     setYouText(t);
     setReply("");
     setBusy(true);

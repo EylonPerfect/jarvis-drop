@@ -42,6 +42,12 @@ export interface Agent {
   calendarPlaybooks?: CalendarPlaybook[]; // step 3 — calendar-triggered scenarios
   connections?: string[]; // step 4 — enabled connection ids (see ConnectionCatalogItem)
   budgetConfig?: BudgetConfig; // step 5 — comprehensive, structured budget
+  // ---- Two-track hire ----
+  buildTrack?: BuildTrack; // 'clone' | 'scratch'
+  cloneSource?: CloneSource; // clone track — the person being mirrored
+  goals?: AgentGoal[]; // objectives + success metrics
+  evidence?: EvidenceItem[]; // scratch track — few-shot grounding per behavior
+  onboarding?: Onboarding; // living onboarding: manager, meetings, access checklist
   createdAt?: string;
 }
 
@@ -82,6 +88,60 @@ export interface BudgetConfig {
   maxMessagesPerDay?: number;
   maxBrowserSessionsPerDay?: number;
   notes?: string; // free-text authority summary
+}
+
+// ---- Two-track hire types ----
+export type BuildTrack = "clone" | "scratch";
+
+export interface CloneSource {
+  name?: string;
+  title?: string;
+  email?: string;
+}
+
+export interface AgentGoal {
+  objective: string;
+  metric?: string;
+}
+
+// Living-onboarding artifact: what a new hire needs on day one.
+export type AccessStatus = "needed" | "pending" | "granted";
+export interface AccessItem {
+  item: string; // e.g. "Slack", "Email address", "Demo environment"
+  status: AccessStatus;
+  note?: string;
+}
+export interface OnboardingMeeting {
+  name: string; // e.g. "Monday team standup"
+  cadence?: string; // e.g. "Weekly, Mon 9:00"
+}
+export interface Manager {
+  name?: string;
+  email?: string;
+}
+export interface Onboarding {
+  reportsTo?: Manager; // which manager the agent reports to
+  meetings?: OnboardingMeeting[]; // company meetings to join
+  access?: AccessItem[]; // access checklist (Slack, email, demo env, …)
+}
+
+export type EvidenceKind = "text" | "screenshot";
+
+export interface EvidenceExample {
+  kind: EvidenceKind;
+  text?: string; // for kind=text, or a caption/URL note
+  fileId?: string; // for kind=screenshot — references /api/files/:id
+  caption?: string;
+}
+
+// One behavior the agent must perform, backed by concrete examples of good
+// (and optionally bad) behavior. This is the grounding that makes a
+// from-scratch agent actually work.
+export interface EvidenceItem {
+  behavior: string; // e.g. "Qualify an inbound lead"
+  instruction?: string; // how to do it well
+  examples: EvidenceExample[]; // good examples (screenshots / text)
+  antiExample?: string; // what NOT to do
 }
 
 // Catalog of connectable systems, mapped to real Hermes toolsets. `live` marks
@@ -133,6 +193,31 @@ export interface NewAgent {
   calendarPlaybooks?: CalendarPlaybook[];
   connections?: string[];
   budgetConfig?: BudgetConfig;
+  buildTrack?: BuildTrack;
+  cloneSource?: CloneSource;
+  goals?: AgentGoal[];
+  evidence?: EvidenceItem[];
+  onboarding?: Onboarding;
+}
+
+// ---- AI discovery ("breathing artifact") interview ----
+export interface DiscoverProfile {
+  overview?: string;
+  goals?: AgentGoal[];
+  reportsTo?: Manager;
+  meetings?: OnboardingMeeting[];
+  access?: AccessItem[];
+  connections?: string[];
+  tools?: string[];
+  routine?: string[];
+}
+export interface DiscoverResult {
+  understanding: number; // 0-100
+  done: boolean;
+  nextQuestion: string;
+  summary?: string;
+  profile: DiscoverProfile;
+  source: "ai" | "template";
 }
 
 export interface RunStep {

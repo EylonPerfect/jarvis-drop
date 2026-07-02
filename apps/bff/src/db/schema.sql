@@ -144,6 +144,33 @@ ALTER TABLE agents ADD COLUMN IF NOT EXISTS calendar_playbooks JSONB NOT NULL DE
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS connections JSONB NOT NULL DEFAULT '[]'::jsonb;
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS budget_config JSONB NOT NULL DEFAULT '{}'::jsonb;
 
+-- Two-track hire: how the agent was built.
+--   build_track  = 'clone' (mirror an existing employee's systems) | 'scratch'
+--   clone_source = {name,title,email} of the person being cloned (clone track)
+--   goals        = [{objective, metric}]
+--   evidence     = [{behavior, instruction, examples:[{kind,text?,fileId?,caption?}], antiExample?}]
+--                  the few-shot grounding that makes a from-scratch agent actually perform
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS build_track TEXT;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS clone_source JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS goals JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS evidence JSONB NOT NULL DEFAULT '[]'::jsonb;
+-- Living onboarding (assembled by the AI discovery interview): who the agent
+-- reports to, which meetings it joins, and its access checklist (Slack, email,
+-- demo env, …) with Needed/Pending/Granted status.
+--   onboarding = { reportsTo:{name,email}, meetings:[{name,cadence}], access:[{item,status,note}] }
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS onboarding JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+-- Real file store (evidence screenshots, uploaded docs). Bytes live in Postgres
+-- (persists across restarts via the db volume); served back by id at /api/files/:id.
+CREATE TABLE IF NOT EXISTS files (
+  id         TEXT PRIMARY KEY,
+  filename   TEXT NOT NULL,
+  mime       TEXT NOT NULL,
+  size       INTEGER NOT NULL,
+  data       BYTEA NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- Agent activity log (feeds the cockpit Performance box) and communications
 -- (Latest communication block). Declared here because the cockpit routes that
 -- read/write them shipped without their DDL — their absence made

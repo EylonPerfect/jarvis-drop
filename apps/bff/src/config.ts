@@ -62,6 +62,12 @@ export const config = {
     url: required("DATABASE_URL", "postgres://jarvis:jarvis@127.0.0.1:5432/jarvis"),
     ssl: (process.env.DATABASE_SSL ?? "false") === "true",
   },
+
+  // Real server-side headless Chrome (browserless) the Command Center drives.
+  browserless: {
+    url: (process.env.BROWSERLESS_URL ?? "http://browserless:3000").replace(/\/$/, ""),
+    token: process.env.BROWSERLESS_TOKEN ?? "lsbrowser",
+  },
 };
 
 export type Config = typeof config;

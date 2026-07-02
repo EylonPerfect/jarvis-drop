@@ -22,6 +22,8 @@ import chatRoutes from "./routes/chat.js";
 import approvalsRoutes from "./routes/approvals.js";
 import adminRoutes from "./routes/admin.js";
 import stateRoutes from "./routes/state.js";
+import filesRoutes from "./routes/files.js";
+import browserRoutes from "./routes/browser.js";
 
 const app = Fastify({ logger: true });
 
@@ -80,6 +82,8 @@ await app.register(chatRoutes);
 await app.register(approvalsRoutes);
 await app.register(adminRoutes);
 await app.register(stateRoutes);
+await app.register(filesRoutes);
+await app.register(browserRoutes);
 
 // Optional single-process mode: serve the built web app + SPA fallback.
 if (config.serveWeb) {

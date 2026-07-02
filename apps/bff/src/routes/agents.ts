@@ -52,6 +52,11 @@ function rowToAgent(r: any): Agent {
     calendarPlaybooks: Array.isArray(r.calendar_playbooks) ? r.calendar_playbooks : [],
     connections: Array.isArray(r.connections) ? r.connections : [],
     budgetConfig: r.budget_config && Object.keys(r.budget_config).length ? r.budget_config : undefined,
+    buildTrack: r.build_track ?? undefined,
+    cloneSource: r.clone_source && Object.keys(r.clone_source).length ? r.clone_source : undefined,
+    goals: Array.isArray(r.goals) ? r.goals : [],
+    evidence: Array.isArray(r.evidence) ? r.evidence : [],
+    onboarding: r.onboarding && Object.keys(r.onboarding).length ? r.onboarding : undefined,
     createdAt: r.created_at,
   };
 }
@@ -151,6 +156,81 @@ export default async function agentsRoutes(app: FastifyInstance) {
     };
   });
 
+  // AI discovery ("breathing artifact"): the active AI Core model interviews the
+  // operator one question at a time to reach a COMPLETE understanding of the
+  // employee (clone) or role (scratch). Returns an understanding score, the next
+  // question, and a progressively-refined profile that pre-fills the wizard —
+  // including the onboarding access checklist, manager, and meetings.
+  app.post("/api/agents/discover", async (req, reply) => {
+    const b = req.body as { name?: string; title?: string; track?: string; transcript?: Array<{ role: string; content: string }> };
+    const name = (b?.name ?? "").trim();
+    const title = (b?.title ?? "").trim();
+    const track = b?.track === "scratch" ? "scratch" : "clone";
+    const transcript = Array.isArray(b?.transcript) ? b.transcript.filter((m) => m && typeof m.content === "string") : [];
+
+    const subject =
+      track === "clone"
+        ? `an AI clone of an existing employee${name ? ` named ${name}` : ""}${title ? `, whose role is "${title}"` : ""}`
+        : `a new AI agent for the role "${title || name || "unspecified"}"`;
+    const sys =
+      `You are onboarding ${subject}. Interview the operator ONE focused question at a time to reach a COMPLETE understanding, exactly like onboarding a new human hire. ` +
+      `Cover: day-to-day work; the ACCESS they need (Slack, an email address, the demo environment, and anything else the role requires); who they report to (manager); which recurring company/team meetings they must join; the tools/systems they use; goals and what "great" looks like; and edge cases. ` +
+      `Respond with ONLY minified JSON, no markdown: {"understanding":<0-100 int>,"done":<bool>,"nextQuestion":<string>,"summary":<string>,"profile":{"overview":<string>,"goals":[{"objective":<string>,"metric":<string>}],"reportsTo":{"name":<string>,"email":<string>},"meetings":[{"name":<string>,"cadence":<string>}],"access":[{"item":<string>,"status":"needed"|"pending"|"granted","note":<string>}],"connections":<string[]>,"tools":<string[]>,"routine":<string[]>}}. ` +
+      `"understanding" starts low and grows as answers arrive. Set "done":true when understanding>=85 or the operator says they're finished. ` +
+      `Always keep "access" seeded with at least Slack, an email address, and a demo environment, plus role-specific items. connections/tools are lowercase ids like email,calendar,slack,notetaker,crm,drive,browser,web,web_search,gmail. Ask exactly one question per turn.`;
+    const convo = transcript.length
+      ? transcript.map((m) => `${m.role === "assistant" ? "INTERVIEWER" : "OPERATOR"}: ${m.content}`).join("\n")
+      : "(no answers yet — ask your first question and return an initial profile skeleton)";
+
+    const active = await getActiveProvider();
+    if (active) {
+      try {
+        const r = await completeProviderChat(active, [
+          { role: "system", content: sys },
+          { role: "user", content: `Name: ${name || "(unknown)"}\nTitle: ${title || "(unknown)"}\nTrack: ${track}\n\nConversation so far:\n${convo}` },
+        ]);
+        const j = r.ok && r.content ? parseJson<any>(r.content) : null;
+        if (j && typeof j === "object" && j.nextQuestion) {
+          return {
+            understanding: Math.max(0, Math.min(100, Math.round(Number(j.understanding) || 0))),
+            done: !!j.done,
+            nextQuestion: String(j.nextQuestion ?? ""),
+            summary: String(j.summary ?? ""),
+            profile: j.profile && typeof j.profile === "object" ? j.profile : {},
+            source: "ai" as const,
+          };
+        }
+      } catch {
+        /* fall through to scripted interview */
+      }
+    }
+    // Fallback: a scripted onboarding interview (works with no provider).
+    const FALLBACK_Q = [
+      "What does this person actually do day-to-day — the 3–4 things that fill most of their week?",
+      "Which systems and accounts do they need access to? (Slack, email, the demo environment, CRM, calendar…)",
+      "Who do they report to, and which recurring meetings must they join?",
+      "What does a great week look like — the goals and numbers you'd hold them to?",
+      "Any edge cases or 'never do this' rules I should bake in?",
+    ];
+    const answered = transcript.filter((m) => m.role === "user").length;
+    return {
+      understanding: Math.min(90, answered * 20),
+      done: answered >= FALLBACK_Q.length,
+      nextQuestion: FALLBACK_Q[Math.min(answered, FALLBACK_Q.length - 1)],
+      summary: "",
+      profile: {
+        overview: name ? `${name}${title ? ` — ${title}` : ""}` : title,
+        access: [
+          { item: "Slack", status: "needed", note: "Workspace + relevant channels" },
+          { item: "Email address", status: "needed", note: "Dedicated mailbox" },
+          { item: "Demo environment", status: "needed", note: "Login to the product demo / back office" },
+        ],
+        connections: ["slack", "email", "calendar"],
+      },
+      source: "template" as const,
+    };
+  });
+
   // Catalog of connectable systems, mapped to real Hermes toolsets, with a live
   // vs. configured-pending flag. Runtime tools (web/browser/terminal/…) are live
   // when Hermes is reachable; messaging is live when the gateway is running;
@@ -166,6 +246,10 @@ export default async function agentsRoutes(app: FastifyInstance) {
       { id: "code", label: "Code execution", category: "dev", hermesToolset: "code_execution", live: hermesUp },
       { id: "memory", label: "Long-term memory", category: "runtime", hermesToolset: "memory", live: hermesUp },
       { id: "cron", label: "Scheduling (cron)", category: "runtime", hermesToolset: "cron", live: hermesUp },
+      { id: "notetaker", label: "Notetaker (Fathom / Otter / Gong)", category: "productivity", live: false, note: "Meeting recorder — learns how calls are run; connect the recorder" },
+      { id: "drive", label: "Drive / Docs", category: "productivity", live: false, note: "Needs Google/Docs connection" },
+      { id: "crm", label: "CRM (HubSpot / Salesforce)", category: "productivity", live: false, note: "Needs CRM connection" },
+      { id: "policies", label: "Policies & SOPs", category: "productivity", live: false, note: "Upload or link policy docs in the Playbook step" },
       { id: "slack", label: "Slack", category: "messaging", hermesToolset: "slack", live: gatewayRunning, note: gatewayRunning ? undefined : "Start the Hermes gateway to enable" },
       { id: "whatsapp", label: "WhatsApp", category: "messaging", hermesToolset: "whatsapp", live: gatewayRunning, note: gatewayRunning ? undefined : "Start the Hermes gateway to enable" },
       { id: "telegram", label: "Telegram", category: "messaging", hermesToolset: "telegram", live: gatewayRunning },
@@ -186,8 +270,8 @@ export default async function agentsRoutes(app: FastifyInstance) {
     const id = `ag_${Date.now().toString(36)}`;
     const maxSort = await one<{ m: number }>(`SELECT COALESCE(MAX(sort), -1) + 1 AS m FROM agents`);
     await query(
-      `INSERT INTO agents (id, icon, name, role, status, status_label, model, tools, collaborators, autonomy, instructions, plan, routine, budget, schedule, permissions, overview, playbook, weekly_plan, calendar_playbooks, connections, budget_config, sort)
-       VALUES ($1,$2,$3,$4,'standby','Standby',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
+      `INSERT INTO agents (id, icon, name, role, status, status_label, model, tools, collaborators, autonomy, instructions, plan, routine, budget, schedule, permissions, overview, playbook, weekly_plan, calendar_playbooks, connections, budget_config, build_track, clone_source, goals, evidence, onboarding, sort)
+       VALUES ($1,$2,$3,$4,'standby','Standby',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)`,
       [
         id,
         b.icon || "bot",
@@ -209,6 +293,11 @@ export default async function agentsRoutes(app: FastifyInstance) {
         JSON.stringify(b.calendarPlaybooks ?? []),
         JSON.stringify(b.connections ?? []),
         JSON.stringify(b.budgetConfig ?? {}),
+        b.buildTrack ?? null,
+        JSON.stringify(b.cloneSource ?? {}),
+        JSON.stringify(b.goals ?? []),
+        JSON.stringify(b.evidence ?? []),
+        JSON.stringify(b.onboarding ?? {}),
         maxSort?.m ?? 0,
       ],
     );
@@ -247,6 +336,11 @@ export default async function agentsRoutes(app: FastifyInstance) {
     if (b.calendarPlaybooks !== undefined) set("calendar_playbooks", JSON.stringify(b.calendarPlaybooks));
     if (b.connections !== undefined) set("connections", JSON.stringify(b.connections));
     if (b.budgetConfig !== undefined) set("budget_config", JSON.stringify(b.budgetConfig));
+    if (b.buildTrack !== undefined) set("build_track", b.buildTrack);
+    if (b.cloneSource !== undefined) set("clone_source", JSON.stringify(b.cloneSource));
+    if (b.goals !== undefined) set("goals", JSON.stringify(b.goals));
+    if (b.evidence !== undefined) set("evidence", JSON.stringify(b.evidence));
+    if (b.onboarding !== undefined) set("onboarding", JSON.stringify(b.onboarding));
     if (!sets.length) return reply.code(400).send({ error: "no fields to update" });
     vals.push(id);
     await query(`UPDATE agents SET ${sets.join(", ")} WHERE id = $${vals.length}`, vals);

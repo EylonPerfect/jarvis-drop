@@ -282,6 +282,16 @@ export default function AgentCockpit({ agentId, onExit }: { agentId: string; onE
           <div style={{ font: "var(--fw-bold) 15px var(--font-body)", color: "var(--jv-text)" }}>{agent?.name ?? "Agent"}</div>
           <div style={{ font: "11px var(--font-mono)", color: "var(--jv-text-muted)" }}>{agent?.role ?? "Cockpit · live drill-down"}</div>
         </div>
+        {agent?.buildTrack && (
+          <span title={agent.buildTrack === "clone" && agent.cloneSource ? [agent.cloneSource.title, agent.cloneSource.email].filter(Boolean).join(" · ") : undefined} style={{ display: "flex" }}>
+            <Badge status="info" dot={false}>
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                <Icon name={agent.buildTrack === "clone" ? "copy" : "sparkles"} size={11} />
+                {agent.buildTrack === "clone" ? `Cloned from ${agent.cloneSource?.name ?? "someone"}` : "Built from scratch"}
+              </span>
+            </Badge>
+          </span>
+        )}
         <Badge status={agent?.status === "optimal" ? "live" : "standby"} solid>{agent?.status === "optimal" ? "Running" : "Standby"}</Badge>
         <button onClick={() => save({ status: "optimal", statusLabel: "Active" })} style={{ display: "flex", alignItems: "center", gap: 6, padding: "0 13px", height: 34, borderRadius: "var(--r-sm)", border: "1px solid var(--jv-border)", background: "transparent", color: "var(--jv-text-soft)", font: "var(--fw-semibold) 11px var(--font-hud)", letterSpacing: "0.06em", textTransform: "uppercase", cursor: "pointer" }}><Icon name="play" size={14} />Activate</button>
         <button onClick={() => save({ status: "standby", statusLabel: "Standby" })} style={{ display: "flex", alignItems: "center", gap: 6, padding: "0 13px", height: 34, borderRadius: "var(--r-sm)", border: "1px solid color-mix(in srgb, var(--jv-red) 40%, transparent)", background: "color-mix(in srgb, var(--jv-red) 12%, transparent)", color: "var(--jv-red)", font: "var(--fw-semibold) 11px var(--font-hud)", letterSpacing: "0.06em", textTransform: "uppercase", cursor: "pointer" }}><Icon name="octagon-x" size={14} />Stop</button>
@@ -479,6 +489,115 @@ export default function AgentCockpit({ agentId, onExit }: { agentId: string; onE
           )}
         </Panel>
       </div>
+
+      {/* Two-track hire spec — goals (both tracks) + evidence gallery (scratch) */}
+      <Panel title="Goals" eyebrow bodyStyle={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {(agent?.goals ?? []).length ? (
+          (agent?.goals ?? []).map((g, i) => (
+            <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)" }}>
+              <Icon name="target" size={15} color="var(--jv-cyan)" />
+              <span style={{ flex: 1, minWidth: 0, font: "var(--fw-semibold) 12.5px var(--font-body)", color: "var(--jv-text)" }}>{g.objective}</span>
+              {g.metric && (
+                <span style={{ flex: "0 0 auto", display: "flex", alignItems: "center", gap: 4, padding: "3px 10px", borderRadius: "var(--r-pill)", font: "var(--fw-medium) 10.5px var(--font-mono)", color: "var(--jv-cyan-300)", background: "var(--grad-cyan-soft)", border: "1px solid var(--jv-border-cyan)" }}>
+                  <Icon name="gauge" size={11} />{g.metric}
+                </span>
+              )}
+            </div>
+          ))
+        ) : (
+          <EmptyState compact icon="target" title="No goals set" hint="Define the objectives and success metrics this agent is hired for." />
+        )}
+      </Panel>
+
+      {(() => {
+        const ob = agent?.onboarding;
+        const access = ob?.access ?? [];
+        const meetings = ob?.meetings ?? [];
+        const mgr = ob?.reportsTo;
+        if (!ob || (!(mgr && (mgr.name || mgr.email)) && access.length === 0 && meetings.length === 0)) return null;
+        const sColor = (s: string) => (s === "granted" ? "var(--jv-green)" : s === "pending" ? "var(--jv-amber)" : "var(--jv-text-muted)");
+        const sLabel = (s: string) => (s === "granted" ? "Granted" : s === "pending" ? "Pending" : "Needed");
+        const eyebrowLbl = (t: string) => (
+          <div style={{ font: "var(--fw-semibold) 10px var(--font-hud)", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--jv-text-muted)", marginBottom: 8 }}>{t}</div>
+        );
+        return (
+          <Panel title="Onboarding" eyebrow action={<Badge status="info" dot={false}>Access &amp; org</Badge>} bodyStyle={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            {mgr && (mgr.name || mgr.email) && (
+              <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)" }}>
+                <Icon name="user-round" size={15} color="var(--jv-cyan)" />
+                <span style={{ font: "var(--fw-semibold) 10px var(--font-hud)", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--jv-text-muted)" }}>Reports to</span>
+                <span style={{ font: "var(--fw-semibold) 12.5px var(--font-body)", color: "var(--jv-text)" }}>{mgr.name}{mgr.email ? ` · ${mgr.email}` : ""}</span>
+              </div>
+            )}
+            {meetings.length > 0 && (
+              <div>
+                {eyebrowLbl("Meetings to join")}
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                  {meetings.map((m, i) => (
+                    <span key={i} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 11px", borderRadius: "var(--r-pill)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)", font: "var(--fw-medium) 12px var(--font-body)", color: "var(--jv-text-soft)" }}>
+                      <Icon name="calendar" size={12} color="var(--jv-cyan)" />{m.name}{m.cadence ? <span style={{ color: "var(--jv-text-muted)" }}> · {m.cadence}</span> : null}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+            {access.length > 0 && (
+              <div>
+                {eyebrowLbl("Access checklist")}
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {access.map((a, i) => (
+                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)" }}>
+                      <span style={{ width: 7, height: 7, flex: "0 0 7px", borderRadius: "50%", background: sColor(a.status), boxShadow: `0 0 6px ${sColor(a.status)}` }} />
+                      <span style={{ font: "var(--fw-semibold) 12.5px var(--font-body)", color: "var(--jv-text)" }}>{a.item}</span>
+                      {a.note && <span style={{ flex: 1, minWidth: 0, font: "var(--fw-regular) 11.5px var(--font-body)", color: "var(--jv-text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.note}</span>}
+                      <span style={{ flex: "0 0 auto", marginLeft: "auto", font: "var(--fw-semibold) 10px var(--font-hud)", letterSpacing: "0.06em", textTransform: "uppercase", color: sColor(a.status) }}>{sLabel(a.status)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </Panel>
+        );
+      })()}
+
+      {(agent?.evidence?.length ?? 0) > 0 && (
+        <Panel title="Evidence gallery" eyebrow action={<Badge status="info" dot={false}>Few-shot grounding</Badge>} bodyStyle={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {(agent?.evidence ?? []).map((ev, i) => (
+            <div key={i} style={{ padding: "12px 14px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: ev.instruction ? 4 : 8 }}>
+                <Icon name="sparkles" size={14} color="var(--jv-cyan)" />
+                <span style={{ flex: 1, minWidth: 0, font: "var(--fw-semibold) 13px var(--font-body)", color: "var(--jv-text)" }}>{ev.behavior}</span>
+              </div>
+              {ev.instruction && <p style={{ ...proseStyle, marginBottom: 8 }}>{ev.instruction}</p>}
+              {ev.examples.length > 0 && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {ev.examples.filter((ex) => ex.kind === "text").map((ex, j) => (
+                    <div key={`t${j}`} style={{ paddingLeft: 10, borderLeft: "2px solid var(--jv-border-cyan)", font: "var(--fw-regular) 12.5px/1.55 var(--font-body)", color: "var(--jv-text-soft)", fontStyle: "italic", whiteSpace: "pre-wrap" }}>
+                      “{ex.text ?? ex.caption ?? ""}”
+                    </div>
+                  ))}
+                  {ev.examples.some((ex) => ex.kind === "screenshot") && (
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+                      {ev.examples.filter((ex) => ex.kind === "screenshot" && ex.fileId).map((ex, j) => (
+                        <a key={`s${j}`} href={`/api/files/${ex.fileId}`} target="_blank" rel="noopener noreferrer" title={ex.caption} style={{ display: "flex", flexDirection: "column", gap: 4, textDecoration: "none", width: 140 }}>
+                          <img src={`/api/files/${ex.fileId}`} alt={ex.caption ?? "evidence screenshot"} style={{ width: 140, height: 90, objectFit: "cover", borderRadius: "var(--r-xs)", background: "var(--jv-void)", border: "1px solid var(--jv-border-soft)", display: "block" }} />
+                          {ex.caption && <span style={{ font: "var(--fw-regular) 10.5px var(--font-body)", color: "var(--jv-text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ex.caption}</span>}
+                        </a>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+              {ev.antiExample && (
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 6, marginTop: 8, padding: "8px 10px", borderRadius: "var(--r-xs)", color: "var(--jv-red)", background: "color-mix(in srgb, var(--jv-red) 10%, transparent)", border: "1px solid color-mix(in srgb, var(--jv-red) 30%, transparent)", font: "var(--fw-medium) 12px/1.5 var(--font-body)" }}>
+                  <Icon name="octagon-x" size={13} />
+                  <span style={{ flex: 1 }}><span style={{ font: "var(--fw-semibold) 12px var(--font-body)" }}>Avoid:</span> {ev.antiExample}</span>
+                </div>
+              )}
+            </div>
+          ))}
+        </Panel>
+      )}
 
       <PerformanceBox agentId={agentId} />
       <CommsBox agentId={agentId} />
