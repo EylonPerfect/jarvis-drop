@@ -1,6 +1,7 @@
 import { request } from "undici";
 import { config } from "./config.js";
 import { HERMES_ENDPOINTS } from "@jarvis/shared";
+import { getActiveProvider, testConnection } from "./lib/providers.js";
 
 // ------------------------------------------------------------
 // Server-side client for hermes-agent. Supports two auth modes:
@@ -267,6 +268,13 @@ export async function diagnose(): Promise<Record<string, unknown>> {
     replyPreview: snippet(chat.data?.choices?.[0]?.message?.content ?? chat.data),
     error: chat.error,
   };
+
+  // The chat actually prefers an operator-configured provider (AI Core). Report
+  // whether one is active and whether it passes an end-to-end test — this is
+  // usually the real reason a reply falls back.
+  const active = await getActiveProvider();
+  out.activeProvider = active ? { name: active.name, model: active.model, baseUrl: active.base_url } : null;
+  if (active) out.probe_provider = await testConnection(active);
 
   return out;
 }
