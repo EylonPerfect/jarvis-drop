@@ -1,7 +1,8 @@
 import { type ReactNode, useEffect, useState } from "react";
 import { Icon, Logo, Badge, Input, Button, Waveform } from "../ds";
 import { useApi } from "../api/hooks";
-import type { SessionCost } from "@jarvis/shared";
+import { api } from "../api/client";
+import type { SessionCost, AiProvider } from "@jarvis/shared";
 
 export type ViewId =
   | "command"
@@ -228,6 +229,45 @@ function NavGroupRow({ group, active, onNav }: { group: NavGroupDef; active: Vie
   );
 }
 
+// Top-bar model picker — lists only the models connected in AI Core. Choosing
+// one makes that provider active (what the Command Center chat routes through).
+function ModelSelect() {
+  const { data, reload } = useApi<AiProvider[]>("/api/aicore/providers");
+  const providers = data ?? [];
+  const active = providers.find((p) => p.active);
+  const boxStyle = {
+    height: 36,
+    padding: "0 10px",
+    borderRadius: "var(--r-sm)",
+    background: "rgba(4,12,22,0.6)",
+    border: "1px solid var(--jv-border)",
+    color: "var(--jv-text-soft)",
+    font: "var(--fw-medium) 12px var(--font-mono)",
+  } as const;
+
+  if (!providers.length) {
+    return (
+      <div style={{ ...boxStyle, display: "flex", alignItems: "center", gap: 6, color: "var(--jv-text-muted)" }} title="Connect a provider in AI Core">
+        <Icon name="plug" size={13} /> No model
+      </div>
+    );
+  }
+  const onPick = async (id: string) => {
+    const p = providers.find((pr) => pr.id === id);
+    if (p && !p.active) {
+      await api.patch(`/api/aicore/providers/${id}`, { active: true }).catch(() => {});
+      reload();
+    }
+  };
+  return (
+    <select value={active?.id ?? providers[0].id} onChange={(e) => onPick(e.target.value)} style={boxStyle} title="Active model (from AI Core)">
+      {providers.map((p) => (
+        <option key={p.id} value={p.id}>{p.model} · {p.name}</option>
+      ))}
+    </select>
+  );
+}
+
 function TopBar({ onAbout }: { onAbout: () => void }) {
   return (
     <header
@@ -262,20 +302,7 @@ function TopBar({ onAbout }: { onAbout: () => void }) {
         <TeamCost />
       </div>
       <Input icon={<Icon name="search" size={16} />} placeholder="Search…" wrapStyle={{ width: 240, height: 36 }} />
-      <select
-        style={{
-          height: 36,
-          padding: "0 10px",
-          borderRadius: "var(--r-sm)",
-          background: "rgba(4,12,22,0.6)",
-          border: "1px solid var(--jv-border)",
-          color: "var(--jv-text-soft)",
-          font: "var(--fw-medium) 12px var(--font-mono)",
-        }}
-      >
-        <option>claude-opus-4-8</option>
-        <option>claude-sonnet-4-6</option>
-      </select>
+      <ModelSelect />
       {["layout-grid", "bell", "info", "settings"].map((n) => (
         <button
           key={n}

@@ -3,6 +3,7 @@ import { Panel, Button, Icon, StatTile, EmptyState, IconButton, ConfirmDialog } 
 import { useApi } from "../api/hooks";
 import { api } from "../api/client";
 import type { Agent, AgentRun, RuntimeStats, NewAgent } from "@jarvis/shared";
+import { AgentForm } from "../components/AgentForm";
 import AgentCockpit from "./AgentCockpit";
 
 function AgentCard({ a, onClick, onDelete }: { a: Agent; onClick?: () => void; onDelete?: () => void }) {
@@ -93,64 +94,7 @@ function RunRow({ run }: { run: AgentRun }) {
   );
 }
 
-const ICON_CHOICES = ["bot", "code", "search", "database", "globe", "list-checks", "shield-check", "mail", "calendar", "pen-tool", "bar-chart-3", "terminal"];
-const TOOL_CHOICES = ["web_search", "code_interpreter", "filesystem", "github", "memory.query", "calendar", "gmail", "whatsapp", "shell", "vision"];
-const MODELS = ["claude-opus-4-8", "claude-sonnet-4-6", "groq/llama-3.3-70b", "gemini-2.0-flash"];
-const TEAMMATES = ["Coding Agent", "Research Agent", "Memory Agent", "Browser Agent", "Task Agent", "System Agent"];
-
-function Field({ label, children, hint }: { label: string; children: React.ReactNode; hint?: string }) {
-  return (
-    <div style={{ marginBottom: 16 }}>
-      <div style={{ font: "var(--fw-semibold) 10px var(--font-hud)", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--jv-cyan-300)", marginBottom: 8 }}>{label}</div>
-      {children}
-      {hint && <div style={{ font: "var(--fw-regular) 11px var(--font-body)", color: "var(--jv-text-faint)", marginTop: 6 }}>{hint}</div>}
-    </div>
-  );
-}
-
-function Chip({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
-  return (
-    <button
-      onClick={onClick}
-      style={{
-        padding: "6px 12px",
-        borderRadius: "var(--r-pill)",
-        border: `1px solid ${active ? "var(--jv-border-cyan)" : "var(--jv-border)"}`,
-        background: active ? "var(--grad-cyan-soft)" : "var(--jv-void)",
-        color: active ? "var(--jv-cyan-300)" : "var(--jv-text-muted)",
-        font: `${active ? "var(--fw-semibold)" : "var(--fw-medium)"} 12px var(--font-mono)`,
-        cursor: "pointer",
-      }}
-    >
-      {children}
-    </button>
-  );
-}
-
 function AgentBuilder({ onClose, onCreate }: { onClose: () => void; onCreate: (a: NewAgent) => void }) {
-  const [name, setName] = useState("");
-  const [role, setRole] = useState("");
-  const [icon, setIcon] = useState("bot");
-  const [model, setModel] = useState(MODELS[0]);
-  const [tools, setTools] = useState<string[]>(["web_search"]);
-  const [collabs, setCollabs] = useState<string[]>([]);
-  const [autonomy, setAutonomy] = useState("Ask before acting");
-  const [instr, setInstr] = useState("");
-  const toggle = (arr: string[], set: (v: string[]) => void, v: string) => set(arr.includes(v) ? arr.filter((x) => x !== v) : [...arr, v]);
-  const ready = name.trim() && role.trim();
-  const inputStyle: React.CSSProperties = {
-    width: "100%",
-    height: 40,
-    padding: "0 14px",
-    borderRadius: "var(--r-sm)",
-    background: "var(--jv-void)",
-    border: "1px solid var(--jv-border)",
-    color: "var(--jv-text)",
-    font: "var(--fw-medium) 13px var(--font-body)",
-    outline: "none",
-    boxSizing: "border-box",
-  };
-
   return (
     <div
       onClick={onClose}
@@ -174,108 +118,19 @@ function AgentBuilder({ onClose, onCreate }: { onClose: () => void; onCreate: (a
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 20px", borderBottom: "1px solid var(--jv-hairline)" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <span style={{ width: 40, height: 40, display: "grid", placeItems: "center", borderRadius: "var(--r-sm)", color: "var(--jv-cyan)", background: "var(--grad-cyan-soft)", border: "1px solid var(--jv-border-cyan)" }}>
-              <Icon name={icon} size={20} />
+              <Icon name="bot" size={20} />
             </span>
             <div>
               <div style={{ font: "var(--fw-semibold) 10px var(--font-hud)", letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--jv-text-muted)" }}>Orchestrate a teammate</div>
-              <div style={{ font: "var(--fw-bold) 17px var(--font-body)", color: "var(--jv-text)", marginTop: 2 }}>{name.trim() || "New Agent"}</div>
+              <div style={{ font: "var(--fw-bold) 17px var(--font-body)", color: "var(--jv-text)", marginTop: 2 }}>New Agent</div>
             </div>
           </div>
           <button onClick={onClose} style={{ background: "none", border: "none", color: "var(--jv-text-muted)", cursor: "pointer", display: "grid", placeItems: "center" }}>
             <Icon name="x" size={18} />
           </button>
         </div>
-        <div style={{ padding: "20px 20px 4px" }}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-            <Field label="Agent name">
-              <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Finance Agent" style={inputStyle} />
-            </Field>
-            <Field label="Role">
-              <input value={role} onChange={(e) => setRole(e.target.value)} placeholder="e.g. Tracks spend & budgets" style={inputStyle} />
-            </Field>
-          </div>
-          <Field label="Icon">
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              {ICON_CHOICES.map((ic) => (
-                <button
-                  key={ic}
-                  onClick={() => setIcon(ic)}
-                  style={{
-                    width: 38,
-                    height: 38,
-                    display: "grid",
-                    placeItems: "center",
-                    borderRadius: "var(--r-sm)",
-                    cursor: "pointer",
-                    color: icon === ic ? "var(--jv-cyan-300)" : "var(--jv-text-muted)",
-                    background: icon === ic ? "var(--grad-cyan-soft)" : "var(--jv-void)",
-                    border: `1px solid ${icon === ic ? "var(--jv-border-cyan)" : "var(--jv-border)"}`,
-                  }}
-                >
-                  <Icon name={ic} size={17} />
-                </button>
-              ))}
-            </div>
-          </Field>
-          <Field label="Reasoning model">
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              {MODELS.map((m) => (
-                <Chip key={m} active={model === m} onClick={() => setModel(m)}>
-                  {m}
-                </Chip>
-              ))}
-            </div>
-          </Field>
-          <Field label="Tools & skills" hint={`${tools.length} selected — what this agent is allowed to call.`}>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              {TOOL_CHOICES.map((t) => (
-                <Chip key={t} active={tools.includes(t)} onClick={() => toggle(tools, setTools, t)}>
-                  {t}
-                </Chip>
-              ))}
-            </div>
-          </Field>
-          <Field label="Collaborates with" hint="Teammates this agent may hand off to in a multi-agent run.">
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              {TEAMMATES.map((t) => (
-                <Chip key={t} active={collabs.includes(t)} onClick={() => toggle(collabs, setCollabs, t)}>
-                  {t}
-                </Chip>
-              ))}
-            </div>
-          </Field>
-          <Field label="Autonomy">
-            <div style={{ display: "flex", gap: 8 }}>
-              {["Ask before acting", "Act, then report", "Fully autonomous"].map((a) => (
-                <Chip key={a} active={autonomy === a} onClick={() => setAutonomy(a)}>
-                  {a}
-                </Chip>
-              ))}
-            </div>
-          </Field>
-          <Field label="System instructions">
-            <textarea
-              value={instr}
-              onChange={(e) => setInstr(e.target.value)}
-              placeholder="Describe how this teammate should think and behave…"
-              style={{ ...inputStyle, height: 80, padding: "10px 14px", resize: "vertical", font: "var(--fw-regular) 13px/1.5 var(--font-body)" }}
-            />
-          </Field>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "14px 20px", borderTop: "1px solid var(--jv-hairline)" }}>
-          <span style={{ font: "11px var(--font-mono)", color: "var(--jv-text-faint)" }}>{ready ? "Ready to deploy" : "Name and role required"}</span>
-          <div style={{ display: "flex", gap: 10 }}>
-            <Button variant="ghost" onClick={onClose}>
-              Cancel
-            </Button>
-            <Button
-              variant="primary"
-              icon={<Icon name="rocket" size={14} />}
-              onClick={() => ready && onCreate({ icon, name: name.trim(), role: role.trim(), model, tools, collaborators: collabs, autonomy, instructions: instr })}
-            >
-              Deploy Agent
-            </Button>
-          </div>
+        <div style={{ padding: "20px" }}>
+          <AgentForm submitLabel="Deploy Agent" onCancel={onClose} onSubmit={onCreate} />
         </div>
       </div>
     </div>

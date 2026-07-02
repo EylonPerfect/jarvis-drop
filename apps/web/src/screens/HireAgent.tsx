@@ -1,13 +1,13 @@
-// HireAgent — build-first. The primary action is to build your own agent,
-// tailored to your exact workflow. A gallery of role-based templates sits below
-// as a quick-start secondary path. Both paths POST /api/agents; the new hire
-// then appears in Your Team.
-import { useEffect, useState } from "react";
+// HireAgent — build-first, two columns. Left: build your own agent (the full
+// builder, shared with the Roster). Right: a gallery of role templates as a
+// quick-start. Both paths POST /api/agents; the new hire appears in Your Team.
+import { useState } from "react";
 import type { CSSProperties } from "react";
 import { api } from "../api/client";
 import { useApi } from "../api/hooks";
 import { Panel, Badge, Button, Icon } from "../ds";
-import type { AiProvider } from "@jarvis/shared";
+import { AgentForm } from "../components/AgentForm";
+import type { AiProvider, NewAgent } from "@jarvis/shared";
 
 type Role = { ic: string; name: string; dept: string; blurb: string; budget: string; tools: string[]; grants: string };
 
@@ -20,11 +20,7 @@ const ROLES: Role[] = [
   { ic: "headphones", name: "Support Agent", dept: "Customer", blurb: "Triages tickets, drafts replies, escalates anything it cannot resolve.", budget: "$400/mo", tools: ["Helpdesk", "Email", "Docs"], grants: "Reply draft · no refunds" },
 ];
 
-const ICON_CHOICES = ["bot", "code", "search", "database", "globe", "list-checks", "shield-check"];
-const AUTONOMY_CHOICES = ["Ask before acting", "Act autonomously", "Read-only"];
-
 const inputStyle: CSSProperties = { width: "100%", height: 40, padding: "0 14px", borderRadius: "var(--r-sm)", background: "var(--jv-void)", border: "1px solid var(--jv-border)", color: "var(--jv-text)", font: "var(--fw-medium) 13px var(--font-body)", outline: "none", boxSizing: "border-box" };
-const labelStyle: CSSProperties = { font: "var(--fw-semibold) 10px var(--font-hud)", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--jv-cyan-300)", marginBottom: 8 };
 
 function HireFlow({ role, onClose, onHire }: { role: Role; onClose: () => void; onHire: (name: string) => void }) {
   const [name, setName] = useState(role.name + " 01");
@@ -64,139 +60,6 @@ function HireFlow({ role, onClose, onHire }: { role: Role; onClose: () => void; 
   );
 }
 
-// TOP — the primary call to action: build a bespoke agent inline.
-function BuildYourOwn({ onBuilt }: { onBuilt: (name: string) => void }) {
-  // The model choices are exactly the providers connected in AI Core — no free
-  // text. If nothing is connected there, we say so and link the operator over.
-  const { data: provData } = useApi<AiProvider[]>("/api/aicore/providers");
-  const providers = provData ?? [];
-  const models = Array.from(new Set(providers.map((p) => p.model)));
-  const activeModel = providers.find((p) => p.active)?.model ?? models[0] ?? "";
-
-  const [name, setName] = useState("");
-  const [role, setRole] = useState("");
-  const [icon, setIcon] = useState("bot");
-  const [model, setModel] = useState("");
-  const [autonomy, setAutonomy] = useState(AUTONOMY_CHOICES[0]);
-  const [instructions, setInstructions] = useState("");
-  const ready = name.trim() !== "" && role.trim() !== "";
-
-  // Default the model to the active connected provider once it loads.
-  useEffect(() => {
-    if (!model && activeModel) setModel(activeModel);
-  }, [activeModel, model]);
-
-  const build = () => {
-    if (!ready) return;
-    const cleanName = name.trim();
-    api
-      .post("/api/agents", { name: cleanName, role: role.trim(), icon, model: model.trim() || undefined, autonomy, instructions: instructions.trim() || undefined })
-      .catch(() => {});
-    onBuilt(cleanName);
-    setName("");
-    setRole("");
-    setIcon("bot");
-    setModel("");
-    setAutonomy(AUTONOMY_CHOICES[0]);
-    setInstructions("");
-  };
-
-  return (
-    <Panel
-      title="Build your own agent"
-      eyebrow
-      action={<Badge status="optimal" dot={false}>Recommended</Badge>}
-      style={{ border: "1px solid var(--jv-border-cyan)", background: "var(--grad-cyan-soft)", boxShadow: "var(--panel-shadow-active)" }}
-    >
-      <p style={{ margin: "0 0 20px", font: "var(--fw-regular) 13px/1.6 var(--font-body)", color: "var(--jv-text-soft)", maxWidth: 640 }}>
-        Don't settle for a preset. Tailor an agent to <strong style={{ color: "var(--jv-text)" }}>exactly</strong> your workflow — give it a name, a job, the model it reasons with, and the guardrails it operates under. It joins Your Team on standby the moment you build it.
-      </p>
-
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-        <div>
-          <div style={labelStyle}>Agent name</div>
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Finance Agent" style={inputStyle} />
-        </div>
-        <div>
-          <div style={labelStyle}>Role / description</div>
-          <input value={role} onChange={(e) => setRole(e.target.value)} placeholder="e.g. Tracks spend & flags budget overruns" style={inputStyle} />
-        </div>
-      </div>
-
-      <div style={{ marginTop: 16 }}>
-        <div style={labelStyle}>Icon</div>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          {ICON_CHOICES.map((ic) => (
-            <button
-              key={ic}
-              onClick={() => setIcon(ic)}
-              title={ic}
-              style={{
-                width: 40,
-                height: 40,
-                display: "grid",
-                placeItems: "center",
-                borderRadius: "var(--r-sm)",
-                cursor: "pointer",
-                color: icon === ic ? "var(--jv-cyan-300)" : "var(--jv-text-muted)",
-                background: icon === ic ? "var(--grad-cyan-soft)" : "var(--jv-void)",
-                border: `1px solid ${icon === ic ? "var(--jv-border-cyan)" : "var(--jv-border)"}`,
-              }}
-            >
-              <Icon name={ic} size={18} />
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginTop: 16 }}>
-        <div>
-          <div style={labelStyle}>Model</div>
-          {models.length ? (
-            <select value={model} onChange={(e) => setModel(e.target.value)} style={{ ...inputStyle, appearance: "none", cursor: "pointer" }}>
-              {models.map((m) => {
-                const p = providers.find((pr) => pr.model === m);
-                return (
-                  <option key={m} value={m}>
-                    {m}{p ? ` · ${p.name}` : ""}{p?.active ? " (active)" : ""}
-                  </option>
-                );
-              })}
-            </select>
-          ) : (
-            <div style={{ ...inputStyle, display: "flex", alignItems: "center", gap: 7, color: "var(--jv-text-muted)", font: "var(--fw-regular) 12px var(--font-body)" }}>
-              <Icon name="plug" size={13} /> No model connected — add one in AI Core first
-            </div>
-          )}
-        </div>
-        <div>
-          <div style={labelStyle}>Autonomy</div>
-          <select value={autonomy} onChange={(e) => setAutonomy(e.target.value)} style={{ ...inputStyle, appearance: "none", cursor: "pointer" }}>
-            {AUTONOMY_CHOICES.map((a) => (
-              <option key={a} value={a}>{a}</option>
-            ))}
-          </select>
-        </div>
-      </div>
-
-      <div style={{ marginTop: 16 }}>
-        <div style={labelStyle}>Instructions (optional)</div>
-        <textarea
-          value={instructions}
-          onChange={(e) => setInstructions(e.target.value)}
-          placeholder="Describe how this teammate should think and behave…"
-          style={{ ...inputStyle, height: 84, padding: "10px 14px", resize: "vertical", font: "var(--fw-regular) 13px/1.5 var(--font-body)" }}
-        />
-      </div>
-
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginTop: 20 }}>
-        <span style={{ font: "11px var(--font-mono)", color: "var(--jv-text-faint)" }}>{ready ? "Ready to build" : "Name and role required"}</span>
-        <Button variant="primary" size="lg" icon={<Icon name="rocket" size={16} />} disabled={!ready} onClick={build}>Build agent</Button>
-      </div>
-    </Panel>
-  );
-}
-
 export default function HireAgent() {
   const { data: provData } = useApi<AiProvider[]>("/api/aicore/providers");
   const activeModel = (provData ?? []).find((p) => p.active)?.model;
@@ -209,9 +72,10 @@ export default function HireAgent() {
     setTimeout(() => setToast(null), 2600);
   };
 
-  const built = (name: string) => {
-    setHired((h) => [...h, name]);
-    notify("✓ " + name + " created — now in Your Team, on standby.");
+  const build = (a: NewAgent) => {
+    api.post("/api/agents", a).catch(() => {});
+    setHired((h) => [...h, a.name]);
+    notify("✓ " + a.name + " created — now in Your Team, on standby.");
   };
 
   const hire = (name: string) => {
@@ -222,30 +86,42 @@ export default function HireAgent() {
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      <BuildYourOwn onBuilt={built} />
-
-      <Panel title="…or start from a template" eyebrow action={<Badge status="info" dot={false}>{ROLES.length} role templates</Badge>}>
-        <p style={{ margin: "0 0 16px", font: "var(--fw-regular) 12.5px/1.55 var(--font-body)", color: "var(--jv-text-muted)" }}>
-          In a hurry? Start from a ready-made role instead. Permissions, budget and tools come pre-set from the template — name it and deploy.
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, alignItems: "start" }}>
+      {/* LEFT — build your own (primary) */}
+      <Panel
+        title="Build your own agent"
+        eyebrow
+        action={<Badge status="optimal" dot={false}>Recommended</Badge>}
+        style={{ border: "1px solid var(--jv-border-cyan)", background: "var(--grad-cyan-soft)", boxShadow: "var(--panel-shadow-active)" }}
+      >
+        <p style={{ margin: "0 0 20px", font: "var(--fw-regular) 13px/1.6 var(--font-body)", color: "var(--jv-text-soft)" }}>
+          Don't settle for a preset. Tailor an agent to <strong style={{ color: "var(--jv-text)" }}>exactly</strong> your workflow — name, job, the connected model it reasons with, the tools it may call, teammates it hands off to, and its guardrails. It joins Your Team the moment you build it.
         </p>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
+        <AgentForm submitLabel="Build agent" resetOnSubmit onSubmit={build} />
+      </Panel>
+
+      {/* RIGHT — templates (secondary) */}
+      <Panel title="…or start from a template" eyebrow action={<Badge status="info" dot={false}>{ROLES.length} templates</Badge>}>
+        <p style={{ margin: "0 0 16px", font: "var(--fw-regular) 12.5px/1.55 var(--font-body)", color: "var(--jv-text-muted)" }}>
+          In a hurry? Start from a ready-made role. Permissions, budget and tools come pre-set — name it and deploy.
+        </p>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           {ROLES.map((r) => (
-            <div key={r.name} style={{ display: "flex", flexDirection: "column", padding: 16, borderRadius: "var(--r-md)", background: "var(--jv-surface-2)", border: "1px solid var(--jv-border-soft)" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-                <span style={{ width: 40, height: 40, display: "grid", placeItems: "center", borderRadius: "var(--r-sm)", color: "var(--jv-cyan)", background: "rgba(41,211,245,0.08)", border: "1px solid var(--jv-border-soft)" }}><Icon name={r.ic} size={19} /></span>
-                <div>
+            <div key={r.name} style={{ display: "flex", flexDirection: "column", padding: 14, borderRadius: "var(--r-md)", background: "var(--jv-surface-2)", border: "1px solid var(--jv-border-soft)" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+                <span style={{ width: 38, height: 38, display: "grid", placeItems: "center", borderRadius: "var(--r-sm)", color: "var(--jv-cyan)", background: "rgba(41,211,245,0.08)", border: "1px solid var(--jv-border-soft)" }}><Icon name={r.ic} size={18} /></span>
+                <div style={{ flex: 1 }}>
                   <div style={{ font: "var(--fw-bold) 14px var(--font-body)", color: "var(--jv-text)" }}>{r.name}</div>
                   <div style={{ font: "var(--fw-medium) 10px var(--font-hud)", letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--jv-cyan-300)" }}>{r.dept}</div>
                 </div>
-              </div>
-              <p style={{ margin: "0 0 12px", flex: 1, font: "var(--fw-regular) 12px/1.55 var(--font-body)", color: "var(--jv-text-muted)" }}>{r.blurb}</p>
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
-                {r.tools.map((t) => <span key={t} style={{ padding: "3px 8px", borderRadius: 3, font: "var(--fw-medium) 10px var(--font-mono)", color: "var(--jv-text-soft)", background: "var(--jv-void)", border: "1px solid var(--jv-border-soft)" }}>{t}</span>)}
-              </div>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                <span style={{ font: "12px var(--font-mono)", color: "var(--jv-text-faint)" }}>{r.budget}</span>
                 <Button size="sm" variant="secondary" icon={<Icon name="user-plus" size={13} />} onClick={() => setPicked(r)}>Hire</Button>
+              </div>
+              <p style={{ margin: "0 0 10px", font: "var(--fw-regular) 12px/1.55 var(--font-body)", color: "var(--jv-text-muted)" }}>{r.blurb}</p>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {r.tools.map((t) => <span key={t} style={{ padding: "3px 8px", borderRadius: 3, font: "var(--fw-medium) 10px var(--font-mono)", color: "var(--jv-text-soft)", background: "var(--jv-void)", border: "1px solid var(--jv-border-soft)" }}>{t}</span>)}
+                </div>
+                <span style={{ font: "12px var(--font-mono)", color: "var(--jv-text-faint)", whiteSpace: "nowrap" }}>{r.budget}</span>
               </div>
             </div>
           ))}
