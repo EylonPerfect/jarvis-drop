@@ -434,6 +434,7 @@ function BreathingDiscovery({
   companyName,
   onApply,
   onSkip,
+  onAttach,
 }: {
   name: string;
   title: string;
@@ -446,6 +447,8 @@ function BreathingDiscovery({
   companyName?: string;
   onApply: (profile: DiscoverProfile) => void;
   onSkip: () => void;
+  // Attach an uploaded example (a file/screenshot) as evidence for the agent.
+  onAttach: (ex: EvidenceExample) => void;
 }) {
   const [transcript, setTranscript] = useState<DiscoverTurn[]>([]);
   const [question, setQuestion] = useState<string>("");
@@ -610,6 +613,36 @@ function BreathingDiscovery({
     ];
     setTranscript(next);
     void ask(next);
+  };
+
+  // ---- Attach an example file right from the interview (when the AI asks for
+  // one). Uploads to the file store, records it as evidence, and tells the AI. ----
+  const attachInputRef = useRef<HTMLInputElement | null>(null);
+  const [attachments, setAttachments] = useState<{ fileId: string; name: string; isImage: boolean }[]>([]);
+  const [attaching, setAttaching] = useState(false);
+  const attachFile = async (file: File) => {
+    setAttaching(true);
+    try {
+      const { dataUrl, mime } = await fileToDataUrl(file);
+      const res = await api.post<{ id: string }>("/api/files", { filename: file.name, mime, dataBase64: dataUrl });
+      const isImage = mime.startsWith("image/");
+      onAttach({ kind: isImage ? "screenshot" : "file", assetType: "output", fileId: res.id, fileName: isImage ? undefined : file.name, caption: file.name });
+      setAttachments((a) => [...a, { fileId: res.id, name: file.name, isImage }]);
+      // Advance the interview: acknowledge the example and ask the next question.
+      voice.cancel();
+      const msg = `I've attached an example file: "${file.name}". Treat it as evidence of what "great" looks like, fold it into your understanding, then ask the next most important question.`;
+      const next: DiscoverTurn[] = [
+        ...transcript,
+        ...(question ? [{ role: "assistant" as const, content: question }] : []),
+        { role: "user" as const, content: msg },
+      ];
+      setTranscript(next);
+      void ask(next);
+    } catch {
+      setError("That file couldn't be uploaded — try again, or attach it later in the Examples step.");
+    } finally {
+      setAttaching(false);
+    }
   };
 
   const access = profile.access ?? [];
@@ -831,6 +864,27 @@ function BreathingDiscovery({
         )}
         {error && <div style={{ font: "var(--fw-regular) 11px var(--font-body)", color: "var(--jv-amber)", marginTop: 8 }}>{error}</div>}
 
+        {/* Attached examples — files uploaded right from the interview. */}
+        {attachments.length > 0 && (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 12 }}>
+            {attachments.map((f, i) => (
+              <a key={i} href={`/api/files/${f.fileId}`} target="_blank" rel="noreferrer" style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 9px", borderRadius: "var(--r-pill)", textDecoration: "none", background: "color-mix(in srgb, var(--jv-green) 12%, transparent)", border: "1px solid color-mix(in srgb, var(--jv-green) 40%, transparent)", color: "var(--jv-green)" }}>
+                <Icon name={f.isImage ? "image" : "file-text"} size={12} color="var(--jv-green)" />
+                <span style={{ font: "var(--fw-medium) 11px var(--font-body)", maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.name}</span>
+              </a>
+            ))}
+          </div>
+        )}
+
+        {/* hidden picker for interview attachments */}
+        <input
+          ref={attachInputRef}
+          type="file"
+          accept="image/*,application/pdf,.txt,.md,.doc,.docx,.csv,.vtt,.ppt,.pptx,.xls,.xlsx"
+          style={{ display: "none" }}
+          onChange={(e) => { const f = e.target.files?.[0]; if (f) void attachFile(f); e.target.value = ""; }}
+        />
+
         {/* Controls. ACCEPT confirms this understanding and moves to the NEXT
             QUESTION — it does not leave the interview. BUILD THE AGENT (green,
             only once ready) is the deliberate step that proceeds to setup. */}
@@ -843,6 +897,9 @@ function BreathingDiscovery({
             style={{ background: "var(--grad-cyan)", boxShadow: "0 0 14px var(--jv-glow-cyan)" }}
           >
             {busy ? "…" : "Accept"}
+          </Button>
+          <Button variant="secondary" icon={<Icon name={attaching ? "loader" : "paperclip"} size={14} />} disabled={attaching || busy} onClick={() => attachInputRef.current?.click()}>
+            {attaching ? "Uploading…" : "Attach a file"}
           </Button>
           <Button variant="secondary" icon={<Icon name={busy ? "loader" : "refresh-cw"} size={14} />} disabled={busy} onClick={regenerate}>
             {busy ? "…" : "Regenerate"}
@@ -1491,6 +1548,17 @@ export function AgentWizard({
     setStep(1); // advance into the pre-filled remainder (Access & onboarding)
   };
 
+  // A file uploaded during the interview → stored as evidence under a dedicated
+  // behavior so it flows into the Examples step and the built agent.
+  const attachInterviewExample = (ex: EvidenceExample) => {
+    const label = "Reference examples (from interview)";
+    setEvidence((prev) => {
+      const idx = prev.findIndex((e) => e.behavior === label);
+      if (idx >= 0) return prev.map((e, i) => (i === idx ? { ...e, examples: [...e.examples, ex] } : e));
+      return [...prev, { behavior: label, assetType: "output" as EvidenceAssetType, instruction: "", examples: [ex] }];
+    });
+  };
+
   // Advance with whatever's captured, without applying a completed profile.
   const skipInterview = () => {
     setProfileApplied(true);
@@ -1802,6 +1870,7 @@ export function AgentWizard({
             companyName={companyName}
             onApply={applyProfile}
             onSkip={skipInterview}
+            onAttach={attachInterviewExample}
           />
         </div>
       )}
