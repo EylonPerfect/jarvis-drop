@@ -527,6 +527,11 @@ function BreathingDiscovery({
       setProfile(r.profile ?? {});
       setSummary(r.summary);
       setSource(r.source);
+      // Each turn the AI restates what it understands — clear any prior inline
+      // edit of the summary so the fresh understanding shows (the user's edit was
+      // already sent to the AI as input by acceptAndContinue).
+      setOverrideSummary(null);
+      setEditingSummary(false);
     } catch {
       setError("The interview stalled — try answering again, or skip to fill it in yourself.");
     } finally {
@@ -591,11 +596,17 @@ function BreathingDiscovery({
   const acceptAndContinue = () => {
     if (busy) return;
     voice.cancel();
-    const confirm = "Looks good — I accept this. Ask the next most important question to deepen your understanding of this role.";
+    // If the operator edited the "What I understand" text, treat that as their
+    // answer/correction and send it to the AI so it's folded in. Otherwise just
+    // confirm and move to the next question.
+    const edited = overrideSummary != null && overrideSummary.trim() && overrideSummary.trim() !== (summary ?? "").trim();
+    const userMsg = edited
+      ? `My input / correction: ${overrideSummary!.trim()}. Fold this into your understanding, then ask the next most important question.`
+      : "Looks good — I accept this. Ask the next most important question to deepen your understanding of this role.";
     const next: DiscoverTurn[] = [
       ...transcript,
       ...(question ? [{ role: "assistant" as const, content: question }] : []),
-      { role: "user" as const, content: confirm },
+      { role: "user" as const, content: userMsg },
     ];
     setTranscript(next);
     void ask(next);
@@ -801,20 +812,20 @@ function BreathingDiscovery({
                 autoFocus
                 onChange={(e) => setOverrideSummary(e.target.value)}
                 onBlur={() => setEditingSummary(false)}
-                placeholder="Why this setup fits…"
+                placeholder="Correct or add anything — I'll fold it in when you Accept…"
                 style={{ ...areaStyle, height: 96, font: "var(--fw-regular) 11.5px/1.55 var(--font-body)" }}
               />
             ) : (
               <div
                 onClick={() => { if (overrideSummary == null) setOverrideSummary(summary ?? ""); setEditingSummary(true); }}
-                title="Click to edit"
+                title="Click to correct — Accept folds it in"
                 style={{ font: "var(--fw-regular) 11.5px/1.55 var(--font-body)", color: "var(--jv-text-soft)", cursor: "text", whiteSpace: "pre-wrap" }}
               >
-                {effSummary || (busy ? "Working out why this fits…" : "Click to add why this fits…")}
+                {effSummary || (busy ? "Working out what I understand…" : "Click to tell me what I'm missing…")}
               </div>
             )}
             <div style={{ font: "var(--fw-regular) 10px var(--font-body)", color: "var(--jv-text-faint)", marginTop: 8 }}>
-              Edit any field inline (here and on the right), or accept as-is.
+              This is what I understand so far. Click to correct or add — then <b style={{ color: "var(--jv-text-muted)" }}>Accept</b> and I'll fold it in and ask the next question.
             </div>
           </div>
         )}
