@@ -149,6 +149,25 @@ const CATALOG: CatalogEntry[] = [
     },
   },
   {
+    id: "recall", label: "Recall.ai (meeting bot)", category: "voice", icon: "video", authKind: "apiKey", recommended: false,
+    fields: [
+      { key: "apiKey", label: "API key", placeholder: "Recall.ai API key", secret: true },
+      { key: "region", label: "Region", placeholder: "us-east-1 / eu-central-1 / us-west-2", optional: true },
+    ],
+    note: "Lets an agent JOIN a live Zoom/Meet/Teams call and speak (paired with the voice provider) to run demos.",
+    docsUrl: "https://www.recall.ai/",
+    detailOf: (v) => `${v.region || "region?"} · key ••••${last4(v.apiKey)}`,
+    test: async (v) => {
+      const key = v.apiKey?.trim();
+      const region = (v.region?.trim() || "us-east-1").replace(/[^a-z0-9-]/gi, "");
+      if (!key) return { ok: false, detail: "Missing API key." };
+      try {
+        const r = await fetch(`https://${region}.recall.ai/api/v1/bot/?limit=1`, { headers: { authorization: `Token ${key}` } });
+        return r.ok ? { ok: true, detail: `Recall.ai connected (${region}).` } : { ok: false, detail: `Recall.ai rejected the key (${r.status}) — check the key and region.` };
+      } catch (e) { return { ok: false, detail: `Could not reach Recall.ai: ${(e as Error).message}` }; }
+    },
+  },
+  {
     id: "demo", label: "Product demo environment", category: "runtime", icon: "monitor-play", authKind: "basic",
     fields: [
       { key: "url", label: "Demo URL", placeholder: "https://demo.goperfectmatch.com" },
