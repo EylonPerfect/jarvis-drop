@@ -109,7 +109,7 @@ function ProfileSection() {
       }
     >
       <p style={{ margin: "0 0 18px", font: "var(--fw-regular) 13px/1.6 var(--font-body)", color: "var(--jv-text-soft)" }}>
-        Start here. Tell Living Shadow everything about your company — this profile grounds every agent you build so its
+        Start here. Tell After Human everything about your company — this profile grounds every agent you build so its
         recommendations, tone, and setup fit who you actually are.
       </p>
 

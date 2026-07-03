@@ -1,83 +1,46 @@
-import { type CSSProperties, useId } from "react";
+import { type CSSProperties } from "react";
 
-// J.A.R.V.I.S. arc-reactor emblem: rotating dashed ring, segmented coil,
-// triangular reactor core. Ported from the design-system bundle.
+// After Human emblem: a human silhouette dissolving into an ordered grid of
+// cyan squares — "the workforce that comes next". Silhouette uses the theme
+// text color; the grid uses the accent (cyan).
 export function Logo({
   size = 44,
   color = "var(--jv-cyan)",
-  core = "var(--jv-cyan-300)",
   wordmark = false,
   subtitle = "COMMAND CENTER",
-  spin = true,
   style = {},
 }: {
   size?: number;
   color?: string;
-  core?: string;
   wordmark?: boolean;
   subtitle?: string;
-  spin?: boolean;
   style?: CSSProperties;
 }) {
-  const uid = useId().replace(/[:]/g, "");
-  const cx = 50;
-  const cy = 50;
-
-  const ticks = Array.from({ length: 24 }, (_, i) => {
-    const a = (i / 24) * Math.PI * 2;
-    const r1 = 26;
-    const r2 = i % 2 === 0 ? 33 : 30;
-    return { x1: cx + r1 * Math.cos(a), y1: cy + r1 * Math.sin(a), x2: cx + r2 * Math.cos(a), y2: cy + r2 * Math.sin(a), w: i % 2 === 0 ? 2 : 1 };
-  });
-
-  const blades = [0, 120, 240].map((deg) => {
-    const a = (deg - 90) * (Math.PI / 180);
-    const tip = 13;
-    const base = 5;
-    const halfW = 7;
-    const ax = cx + tip * Math.cos(a);
-    const ay = cy + tip * Math.sin(a);
-    const pa = a + Math.PI / 2;
-    const b1x = cx + base * Math.cos(a) + halfW * Math.cos(pa);
-    const b1y = cy + base * Math.sin(a) + halfW * Math.sin(pa);
-    const b2x = cx + base * Math.cos(a) - halfW * Math.cos(pa);
-    const b2y = cy + base * Math.sin(a) - halfW * Math.sin(pa);
-    return `M${ax.toFixed(2)} ${ay.toFixed(2)} L${b1x.toFixed(2)} ${b1y.toFixed(2)} L${b2x.toFixed(2)} ${b2y.toFixed(2)} Z`;
-  });
+  const mark = "var(--jv-text)";
+  // 3×6 grid of accent squares (the "next workforce").
+  const cells: { x: number; y: number }[] = [];
+  for (let row = 0; row < 6; row++) for (let col = 0; col < 3; col++) cells.push({ x: col * 23, y: row * 23 });
+  // Silhouette fragments trailing off toward the grid.
+  const frags = [
+    { x: 72, y: 8, s: 12, o: 0.9 }, { x: 91, y: 26, s: 10, o: 0.75 }, { x: 77, y: 45, s: 9, o: 0.7 },
+    { x: 97, y: 57, s: 11, o: 0.6 }, { x: 82, y: 79, s: 9, o: 0.55 }, { x: 99, y: 93, s: 10, o: 0.5 },
+    { x: 79, y: 108, s: 9, o: 0.45 },
+  ];
 
   const svg = (
-    <svg width={size} height={size} viewBox="0 0 100 100" style={{ flex: "0 0 auto", overflow: "visible" }} aria-hidden="true">
-      <defs>
-        <radialGradient id={`core${uid}`} cx="50%" cy="42%" r="60%">
-          <stop offset="0%" stopColor="#ffffff" />
-          <stop offset="35%" stopColor={core} />
-          <stop offset="100%" stopColor={color} />
-        </radialGradient>
-        <filter id={`glow${uid}`} x="-60%" y="-60%" width="220%" height="220%">
-          <feGaussianBlur stdDeviation="2.4" result="b" />
-          <feMerge>
-            <feMergeNode in="b" />
-            <feMergeNode in="SourceGraphic" />
-          </feMerge>
-        </filter>
-      </defs>
-      <g style={{ transformOrigin: "50px 50px", animation: spin ? "jv-spin 18s linear infinite" : "none" }}>
-        <circle cx={cx} cy={cy} r={46} fill="none" stroke={color} strokeWidth="1.4" strokeDasharray="1.5 6" opacity="0.5" />
-      </g>
-      <g filter={`url(#glow${uid})`} style={{ transformOrigin: "50px 50px", animation: spin ? "jv-spin 30s linear infinite reverse" : "none" }}>
-        {ticks.map((t, i) => (
-          <line key={i} x1={t.x1} y1={t.y1} x2={t.x2} y2={t.y2} stroke={color} strokeWidth={t.w} strokeLinecap="round" opacity="0.85" />
+    <svg width={size} height={size} viewBox="0 0 256 256" style={{ flex: "0 0 auto", overflow: "visible" }} aria-hidden="true">
+      <g transform="translate(14,44)">
+        <circle fill={mark} cx="30" cy="22" r="19" />
+        <path fill={mark} d="M6 51 h48 a5 5 0 0 1 5 5 v67 a5 5 0 0 1 -5 5 h-48 a5 5 0 0 1 -5 -5 v-67 a5 5 0 0 1 5 -5 z" />
+        {frags.map((f, i) => (
+          <rect key={i} fill={mark} x={f.x} y={f.y} width={f.s} height={f.s} rx="2" opacity={f.o} />
         ))}
+        <g transform="translate(126,8)" style={{ animation: "jv-glow-breathe 3.6s var(--ease-out, ease) infinite" }}>
+          {cells.map((c, i) => (
+            <rect key={i} fill={color} x={c.x} y={c.y} width="16" height="16" rx="2" />
+          ))}
+        </g>
       </g>
-      <circle cx={cx} cy={cy} r={22} fill="none" stroke={core} strokeWidth="2.2" filter={`url(#glow${uid})`} />
-      <circle cx={cx} cy={cy} r={18} fill="rgba(6,16,28,0.65)" />
-      <circle cx={cx} cy={cy} r={12} fill={`url(#core${uid})`} filter={`url(#glow${uid})`} />
-      <g fill="rgba(6,16,28,0.55)" filter={`url(#glow${uid})`}>
-        {blades.map((d, i) => (
-          <path key={i} d={d} />
-        ))}
-      </g>
-      <circle cx={cx} cy={cy} r={3.2} fill="#ffffff" />
     </svg>
   );
 
@@ -86,7 +49,9 @@ export function Logo({
     <span style={{ display: "inline-flex", alignItems: "center", gap: 12, ...style }}>
       {svg}
       <span>
-        <span style={{ display: "block", font: `var(--fw-bold) ${size * 0.4}px/1 var(--font-display)`, letterSpacing: "0.08em", color: "var(--jv-text)", whiteSpace: "nowrap" }}>Living Shadow</span>
+        <span style={{ display: "block", font: `var(--fw-bold) ${size * 0.38}px/1 var(--font-display)`, letterSpacing: "0.14em", color: "var(--jv-text)", whiteSpace: "nowrap" }}>
+          AFTER<span style={{ color: "var(--jv-text-muted)", fontWeight: 400 }}> HUMAN</span>
+        </span>
         {subtitle && (
           <span style={{ display: "block", font: "var(--fw-medium) 9px/1 var(--font-hud)", letterSpacing: "0.30em", color: "var(--jv-text-muted)", marginTop: 5 }}>
             {subtitle}

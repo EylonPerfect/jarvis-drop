@@ -152,7 +152,7 @@ export default function Conversations() {
               compact
               icon="message-square"
               title={query.trim() ? "No matches" : "No conversations yet"}
-              hint={query.trim() ? "No conversations match your search." : "Start a new chat to begin talking with Living Shadow."}
+              hint={query.trim() ? "No conversations match your search." : "Start a new chat to begin talking with After Human."}
             />
           ) : (
             filtered.map((c, i) => (

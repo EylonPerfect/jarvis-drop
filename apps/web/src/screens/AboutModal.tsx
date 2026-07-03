@@ -1,5 +1,5 @@
 import { type ReactNode, useState } from "react";
-import { Icon, Logo, Button } from "../ds";
+import { Icon, Button } from "../ds";
 
 function LinkRow({ ic, label, sub, href, external }: { ic: string; label: string; sub?: string; href: string; external?: boolean }) {
   return (
@@ -54,11 +54,8 @@ export function AboutModal({ onClose }: { onClose: () => void }) {
           </button>
         </div>
         <div style={{ padding: "24px 24px 22px", textAlign: "center" }}>
-          <Logo size={70} />
-          <div style={{ font: "var(--fw-bold) 26px var(--font-display)", letterSpacing: "0.1em", color: "var(--jv-cyan-300)", textShadow: "var(--glow-cyan)", marginTop: 14 }}>
-            Living Shadow
-          </div>
-          <div style={{ font: "var(--fw-regular) 12px var(--font-body)", color: "var(--jv-text-muted)", marginTop: 6 }}>Your always-on AI operator</div>
+          <img src="/after-human-logo.svg" alt="After Human — the workforce that comes next" style={{ width: 300, maxWidth: "100%", height: "auto", display: "block", margin: "0 auto" }} />
+          <div style={{ font: "var(--fw-regular) 12px var(--font-body)", color: "var(--jv-text-muted)", marginTop: 10 }}>Your always-on AI operator</div>
           <div style={{ display: "flex", gap: 7, justifyContent: "center", flexWrap: "wrap", marginTop: 14 }}>
             {["v3.0.0", "web", "Linux x64", "Hermes-connected"].map((c) => (
               <span
@@ -132,7 +129,7 @@ export function AboutModal({ onClose }: { onClose: () => void }) {
               </Button>
             </div>
           </div>
-          <div style={{ font: "var(--fw-regular) 11px var(--font-body)", color: "var(--jv-text-faint)", marginTop: 16 }}>© 2026 Eylon · Living Shadow Command Center</div>
+          <div style={{ font: "var(--fw-regular) 11px var(--font-body)", color: "var(--jv-text-faint)", marginTop: 16 }}>© 2026 Eylon · After Human Command Center</div>
         </div>
       </div>
     </div>

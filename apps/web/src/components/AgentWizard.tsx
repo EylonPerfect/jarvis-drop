@@ -346,7 +346,7 @@ const ACCESS_TONE: Record<AccessStatus, { color: string; label: string }> = {
 // popup captures INTENT (mark pending/granted) rather than performing OAuth.
 interface ConnectGuide { icon: string; steps: string }
 const CONNECT_GUIDES: { match: RegExp; icon: string; steps: string }[] = [
-  { match: /slack/i, icon: "message-square", steps: "Install the Living Shadow Slack app in your workspace; a workspace admin may need to approve it. Then authorize the channels the agent should post in." },
+  { match: /slack/i, icon: "message-square", steps: "Install the After Human Slack app in your workspace; a workspace admin may need to approve it. Then authorize the channels the agent should post in." },
   { match: /calendar|cal\b/i, icon: "calendar", steps: "Connect the agent's calendar (Google/Microsoft) so it can read availability and send invites." },
   { match: /e-?mail|mailbox|gmail|outlook|inbox/i, icon: "mail", steps: "Authorize the agent's mailbox (Google Workspace / Microsoft 365). An admin may need to grant delegated access." },
   { match: /hubspot|salesforce|crm|pipeline/i, icon: "database", steps: "Connect via your CRM admin settings and grant API access for the objects the agent needs." },

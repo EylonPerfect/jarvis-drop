@@ -112,7 +112,7 @@ export default function Memory() {
               compact
               icon="database"
               title="0 memories"
-              hint="Your vector store is empty. Memory builds as you use Living Shadow."
+              hint="Your vector store is empty. Memory builds as you use After Human."
             />
           ) : (
             <>
@@ -134,7 +134,7 @@ export default function Memory() {
 
         <Panel title="Session cost" action={<span style={{ font: "var(--fw-bold) 16px var(--font-mono)", color: "var(--jv-cyan-300)" }}>{costTotal}</span>}>
           {costEntries.length === 0 ? (
-            <EmptyState compact icon="dollar-sign" title="No cost yet" hint="Provider spend appears here once Living Shadow starts making calls." />
+            <EmptyState compact icon="dollar-sign" title="No cost yet" hint="Provider spend appears here once After Human starts making calls." />
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
               {costEntries.map((r, i) => (
@@ -151,7 +151,7 @@ export default function Memory() {
       {/* recent conversations */}
       <Panel title="Recent conversations" action={<span style={{ font: "var(--fw-medium) 12px var(--font-body)", color: "var(--jv-cyan-300)" }}>{convos.length} total</span>}>
         {convos.length === 0 ? (
-          <EmptyState compact icon="message-square" title="No conversations yet" hint="Your recent conversations with Living Shadow will show up here." />
+          <EmptyState compact icon="message-square" title="No conversations yet" hint="Your recent conversations with After Human will show up here." />
         ) : (
           <div style={{ display: "flex", flexDirection: "column" }}>
             {convos.map((c, i) => (
@@ -182,7 +182,7 @@ export default function Memory() {
           <EmptyState
             icon="sparkles"
             title="No profile yet"
-            hint="Your Personal Intelligence profile — core facts and style — builds as you use Living Shadow."
+            hint="Your Personal Intelligence profile — core facts and style — builds as you use After Human."
             action={<Button size="sm" variant="secondary" icon={<Icon name="plus" size={13} />} onClick={() => setAdding(true)}>Add memory</Button>}
           />
         ) : (

@@ -1,0 +1,45 @@
+<svg width="256" height="256" viewBox="0 0 256 256" role="img" xmlns="http://www.w3.org/2000/svg">
+<title>After Human icon</title>
+<desc>A human silhouette dissolving into a cyan grid of squares.</desc>
+<style>
+.mk{fill:#0F1720}
+.ac{fill:#38C6F4}
+@media (prefers-color-scheme: dark){
+.mk{fill:#E8F2FA}
+.ac{fill:#5FD4FF}
+}
+</style>
+<g transform="translate(14,44)">
+<circle class="mk" cx="30" cy="22" r="19"/>
+<path class="mk" d="M6 51 h48 a5 5 0 0 1 5 5 v67 a5 5 0 0 1 -5 5 h-48 a5 5 0 0 1 -5 -5 v-67 a5 5 0 0 1 5 -5 z"/>
+
+<rect class="mk" x="72" y="8" width="12" height="12" rx="2" opacity="0.9"/>
+<rect class="mk" x="91" y="26" width="10" height="10" rx="2" opacity="0.75"/>
+<rect class="mk" x="77" y="45" width="9" height="9" rx="2" opacity="0.7"/>
+<rect class="mk" x="97" y="57" width="11" height="11" rx="2" opacity="0.6"/>
+<rect class="mk" x="82" y="79" width="9" height="9" rx="2" opacity="0.55"/>
+<rect class="mk" x="99" y="93" width="10" height="10" rx="2" opacity="0.5"/>
+<rect class="mk" x="79" y="108" width="9" height="9" rx="2" opacity="0.45"/>
+
+<g transform="translate(126,8)">
+<rect class="ac" x="0" y="0" width="16" height="16" rx="2"/>
+<rect class="ac" x="23" y="0" width="16" height="16" rx="2"/>
+<rect class="ac" x="46" y="0" width="16" height="16" rx="2"/>
+<rect class="ac" x="0" y="23" width="16" height="16" rx="2"/>
+<rect class="ac" x="23" y="23" width="16" height="16" rx="2"/>
+<rect class="ac" x="46" y="23" width="16" height="16" rx="2"/>
+<rect class="ac" x="0" y="46" width="16" height="16" rx="2"/>
+<rect class="ac" x="23" y="46" width="16" height="16" rx="2"/>
+<rect class="ac" x="46" y="46" width="16" height="16" rx="2"/>
+<rect class="ac" x="0" y="69" width="16" height="16" rx="2"/>
+<rect class="ac" x="23" y="69" width="16" height="16" rx="2"/>
+<rect class="ac" x="46" y="69" width="16" height="16" rx="2"/>
+<rect class="ac" x="0" y="92" width="16" height="16" rx="2"/>
+<rect class="ac" x="23" y="92" width="16" height="16" rx="2"/>
+<rect class="ac" x="46" y="92" width="16" height="16" rx="2"/>
+<rect class="ac" x="0" y="115" width="16" height="16" rx="2"/>
+<rect class="ac" x="23" y="115" width="16" height="16" rx="2"/>
+<rect class="ac" x="46" y="115" width="16" height="16" rx="2"/>
+</g>
+</g>
+</svg>
