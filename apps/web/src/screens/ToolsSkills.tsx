@@ -5,9 +5,45 @@ import { useState } from "react";
 import { Panel, Badge, Button, Input, Icon, Switch, EmptyState, IconButton, ConfirmDialog } from "../ds";
 import { useApi } from "../api/hooks";
 import { api } from "../api/client";
-import type { ToolItem } from "@jarvis/shared";
+import type { ToolItem, ConnectionCatalogItem } from "@jarvis/shared";
 
 const GROUP_ORDER = ["MCP Servers", "Built-in Skills", "Integrations"];
+
+const CONNECTOR_CATEGORY_LABEL: Record<ConnectionCatalogItem["category"], string> = {
+  runtime: "Runtime",
+  messaging: "Messaging",
+  email: "Email",
+  productivity: "Productivity",
+  payments: "Payments",
+  dev: "Dev",
+  voice: "Voice",
+};
+
+// Read-only mirror of the connectors the hiring wizard offers, so "everything we
+// fill in when hiring is here". Status reflects live/connected server state.
+function ConnectorRow({ item }: { item: ConnectionCatalogItem }) {
+  const on = item.live || item.connected;
+  const c = on ? "var(--jv-green)" : "var(--jv-text-faint)";
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 13px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)" }}>
+      <span style={{ width: 8, height: 8, flex: "0 0 8px", borderRadius: "50%", background: c, boxShadow: on ? `0 0 6px ${c}` : "none" }} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ font: "var(--fw-semibold) 13px var(--font-body)", color: "var(--jv-text)" }}>{item.label}</span>
+          <span style={{ font: "var(--fw-medium) 10px var(--font-hud)", letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--jv-text-muted)" }}>{CONNECTOR_CATEGORY_LABEL[item.category]}</span>
+        </div>
+        {item.note && <div style={{ font: "var(--fw-regular) 11.5px var(--font-body)", color: "var(--jv-text-muted)", marginTop: 2 }}>{item.note}</div>}
+      </div>
+      {item.live ? (
+        <Badge status="optimal">Live</Badge>
+      ) : item.connected ? (
+        <Badge status="optimal">Connected</Badge>
+      ) : (
+        <Badge status="neutral" dot={false}>Needs setup</Badge>
+      )}
+    </div>
+  );
+}
 
 function ToolCard({ item, onToggle, onDelete }: { item: ToolItem; onToggle: (next: boolean) => void; onDelete: () => void }) {
   const enabled = item.enabled;
@@ -31,6 +67,8 @@ function ToolCard({ item, onToggle, onDelete }: { item: ToolItem; onToggle: (nex
 export default function ToolsSkills() {
   const { data, reload } = useApi<{ items: ToolItem[]; hermes: unknown }>("/api/tools");
   const items = data?.items ?? [];
+  const { data: connectorData } = useApi<ConnectionCatalogItem[]>("/api/agents/connection-catalog");
+  const connectors = connectorData ?? [];
 
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState("");
@@ -141,6 +179,15 @@ export default function ToolsSkills() {
           </Panel>
         );
       })}
+
+      {connectors.length > 0 && (
+        <Panel title="Agent connectors" eyebrow action={<Badge status="info" dot={false}>{connectors.filter((c) => c.live || c.connected).length} live</Badge>}>
+          <p style={{ margin: "0 0 12px", font: "var(--fw-regular) 12px/1.5 var(--font-body)", color: "var(--jv-text-muted)" }}>The connectors offered when hiring an agent — everything we fill in during setup shows up here. Read-only; manage credentials on the Integrations screen.</p>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 10 }}>
+            {connectors.map((c) => <ConnectorRow key={c.id} item={c} />)}
+          </div>
+        </Panel>
+      )}
 
       <ConfirmDialog
         open={clearOpen}

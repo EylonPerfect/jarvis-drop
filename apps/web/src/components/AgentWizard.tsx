@@ -118,12 +118,14 @@ const ROLE_TEMPLATES: RoleTemplate[] = [
     label: "Customer Success Manager",
     icon: "heart-handshake",
     behaviors: [
+      { behavior: "Run a live product demo", instruction: "Open the demo env, walk the customer through it, and narrate with voice" },
       { behavior: "Answer a customer question", instruction: "Accurate, empathetic, on-brand" },
       { behavior: "Run a check-in / QBR", instruction: "Summarize usage, risks, next steps" },
+      { behavior: "Follow up in Slack", instruction: "Post recap & next steps to the right channel" },
       { behavior: "Flag churn risk", instruction: "Detect signals and escalate" },
     ],
-    tools: ["web_search", "gmail", "memory.query"],
-    connections: ["email", "slack", "crm", "notetaker"],
+    tools: ["web_search", "gmail", "calendar", "memory.query", "vision"],
+    connections: ["email", "slack", "calendar", "notetaker", "crm", "browser", "voice", "demo"],
   },
   {
     key: "recruiter",

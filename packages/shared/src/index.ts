@@ -178,10 +178,52 @@ export interface EvidenceRequest {
 export interface ConnectionCatalogItem {
   id: string;
   label: string;
-  category: "runtime" | "messaging" | "email" | "productivity" | "payments" | "dev";
+  category: "runtime" | "messaging" | "email" | "productivity" | "payments" | "dev" | "voice";
   hermesToolset?: string;
   live: boolean;
   note?: string;
+  connected?: boolean; // a real credential/token is stored for this connector
+}
+
+// ---- Integrations (real credential store) ----
+export type IntegrationCategory =
+  | "email" | "calendar" | "messaging" | "voice" | "productivity" | "crm" | "payments" | "runtime";
+export type IntegrationAuthKind = "apiKey" | "token" | "oauth" | "basic" | "none";
+export type IntegrationStatus = "connected" | "disconnected" | "error";
+
+// One field the Connect form collects. `secret` fields are stored server-side
+// and never returned to the browser (only a masked hint).
+export interface IntegrationField {
+  key: string;
+  label: string;
+  placeholder?: string;
+  secret?: boolean;
+  optional?: boolean;
+}
+
+export interface Integration {
+  id: string; // gmail, google_calendar, slack, notetaker, elevenlabs, crm, notion, drive, stripe, demo, browser, web, memory
+  label: string;
+  category: IntegrationCategory;
+  icon: string; // lucide name
+  authKind: IntegrationAuthKind;
+  fields: IntegrationField[]; // what the Connect form collects (empty for Hermes-native/none)
+  connected: boolean;
+  status: IntegrationStatus;
+  detail?: string; // masked summary, e.g. "bot ••••1234" or "csm@company.com"
+  note?: string;
+  recommended?: boolean; // e.g. ElevenLabs for voice
+  hermesToolset?: string; // routes through this Hermes toolset when live
+  live?: boolean; // runtime availability (Hermes/browserless reachable) regardless of creds
+  docsUrl?: string; // where to get the credential
+}
+
+export interface IntegrationConnectRequest {
+  values: Record<string, string>;
+}
+export interface IntegrationTestResult {
+  ok: boolean;
+  detail: string;
 }
 
 export interface AgentPerformance {

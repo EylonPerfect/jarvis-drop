@@ -235,3 +235,15 @@ CREATE TABLE IF NOT EXISTS ai_providers (
   active     BOOLEAN NOT NULL DEFAULT false,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Real integration credentials (Gmail, Calendar, Slack, notetaker, ElevenLabs
+-- voice, CRM, Notion, Drive, demo env, …). `values` holds the connect-form
+-- fields as JSON; secret fields are stored here server-side and never returned
+-- to the browser (only a masked hint). id = the integration id (e.g. 'slack').
+CREATE TABLE IF NOT EXISTS integrations (
+  id         TEXT PRIMARY KEY,
+  values     JSONB NOT NULL DEFAULT '{}'::jsonb,
+  connected  BOOLEAN NOT NULL DEFAULT false,
+  detail     TEXT,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

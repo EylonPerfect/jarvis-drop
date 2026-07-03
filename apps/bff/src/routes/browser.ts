@@ -14,26 +14,36 @@ function normalizeUrl(raw: string): string {
   return `https://www.google.com/search?q=${encodeURIComponent(s)}`;
 }
 
-let lastUrl = "https://www.google.com";
+// Per-agent browser sessions: each agent has its own current page. The
+// Command Center (no agent) uses the shared "operator" session. Keyed by an
+// `agent` id passed on the request; falls back to "operator" for back-compat.
+const DEFAULT_SESSION = "operator";
+const sessions = new Map<string, string>();
+const sessionOf = (agent?: string) => (agent && agent.trim() ? agent.trim() : DEFAULT_SESSION);
+const getUrl = (agent?: string) => sessions.get(sessionOf(agent)) ?? "https://www.google.com";
+const setUrl = (agent: string | undefined, url: string) => { sessions.set(sessionOf(agent), url); return url; };
 
 export default async function browserRoutes(app: FastifyInstance) {
   const shotEndpoint = () => `${config.browserless.url}/screenshot?token=${encodeURIComponent(config.browserless.token)}`;
 
   // Set the page to show (from an "open a browser / go to X" command).
   app.post("/api/browser/open", async (req) => {
-    const b = req.body as { url?: string };
-    lastUrl = normalizeUrl(b?.url ?? "");
-    return { ok: true, url: lastUrl };
+    const b = req.body as { url?: string; agent?: string };
+    const url = setUrl(b?.agent, normalizeUrl(b?.url ?? ""));
+    return { ok: true, url, agent: sessionOf(b?.agent) };
   });
 
-  app.get("/api/browser/state", async () => ({ url: lastUrl }));
+  app.get("/api/browser/state", async (req) => {
+    const q = req.query as { agent?: string };
+    return { url: getUrl(q?.agent), agent: sessionOf(q?.agent) };
+  });
 
   // Live view: render the current (or ?url=) page on the VPS Chrome and relay
   // the image. The UI polls this to show the page live.
   app.get("/api/browser/screenshot", async (req, reply) => {
-    const q = req.query as { url?: string };
-    const url = q?.url ? normalizeUrl(q.url) : lastUrl;
-    lastUrl = url;
+    const q = req.query as { url?: string; agent?: string };
+    const url = q?.url ? normalizeUrl(q.url) : getUrl(q?.agent);
+    setUrl(q?.agent, url);
     try {
       const r = await fetch(shotEndpoint(), {
         method: "POST",

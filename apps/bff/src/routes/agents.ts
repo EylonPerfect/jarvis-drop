@@ -4,6 +4,7 @@ import { hermes } from "../hermes.js";
 import { getActiveProvider, completeProviderChat } from "../lib/providers.js";
 import { config } from "../config.js";
 import { getCompany } from "./company.js";
+import { getConnectedIntegrationIds } from "./integrations.js";
 import type { Agent, AgentRun, RuntimeStats, NewAgent, ConnectionCatalogItem } from "@jarvis/shared";
 
 // Live company research: fetch the company website (via the server-side Chrome)
@@ -307,25 +308,44 @@ export default async function agentsRoutes(app: FastifyInstance) {
     const status = await hermes.get<any>("/api/status");
     const hermesUp = status.ok && !!status.data && typeof status.data === "object";
     const gatewayRunning = !!(status.data && status.data.gateway_running);
+    // Which connectors have a real stored credential (Integrations screen).
+    const connectedIds = await getConnectedIntegrationIds();
+    // Map a wizard connector id → the integration id that credentials it.
+    const credOf: Record<string, string> = {
+      email: "gmail", calendar: "google_calendar", notetaker: "notetaker",
+      drive: "drive", crm: "crm", notion: "notion", stripe: "stripe",
+      slack: "slack", voice: "elevenlabs", demo: "demo",
+    };
+    const isConnected = (id: string) => connectedIds.has(credOf[id] ?? id);
+    // A credential-backed connector; `live` once its credential is stored.
+    const cred = (id: string, label: string, category: ConnectionCatalogItem["category"], note: string, hermesToolset?: string): ConnectionCatalogItem => {
+      const connected = isConnected(id);
+      return { id, label, category, hermesToolset, connected, live: connected, note: connected ? undefined : note };
+    };
     const items: ConnectionCatalogItem[] = [
+      // Hermes-native runtime — live whenever Hermes is reachable.
       { id: "web", label: "Web search", category: "runtime", hermesToolset: "web", live: hermesUp },
-      { id: "browser", label: "Browser control", category: "runtime", hermesToolset: "browser", live: hermesUp, note: "Full headless browser via Hermes" },
+      { id: "browser", label: "Browser control", category: "runtime", hermesToolset: "browser", live: hermesUp, note: "Per-agent headless browser via Hermes" },
       { id: "terminal", label: "Terminal / shell", category: "runtime", hermesToolset: "terminal", live: hermesUp },
       { id: "code", label: "Code execution", category: "dev", hermesToolset: "code_execution", live: hermesUp },
       { id: "memory", label: "Long-term memory", category: "runtime", hermesToolset: "memory", live: hermesUp },
       { id: "cron", label: "Scheduling (cron)", category: "runtime", hermesToolset: "cron", live: hermesUp },
-      { id: "notetaker", label: "Notetaker (Fathom / Otter / Gong)", category: "productivity", live: false, note: "Meeting recorder — learns how calls are run; connect the recorder" },
-      { id: "drive", label: "Drive / Docs", category: "productivity", live: false, note: "Needs Google/Docs connection" },
-      { id: "crm", label: "CRM (HubSpot / Salesforce)", category: "productivity", live: false, note: "Needs CRM connection" },
-      { id: "policies", label: "Policies & SOPs", category: "productivity", live: false, note: "Upload or link policy docs in the Playbook step" },
-      { id: "slack", label: "Slack", category: "messaging", hermesToolset: "slack", live: gatewayRunning, note: gatewayRunning ? undefined : "Start the Hermes gateway to enable" },
+      // Credential-backed — live once connected on the Integrations screen.
+      cred("email", "Email / Gmail", "email", "Connect Gmail in Integrations"),
+      cred("calendar", "Google Calendar", "productivity", "Connect Google Calendar in Integrations"),
+      cred("slack", "Slack", "messaging", "Connect Slack in Integrations", "slack"),
+      cred("voice", "Voice (ElevenLabs)", "voice", "Connect ElevenLabs in Integrations"),
+      cred("notetaker", "Notetaker (Fathom / Fireflies / Otter / Gong)", "productivity", "Connect a notetaker in Integrations"),
+      cred("demo", "Product demo environment", "runtime", "Add the demo login in Integrations"),
+      cred("crm", "CRM (HubSpot / Salesforce)", "productivity", "Connect a CRM in Integrations"),
+      cred("notion", "Notion", "productivity", "Connect Notion in Integrations"),
+      cred("drive", "Drive / Docs", "productivity", "Connect Google Drive in Integrations"),
+      cred("stripe", "Stripe / payments (back office)", "payments", "Connect Stripe in Integrations; payments gated by budget"),
+      { id: "policies", label: "Policies & SOPs", category: "productivity", live: false, note: "Upload or link policy docs in the Examples step" },
+      // Messaging gateways handled by Hermes.
       { id: "whatsapp", label: "WhatsApp", category: "messaging", hermesToolset: "whatsapp", live: gatewayRunning, note: gatewayRunning ? undefined : "Start the Hermes gateway to enable" },
       { id: "telegram", label: "Telegram", category: "messaging", hermesToolset: "telegram", live: gatewayRunning },
       { id: "discord", label: "Discord", category: "messaging", hermesToolset: "discord", live: gatewayRunning },
-      { id: "email", label: "Email / Gmail", category: "email", live: false, note: "Needs mailbox connection" },
-      { id: "calendar", label: "Calendar", category: "productivity", live: false, note: "Needs calendar connection" },
-      { id: "notion", label: "Notion", category: "productivity", live: false, note: "Connect in the Playbook step" },
-      { id: "stripe", label: "Stripe / payments (back office)", category: "payments", live: false, note: "Needs Stripe connection; payments gated by budget" },
     ];
     return items;
   });
