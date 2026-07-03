@@ -1208,6 +1208,9 @@ export function AgentWizard({
 
   // ---- Template + evidence + stash (compiled instructions/plan/routine) ----
   const [templateKey, setTemplateKey] = useState<string>("");
+  // Once a starting point (template/clone) is chosen the picker collapses to a
+  // compact summary to reclaim wizard space; "Change" re-opens it.
+  const [pickerForceOpen, setPickerForceOpen] = useState(false);
   const [stashPlan, setStashPlan] = useState("");
   const [stashRoutine, setStashRoutine] = useState("");
   const [stashInstr, setStashInstr] = useState("");
@@ -1317,6 +1320,7 @@ export function AgentWizard({
     setConnections((prev) => Array.from(new Set([...prev, ...t.connections])));
     // Re-run the interview from a higher starting point.
     setProfileApplied(false);
+    setPickerForceOpen(false); // collapse the picker now a role is chosen
     setInterviewSeq((n) => n + 1);
   };
 
@@ -1330,8 +1334,10 @@ export function AgentWizard({
       // Picking clone clears any template accelerator; keep the interview honest.
       setTemplateKey("");
       setEvidence([]);
+      setPickerForceOpen(false); // collapse the picker now clone is chosen
     } else {
       setClone({});
+      setPickerForceOpen(true); // reopen so they can pick again
     }
     setProfileApplied(false);
     setInterviewSeq((n) => n + 1);
@@ -1478,6 +1484,7 @@ export function AgentWizard({
     setOnboarding({});
     setProfileApplied(false);
     setTemplateKey("");
+    setPickerForceOpen(false);
     setStashPlan("");
     setStashRoutine("");
     setStashInstr("");
@@ -1577,6 +1584,15 @@ export function AgentWizard({
     if (resetOnSubmit) reset();
   };
 
+  // ---- Start-from picker collapse state ----
+  const hasStartSelection = !!templateKey || cloneMode;
+  const showPicker = pickerForceOpen || !hasStartSelection;
+  const startTemplate = ROLE_TEMPLATES.find((t) => t.key === templateKey);
+  const startLabel = cloneMode
+    ? `Clone${clone.name?.trim() ? ` — ${clone.name.trim()}` : " an employee"}`
+    : (startTemplate?.label ?? "Custom");
+  const startIcon = cloneMode ? "user-round" : (startTemplate?.icon ?? "rocket");
+
   // ============================================================
   // RENDER — single unified flow. The AI interview is step 1 (default + open).
   // ============================================================
@@ -1632,23 +1648,18 @@ export function AgentWizard({
             The AI researches {companyName || "your company"} and drafts a complete recommendation below — role, access checklist, manager, meetings and goals. Edit anything inline, or accept it as-is. Optionally start from a template or clone an existing employee to jump ahead.
           </p>
 
-          {/* Company context banner — the AI researches this company to tailor its setup */}
-          <div style={{ marginBottom: 16, padding: "12px 14px", borderRadius: "var(--r-md)", background: "var(--jv-surface-2)", border: "1px solid var(--jv-border-cyan)" }}>
+          {/* Company context — slim strip when idle; expands to a form on Edit. */}
+          <div style={{ marginBottom: 14, padding: companyEditing ? "12px 14px" : "7px 12px", borderRadius: "var(--r-md)", background: "var(--jv-surface-2)", border: "1px solid var(--jv-border-cyan)" }}>
             {!companyEditing ? (
-              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                <span style={{ width: 36, height: 36, display: "grid", placeItems: "center", borderRadius: "var(--r-sm)", color: "var(--jv-cyan)", background: "var(--grad-cyan-soft)", border: "1px solid var(--jv-border-cyan)", flex: "0 0 auto" }}>
-                  <Icon name="building-2" size={17} />
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <Icon name="building-2" size={14} color="var(--jv-cyan)" />
+                <span style={{ font: "var(--fw-semibold) 12px var(--font-body)", color: "var(--jv-text)", whiteSpace: "nowrap" }}>Tailoring to {companyName ?? "your company"}</span>
+                <span style={{ flex: 1, minWidth: 0, font: "var(--fw-regular) 11px var(--font-body)", color: "var(--jv-text-faint)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {[company?.industry?.trim(), company?.size?.trim()].filter(Boolean).join(" · ") || "set it so the AI can research your company"}
                 </span>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ font: "var(--fw-bold) 13px var(--font-body)", color: "var(--jv-text)" }}>Tailoring to {companyName ?? "your company"}</div>
-                  <div style={{ font: "var(--fw-regular) 11px var(--font-body)", color: "var(--jv-text-muted)", marginTop: 1 }}>
-                    {[company?.industry?.trim(), company?.size?.trim()].filter(Boolean).join(" · ") || "Set your company so the AI can research it"}
-                  </div>
-                  <div style={{ font: "var(--fw-regular) 10.5px var(--font-body)", color: "var(--jv-text-faint)", marginTop: 3 }}>
-                    The AI researches this company — its website and business — to recommend a company-tailored setup below.
-                  </div>
-                </div>
-                <Button variant="ghost" size="sm" icon={<Icon name="pencil" size={13} />} onClick={openCompanyEdit}>Edit</Button>
+                <button onClick={openCompanyEdit} title="Edit company profile" style={{ background: "none", border: "none", padding: 0, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, color: "var(--jv-cyan-300)", font: "var(--fw-semibold) 9px var(--font-hud)", letterSpacing: "0.08em", textTransform: "uppercase" }}>
+                  <Icon name="pencil" size={11} color="var(--jv-cyan-300)" /> Edit
+                </button>
               </div>
             ) : (
               <div>
@@ -1674,45 +1685,63 @@ export function AgentWizard({
             )}
           </div>
 
-          {/* Start from… — optional accelerators */}
-          <div style={{ marginBottom: 16, padding: "14px 16px", borderRadius: "var(--r-md)", background: "var(--jv-surface-2)", border: "1px solid var(--jv-border-soft)" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
-              <Icon name="rocket" size={14} color="var(--jv-cyan)" />
-              <span style={{ font: "var(--fw-semibold) 10px var(--font-hud)", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--jv-cyan-300)" }}>Start from…</span>
-              <span style={{ font: "var(--fw-regular) 11px var(--font-body)", color: "var(--jv-text-faint)" }}>optional — the interview runs either way</span>
-            </div>
-
-            {/* Template chips */}
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12, opacity: cloneMode ? 0.5 : 1, pointerEvents: cloneMode ? "none" : "auto" }}>
-              {ROLE_TEMPLATES.map((t) => {
-                const on = !cloneMode && templateKey === t.key;
-                return (
-                  <button key={t.key} onClick={() => pickTemplate(t)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 12px", borderRadius: "var(--r-pill)", cursor: "pointer", background: on ? "var(--grad-cyan-soft)" : "var(--jv-void)", border: `1px solid ${on ? "var(--jv-border-cyan)" : "var(--jv-border)"}` }}>
-                    <Icon name={t.icon} size={14} color={on ? "var(--jv-cyan)" : "var(--jv-text-muted)"} />
-                    <span style={{ font: `${on ? "var(--fw-semibold)" : "var(--fw-medium)"} 12px var(--font-body)`, color: on ? "var(--jv-cyan-300)" : "var(--jv-text-soft)" }}>{t.label}</span>
+          {/* Start from… — full picker until a role/clone is chosen, then it
+              collapses to a compact summary to reclaim space. */}
+          {showPicker ? (
+            <div style={{ marginBottom: 14, padding: "14px 16px", borderRadius: "var(--r-md)", background: "var(--jv-surface-2)", border: "1px solid var(--jv-border-soft)" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                <Icon name="rocket" size={14} color="var(--jv-cyan)" />
+                <span style={{ flex: 1, font: "var(--fw-semibold) 10px var(--font-hud)", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--jv-cyan-300)" }}>Start from…</span>
+                <span style={{ font: "var(--fw-regular) 11px var(--font-body)", color: "var(--jv-text-faint)" }}>optional — the interview runs either way</span>
+                {hasStartSelection && (
+                  <button onClick={() => setPickerForceOpen(false)} title="Collapse" style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: "var(--jv-text-faint)", display: "grid", placeItems: "center" }}>
+                    <Icon name="chevron-up" size={14} />
                   </button>
-                );
-              })}
-            </div>
-
-            {/* Clone toggle */}
-            <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 12px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: `1px solid ${cloneMode ? "var(--jv-border-cyan)" : "var(--jv-border-soft)"}` }}>
-              <Icon name="user-round" size={15} color={cloneMode ? "var(--jv-cyan)" : "var(--jv-text-muted)"} />
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ font: "var(--fw-semibold) 12.5px var(--font-body)", color: "var(--jv-text)" }}>Clone an existing employee</div>
-                <div style={{ font: "var(--fw-regular) 10.5px var(--font-body)", color: "var(--jv-text-faint)", marginTop: 1 }}>Mirror a real person — the agent takes their name, role and systems.</div>
+                )}
               </div>
-              <Switch checked={cloneMode} onChange={toggleCloneMode} />
-            </div>
 
-            {cloneMode && (
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginTop: 12 }}>
-                <input value={clone.name ?? ""} onChange={(e) => setClonePatch({ name: e.target.value })} placeholder="Full name — e.g. Dana Rivera" style={inputStyle} />
-                <input value={clone.title ?? ""} onChange={(e) => { const v = e.target.value; setClonePatch({ title: v }); if (!role.trim()) setRole(v); }} placeholder="Title — e.g. Senior AE" style={inputStyle} />
-                <input value={clone.email ?? ""} onChange={(e) => setClonePatch({ email: e.target.value })} placeholder="Work email" style={inputStyle} />
+              {/* Template chips */}
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12, opacity: cloneMode ? 0.5 : 1, pointerEvents: cloneMode ? "none" : "auto" }}>
+                {ROLE_TEMPLATES.map((t) => {
+                  const on = !cloneMode && templateKey === t.key;
+                  return (
+                    <button key={t.key} onClick={() => pickTemplate(t)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 12px", borderRadius: "var(--r-pill)", cursor: "pointer", background: on ? "var(--grad-cyan-soft)" : "var(--jv-void)", border: `1px solid ${on ? "var(--jv-border-cyan)" : "var(--jv-border)"}` }}>
+                      <Icon name={t.icon} size={14} color={on ? "var(--jv-cyan)" : "var(--jv-text-muted)"} />
+                      <span style={{ font: `${on ? "var(--fw-semibold)" : "var(--fw-medium)"} 12px var(--font-body)`, color: on ? "var(--jv-cyan-300)" : "var(--jv-text-soft)" }}>{t.label}</span>
+                    </button>
+                  );
+                })}
               </div>
-            )}
-          </div>
+
+              {/* Clone toggle */}
+              <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 12px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: `1px solid ${cloneMode ? "var(--jv-border-cyan)" : "var(--jv-border-soft)"}` }}>
+                <Icon name="user-round" size={15} color={cloneMode ? "var(--jv-cyan)" : "var(--jv-text-muted)"} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ font: "var(--fw-semibold) 12.5px var(--font-body)", color: "var(--jv-text)" }}>Clone an existing employee</div>
+                  <div style={{ font: "var(--fw-regular) 10.5px var(--font-body)", color: "var(--jv-text-faint)", marginTop: 1 }}>Mirror a real person — the agent takes their name, role and systems.</div>
+                </div>
+                <Switch checked={cloneMode} onChange={toggleCloneMode} />
+              </div>
+            </div>
+          ) : (
+            <div style={{ marginBottom: 14, display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", borderRadius: "var(--r-md)", background: "var(--jv-surface-2)", border: "1px solid var(--jv-border-cyan)" }}>
+              <Icon name={startIcon} size={15} color="var(--jv-cyan)" />
+              <span style={{ font: "var(--fw-regular) 11px var(--font-body)", color: "var(--jv-text-muted)" }}>Starting from</span>
+              <span style={{ flex: 1, minWidth: 0, font: "var(--fw-semibold) 12.5px var(--font-body)", color: "var(--jv-text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{startLabel}</span>
+              <button onClick={() => setPickerForceOpen(true)} title="Change the starting point" style={{ background: "none", border: "none", padding: 0, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, color: "var(--jv-cyan-300)", font: "var(--fw-semibold) 9px var(--font-hud)", letterSpacing: "0.08em", textTransform: "uppercase" }}>
+                <Icon name="pencil" size={11} color="var(--jv-cyan-300)" /> Change
+              </button>
+            </div>
+          )}
+
+          {/* Who to clone — always shown while cloning (needed by the interview) */}
+          {cloneMode && (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 14 }}>
+              <input value={clone.name ?? ""} onChange={(e) => setClonePatch({ name: e.target.value })} placeholder="Full name — e.g. Dana Rivera" style={inputStyle} />
+              <input value={clone.title ?? ""} onChange={(e) => { const v = e.target.value; setClonePatch({ title: v }); if (!role.trim()) setRole(v); }} placeholder="Title — e.g. Senior AE" style={inputStyle} />
+              <input value={clone.email ?? ""} onChange={(e) => setClonePatch({ email: e.target.value })} placeholder="Work email" style={inputStyle} />
+            </div>
+          )}
 
           {/* The breathing interview — DEFAULT, always mounted/open */}
           <BreathingDiscovery
