@@ -567,6 +567,7 @@ export default function AgentCockpit({ agentId, onExit }: { agentId: string; onE
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: ev.instruction ? 4 : 8 }}>
                 <Icon name="sparkles" size={14} color="var(--jv-cyan)" />
                 <span style={{ flex: 1, minWidth: 0, font: "var(--fw-semibold) 13px var(--font-body)", color: "var(--jv-text)" }}>{ev.behavior}</span>
+                {ev.assetType && <Badge status="info" dot={false}>{ev.assetType}</Badge>}
               </div>
               {ev.instruction && <p style={{ ...proseStyle, marginBottom: 8 }}>{ev.instruction}</p>}
               {ev.examples.length > 0 && (
@@ -586,6 +587,12 @@ export default function AgentCockpit({ agentId, onExit }: { agentId: string; onE
                       ))}
                     </div>
                   )}
+                  {ev.examples.filter((ex) => ex.kind === "file" || ex.kind === "link").map((ex, j) => (
+                    <a key={`f${j}`} href={ex.kind === "link" ? ex.url : `/api/files/${ex.fileId}`} target="_blank" rel="noopener noreferrer" style={{ display: "flex", alignItems: "center", gap: 7, textDecoration: "none", color: ex.kind === "link" ? "var(--jv-cyan-300)" : "var(--jv-text-soft)", paddingLeft: 10, borderLeft: "2px solid var(--jv-border-cyan)" }}>
+                      <Icon name={ex.kind === "link" ? "link" : "file-text"} size={13} />
+                      <span style={{ font: "var(--fw-medium) 12px var(--font-body)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ex.kind === "link" ? (ex.url ?? "link") : (ex.fileName ?? ex.caption ?? "file")}</span>
+                    </a>
+                  ))}
                 </div>
               )}
               {ev.antiExample && (

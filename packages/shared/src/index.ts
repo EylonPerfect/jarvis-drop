@@ -125,12 +125,29 @@ export interface Onboarding {
   access?: AccessItem[]; // access checklist (Slack, email, demo env, …)
 }
 
-export type EvidenceKind = "text" | "screenshot";
+export type EvidenceKind = "text" | "screenshot" | "file" | "link";
+
+// The KIND of artifact an example represents — so the wizard can ask for the
+// RIGHT evidence per behavior (a notetaker transcript, a policy, a Notion page,
+// a calendar screenshot, an email, …) and the agent learns from real material.
+export type EvidenceAssetType =
+  | "output" // an example of the ideal result / output
+  | "notetaker" // a call transcript or recording (Fathom / Otter / Gong)
+  | "policy" // a policy / guardrails doc
+  | "notion" // a Notion page / SOP
+  | "calendar" // a calendar cadence example (screenshot)
+  | "email" // an email / outreach example
+  | "crm" // a CRM record example
+  | "doc" // a generic doc / deck
+  | "other";
 
 export interface EvidenceExample {
   kind: EvidenceKind;
+  assetType?: EvidenceAssetType; // what this artifact IS (notetaker, policy, …)
   text?: string; // for kind=text, or a caption/URL note
-  fileId?: string; // for kind=screenshot — references /api/files/:id
+  url?: string; // for kind=link — a link to the source (Notion, drive, …)
+  fileId?: string; // for kind=screenshot|file — references /api/files/:id
+  fileName?: string; // original filename for kind=file
   caption?: string;
 }
 
@@ -139,9 +156,21 @@ export interface EvidenceExample {
 // from-scratch agent actually work.
 export interface EvidenceItem {
   behavior: string; // e.g. "Qualify an inbound lead"
+  assetType?: EvidenceAssetType; // the primary evidence type this behavior wants
+  ask?: string; // the interview's request, e.g. "Share a notetaker transcript of a great discovery call"
   instruction?: string; // how to do it well
-  examples: EvidenceExample[]; // good examples (screenshots / text)
+  examples: EvidenceExample[]; // good examples (screenshots / text / files / links)
   antiExample?: string; // what NOT to do
+  cloneConnection?: string; // clone track — the connection id that supplies this evidence
+}
+
+// What evidence to request per behavior so the agent can LEARN (from-scratch).
+// In clone mode `connection` names the tool that supplies this automatically.
+export interface EvidenceRequest {
+  behavior: string;
+  ask: string; // human-facing request for the artifact
+  assetType: EvidenceAssetType;
+  connection?: string; // connection id that satisfies this in clone mode
 }
 
 // Catalog of connectable systems, mapped to real Hermes toolsets. `live` marks
@@ -210,6 +239,7 @@ export interface DiscoverProfile {
   connections?: string[];
   tools?: string[];
   routine?: string[];
+  evidenceRequests?: EvidenceRequest[]; // per-behavior evidence to ask for (scratch) / connect (clone)
 }
 export interface DiscoverResult {
   understanding: number; // 0-100

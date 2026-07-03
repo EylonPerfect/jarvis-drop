@@ -214,9 +214,10 @@ export default async function agentsRoutes(app: FastifyInstance) {
     const sys =
       `You are onboarding ${subject}. Interview the operator ONE focused question at a time to reach a COMPLETE understanding, exactly like onboarding a new human hire. ` +
       `Cover: day-to-day work; the ACCESS they need (Slack, an email address, the demo environment, and anything else the role requires); who they report to (manager); which recurring company/team meetings they must join; the tools/systems they use; goals and what "great" looks like; and edge cases. ` +
-      `Respond with ONLY minified JSON, no markdown: {"understanding":<0-100 int>,"done":<bool>,"nextQuestion":<string>,"summary":<string>,"profile":{"overview":<string>,"goals":[{"objective":<string>,"metric":<string>}],"reportsTo":{"name":<string>,"email":<string>},"meetings":[{"name":<string>,"cadence":<string>}],"access":[{"item":<string>,"status":"needed"|"pending"|"granted","note":<string>}],"connections":<string[]>,"tools":<string[]>,"routine":<string[]>}}. ` +
+      `Respond with ONLY minified JSON, no markdown: {"understanding":<0-100 int>,"done":<bool>,"nextQuestion":<string>,"summary":<string>,"profile":{"overview":<string>,"goals":[{"objective":<string>,"metric":<string>}],"reportsTo":{"name":<string>,"email":<string>},"meetings":[{"name":<string>,"cadence":<string>}],"access":[{"item":<string>,"status":"needed"|"pending"|"granted","note":<string>}],"connections":<string[]>,"tools":<string[]>,"routine":<string[]>,"evidenceRequests":[{"behavior":<string>,"ask":<string>,"assetType":"output"|"notetaker"|"policy"|"notion"|"calendar"|"email"|"crm"|"doc"|"other","connection":<string>}]}}. ` +
       `"understanding" starts low and grows as answers arrive. Set "done":true when understanding>=85 or the operator says they're finished. ` +
       `Always keep "access" seeded with at least Slack, an email address, and a demo environment, plus role-specific items. connections/tools are lowercase ids like email,calendar,slack,notetaker,crm,drive,browser,web,web_search,gmail. Ask exactly one question per turn. ` +
+      `For the agent to actually LEARN the job, populate "evidenceRequests": for each key behavior, name the single most useful piece of real evidence to learn from and how to get it — a "notetaker" transcript of a great call, a "policy" doc, a "notion" SOP page, a "calendar" cadence screenshot, an "email" example, a "crm" record, or an "output" example of the ideal result. Set "connection" to the tool id that supplies it (notetaker,calendar,email,crm,drive,notion,slack) so clone hires get it automatically. In your nextQuestion, when it fits, ASK the operator to share one concrete example (e.g. "Can you drop in a notetaker transcript of a great discovery call, or a screenshot?"). ` +
       `This hire is for ${company.name}${company.domain ? ` (${company.domain})` : ""}${company.industry ? `, industry: ${company.industry}` : ""}${company.size ? `, size: ${company.size}` : ""}${company.coreBusiness ? `, core business: ${company.coreBusiness}` : ""}. Use what you know about this company PLUS the website snippet to PROACTIVELY RECOMMEND a tailored setup — suggest specific responsibilities, tools, connections, goals, access items and meetings that fit THIS company. Don't just ask: pre-fill the profile with concrete, company-specific recommendations the operator can accept or tweak, and put a short rationale (why these fit ${company.name}) in "summary". Still confirm and ask about genuine gaps.` +
       (research ? ` Company website snippet (for grounding): """${research}"""` : "");
     const convo = transcript.length
@@ -267,6 +268,11 @@ export default async function agentsRoutes(app: FastifyInstance) {
           { item: "Demo environment", status: "needed", note: "Login to the product demo / back office" },
         ],
         connections: ["slack", "email", "calendar"],
+        evidenceRequests: [
+          { behavior: "Handle a core task well", ask: "Share one example of the ideal output — paste it, attach a screenshot, or link a doc.", assetType: "output" },
+          { behavior: "Run a call / meeting", ask: "Add a notetaker transcript of a great call, or a screenshot of one.", assetType: "notetaker", connection: "notetaker" },
+          { behavior: "Follow the rules", ask: "Attach the policy or guardrails doc this role must follow.", assetType: "policy", connection: "drive" },
+        ],
       },
       source: "template" as const,
     };

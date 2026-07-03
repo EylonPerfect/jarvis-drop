@@ -3,6 +3,7 @@ import type { CSSProperties } from "react";
 import { Button, Icon, Switch } from "../ds";
 import { useApi } from "../api/hooks";
 import { api } from "../api/client";
+import { useVoiceOutput } from "../hooks/useSpeech";
 import type {
   AiProvider,
   NewAgent,
@@ -14,6 +15,8 @@ import type {
   AgentGoal,
   EvidenceItem,
   EvidenceExample,
+  EvidenceRequest,
+  EvidenceAssetType,
   Onboarding,
   Manager,
   AccessStatus,
@@ -69,6 +72,23 @@ const LEARNS: Record<string, string> = {
   crm: "pipeline & accounts",
   drive: "docs & references",
 };
+
+// ---- Evidence asset types — what to ask for so the agent LEARNS the job. ----
+// Each maps to an icon, a label, and the connection that supplies it in clone
+// mode (so a clone just connects the tool instead of uploading).
+const ASSET_TYPES: Record<EvidenceAssetType, { label: string; icon: string; hint: string; connection?: string }> = {
+  output: { label: "Ideal output", icon: "check-circle", hint: "An example of the finished result done right" },
+  notetaker: { label: "Notetaker", icon: "mic", hint: "A call transcript or recording (Fathom / Otter / Gong)", connection: "notetaker" },
+  policy: { label: "Policy", icon: "shield-check", hint: "The rules / guardrails this role must follow", connection: "drive" },
+  notion: { label: "Notion / SOP", icon: "book-open", hint: "The written process or playbook", connection: "notion" },
+  calendar: { label: "Calendar", icon: "calendar", hint: "The meeting cadence — a screenshot works", connection: "calendar" },
+  email: { label: "Email", icon: "mail", hint: "An example email / outreach in the right voice", connection: "email" },
+  crm: { label: "CRM record", icon: "database", hint: "A well-kept account / deal record", connection: "crm" },
+  doc: { label: "Document", icon: "file-text", hint: "A deck, spec, or reference doc", connection: "drive" },
+  other: { label: "Example", icon: "paperclip", hint: "Any reference that shows what good looks like" },
+};
+const ASSET_ORDER: EvidenceAssetType[] = ["output", "notetaker", "policy", "notion", "calendar", "email", "crm", "doc", "other"];
+function assetMeta(t?: EvidenceAssetType) { return ASSET_TYPES[t ?? "output"] ?? ASSET_TYPES.output; }
 
 // ---- Role templates for the from-scratch track ----
 interface RoleTemplate {
@@ -318,6 +338,92 @@ const ACCESS_TONE: Record<AccessStatus, { color: string; label: string }> = {
   granted: { color: "var(--jv-green)", label: "Granted" },
 };
 
+// ---- Connect guidance — tailored, admin-aware steps per access system --------
+// Matched case-insensitively against the access item label with a sensible
+// generic fallback. Live OAuth for these connectors is coming soon, so the
+// popup captures INTENT (mark pending/granted) rather than performing OAuth.
+interface ConnectGuide { icon: string; steps: string }
+const CONNECT_GUIDES: { match: RegExp; icon: string; steps: string }[] = [
+  { match: /slack/i, icon: "message-square", steps: "Install the Living Shadow Slack app in your workspace; a workspace admin may need to approve it. Then authorize the channels the agent should post in." },
+  { match: /calendar|cal\b/i, icon: "calendar", steps: "Connect the agent's calendar (Google/Microsoft) so it can read availability and send invites." },
+  { match: /e-?mail|mailbox|gmail|outlook|inbox/i, icon: "mail", steps: "Authorize the agent's mailbox (Google Workspace / Microsoft 365). An admin may need to grant delegated access." },
+  { match: /hubspot|salesforce|crm|pipeline/i, icon: "database", steps: "Connect via your CRM admin settings and grant API access for the objects the agent needs." },
+  { match: /demo|product access|back ?office|admin console|environment|staging|sandbox/i, icon: "terminal", steps: "Create a login for the agent in the back office / demo environment and share credentials via your password manager." },
+  { match: /fathom|otter|gong|notetaker|call recording|transcript|recording/i, icon: "phone", steps: "Connect Fathom/Otter/Gong and allow the agent to access recordings & transcripts." },
+  { match: /knowledge|drive|notion|docs|documents|wiki|confluence/i, icon: "book-open", steps: "Share the relevant Drive/Notion folders with the agent's account." },
+  { match: /analytics|dashboard|metrics|reporting|looker|amplitude|mixpanel/i, icon: "bar-chart-3", steps: "Grant the agent a viewer seat on the analytics/admin dashboard." },
+];
+function connectGuideFor(label: string): ConnectGuide {
+  const hit = CONNECT_GUIDES.find((g) => g.match.test(label));
+  if (hit) return { icon: hit.icon, steps: hit.steps };
+  return { icon: "plug", steps: "Connect this system for the agent, granting the least-privilege access it needs. If it requires an administrator, share these steps with them." };
+}
+
+// Modal giving step-by-step guidance to connect ONE access item, with actions to
+// capture intent (mark pending/granted) since live OAuth is coming soon.
+function ConnectGuidanceModal({
+  item,
+  status,
+  onSetStatus,
+  onClose,
+}: {
+  item: string;
+  status: AccessStatus;
+  onSetStatus: (s: AccessStatus) => void;
+  onClose: () => void;
+}) {
+  const guide = connectGuideFor(item);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  return (
+    <div
+      onClick={onClose}
+      style={{ position: "fixed", inset: 0, zIndex: 1000, display: "grid", placeItems: "center", padding: 20, background: "color-mix(in srgb, var(--jv-void) 72%, transparent)", backdropFilter: "blur(3px)" }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{ width: "min(460px, 100%)", padding: "18px 20px", borderRadius: "var(--r-md)", background: "var(--jv-surface-2)", border: "1px solid var(--jv-border-cyan)", boxShadow: "0 0 40px var(--jv-glow-cyan)" }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+          <span style={{ width: 34, height: 34, display: "grid", placeItems: "center", borderRadius: "var(--r-sm)", color: "var(--jv-cyan)", background: "var(--grad-cyan-soft)", border: "1px solid var(--jv-border-cyan)", flex: "0 0 auto" }}>
+            <Icon name={guide.icon} size={16} />
+          </span>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ font: "var(--fw-semibold) 9px var(--font-hud)", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--jv-cyan-300)" }}>Connect</div>
+            <div style={{ font: "var(--fw-bold) 14px var(--font-body)", color: "var(--jv-text)" }}>{item}</div>
+          </div>
+          <button onClick={onClose} title="Close" style={{ background: "none", border: "none", color: "var(--jv-text-faint)", cursor: "pointer", display: "grid", placeItems: "center" }}>
+            <Icon name="x" size={16} />
+          </button>
+        </div>
+
+        <div style={{ font: "var(--fw-regular) 12.5px/1.6 var(--font-body)", color: "var(--jv-text-soft)", marginBottom: 12 }}>{guide.steps}</div>
+
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "9px 11px", borderRadius: "var(--r-sm)", background: "var(--jv-void)", border: "1px solid var(--jv-border-soft)", marginBottom: 16 }}>
+          <Icon name="info" size={13} color="var(--jv-amber)" />
+          <div style={{ font: "var(--fw-regular) 11px/1.5 var(--font-body)", color: "var(--jv-text-muted)" }}>
+            Live one-click OAuth for this connector is coming soon. For now, complete the steps above and mark this item so your onboarding stays accurate.
+          </div>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <Button variant="primary" size="sm" icon={<Icon name="check" size={13} />} disabled={status === "granted"} onClick={() => { onSetStatus("granted"); onClose(); }}>
+            Mark as granted
+          </Button>
+          <Button variant="secondary" size="sm" icon={<Icon name="clock" size={13} />} disabled={status === "pending"} onClick={() => { onSetStatus("pending"); onClose(); }}>
+            Mark as pending
+          </Button>
+          <div style={{ flex: 1 }} />
+          <Button variant="ghost" size="sm" onClick={onClose}>Close</Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function BreathingDiscovery({
   name,
   title,
@@ -358,6 +464,30 @@ function BreathingDiscovery({
   const [copied, setCopied] = useState(false);
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // ---- Inline edits to the AI recommendation (overview + goals). Kept separate
+  // from `profile` (which the periodic /discover refresh replaces) so the operator's
+  // edits survive. Once the operator touches a field we prefer their value. ----
+  const [overrideOverview, setOverrideOverview] = useState<string | null>(null);
+  const [overrideGoals, setOverrideGoals] = useState<AgentGoal[] | null>(null);
+  const [editingOverview, setEditingOverview] = useState(false);
+
+  // ---- Voice narration of the interview (TTS). Muteable + persisted. ----
+  const voice = useVoiceOutput();
+  const [voiceOn, setVoiceOn] = useState<boolean>(() => {
+    try { return localStorage.getItem("jv.interviewVoice") !== "off"; } catch { return true; }
+  });
+  const toggleVoice = () => {
+    setVoiceOn((on) => {
+      const next = !on;
+      try { localStorage.setItem("jv.interviewVoice", next ? "on" : "off"); } catch { /* ignore */ }
+      if (!next) voice.cancel();
+      return next;
+    });
+  };
+  // Track what we last spoke so we don't repeat on unrelated re-renders.
+  const lastSpokenQ = useRef<string>("");
+  const spokeReady = useRef(false);
+
   const ask = async (nextTranscript: DiscoverTurn[]) => {
     setBusy(true);
     setError(null);
@@ -396,9 +526,37 @@ function BreathingDiscovery({
   // Clear the "Copied" confirmation timer on unmount.
   useEffect(() => () => { if (copyTimer.current) clearTimeout(copyTimer.current); }, []);
 
+  // Narrate the interview aloud. Speak each NEW question (cancelling prior
+  // speech), and once ready, speak a one-time "enough to build" line. Only when
+  // supported (secure context) and not muted. Cancel on unmount.
+  useEffect(() => {
+    if (!voice.supported || !voiceOn) return;
+    const q = question.trim();
+    if (q && q !== lastSpokenQ.current) {
+      lastSpokenQ.current = q;
+      voice.speak(q);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [question, voice.supported, voiceOn]);
+
+  useEffect(() => {
+    if (!voice.supported || !voiceOn) return;
+    if ((done || understanding >= 85) && !spokeReady.current) {
+      spokeReady.current = true;
+      voice.speak("I have enough to build this.");
+    }
+    if (!done && understanding < 85) spokeReady.current = false;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [done, understanding, voice.supported, voiceOn]);
+
+  // Cancel any speech when the component unmounts.
+  const voiceCancel = voice.cancel;
+  useEffect(() => () => { voiceCancel(); }, [voiceCancel]);
+
   const send = () => {
     const a = answer.trim();
     if (!a || busy || !question) return;
+    voice.cancel(); // stop narrating the prior question as the user moves on
     const next: DiscoverTurn[] = [
       ...transcript,
       { role: "assistant", content: question },
@@ -410,9 +568,13 @@ function BreathingDiscovery({
   };
 
   const ready = done || understanding >= 80;
+  // "Ready to build" state — clearly finishable, fixes the "stuck at high %" feel.
+  const readyToBuild = done || understanding >= 85;
   const access = profile.access ?? [];
   const meetings = profile.meetings ?? [];
-  const goalsList = profile.goals ?? [];
+  // Effective (possibly operator-edited) overview + goals.
+  const effOverview = overrideOverview ?? profile.overview ?? "";
+  const goalsList = overrideGoals ?? profile.goals ?? [];
   const conns = profile.connections ?? [];
   const reportsTo = profile.reportsTo;
 
@@ -429,17 +591,34 @@ function BreathingDiscovery({
   // user kept selected. Everything else is passed through unchanged.
   const selectedProfile = (): DiscoverProfile => ({
     ...profile,
+    overview: effOverview.trim() || profile.overview,
+    goals: goalsList,
     access: access.filter((a) => isIncluded(a.item)),
   });
+
+  // ---- Inline goal editing helpers (operate on the effective goals list) ----
+  const beginGoalEdit = () => { if (overrideGoals == null) setOverrideGoals(goalsList); };
+  const patchGoal = (i: number, patch: Partial<AgentGoal>) => {
+    beginGoalEdit();
+    setOverrideGoals((prev) => (prev ?? goalsList).map((g, j) => (j === i ? { ...g, ...patch } : g)));
+  };
+  const removeGoal = (i: number) => {
+    beginGoalEdit();
+    setOverrideGoals((prev) => (prev ?? goalsList).filter((_, j) => j !== i));
+  };
+  const addGoal = () => {
+    beginGoalEdit();
+    setOverrideGoals((prev) => [...(prev ?? goalsList), { objective: "" }]);
+  };
 
   // Copy the recommendation as clean, readable plain text.
   const buildCopyText = (): string => {
     const lines: string[] = [];
     lines.push(`Recommended setup${companyName ? ` for ${companyName}` : ""}`);
     lines.push("");
-    if (profile.overview) {
+    if (effOverview.trim()) {
       lines.push("ROLE");
-      lines.push(profile.overview);
+      lines.push(effOverview.trim());
       lines.push("");
     }
     if (summary) {
@@ -508,15 +687,34 @@ function BreathingDiscovery({
             <span style={{ position: "absolute", inset: 14, borderRadius: "50%", background: `conic-gradient(var(--jv-cyan) ${understanding * 3.6}deg, color-mix(in srgb, var(--jv-cyan) 8%, transparent) 0deg)`, WebkitMask: "radial-gradient(farthest-side, transparent calc(100% - 5px), #000 calc(100% - 4px))", mask: "radial-gradient(farthest-side, transparent calc(100% - 5px), #000 calc(100% - 4px))", transition: "background var(--t)" }} />
             {/* Center readout */}
             <div style={{ position: "relative", textAlign: "center" }}>
-              <div style={{ font: "var(--fw-bold) 40px var(--font-mono)", color: "var(--jv-text)", lineHeight: 1 }}>{understanding}<span style={{ font: "var(--fw-semibold) 16px var(--font-mono)", color: "var(--jv-cyan-300)" }}>%</span></div>
-              <div style={{ font: "var(--fw-semibold) 9px var(--font-hud)", letterSpacing: "0.14em", textTransform: "uppercase", color: busy ? "var(--jv-cyan-300)" : "var(--jv-text-muted)", marginTop: 4 }}>
-                {busy ? "Thinking…" : "Understanding"}
+              <div style={{ font: "var(--fw-bold) 40px var(--font-mono)", color: readyToBuild ? "var(--jv-green)" : "var(--jv-text)", lineHeight: 1 }}>{understanding}<span style={{ font: "var(--fw-semibold) 16px var(--font-mono)", color: readyToBuild ? "var(--jv-green)" : "var(--jv-cyan-300)" }}>%</span></div>
+              <div style={{ font: "var(--fw-semibold) 9px var(--font-hud)", letterSpacing: "0.14em", textTransform: "uppercase", color: readyToBuild ? "var(--jv-green)" : busy ? "var(--jv-cyan-300)" : "var(--jv-text-muted)", marginTop: 4 }}>
+                {readyToBuild ? "Ready" : busy ? "Thinking…" : "Understanding"}
               </div>
             </div>
+
+            {/* Voice mute/unmute toggle — only when TTS is supported (secure context) */}
+            {voice.supported && (
+              <button
+                onClick={toggleVoice}
+                title={voiceOn ? "Mute interview voice" : "Unmute interview voice"}
+                style={{ position: "absolute", top: -2, right: -2, width: 30, height: 30, display: "grid", placeItems: "center", borderRadius: "50%", cursor: "pointer", background: "var(--jv-void)", border: `1px solid ${voiceOn ? "var(--jv-border-cyan)" : "var(--jv-border)"}`, color: voiceOn ? "var(--jv-cyan-300)" : "var(--jv-text-faint)" }}
+              >
+                <Icon name={voiceOn ? (voice.speaking ? "volume-2" : "volume-1") : "volume-x"} size={14} color={voiceOn ? "var(--jv-cyan-300)" : "var(--jv-text-faint)"} />
+              </button>
+            )}
           </div>
-          <div style={{ font: "var(--fw-regular) 11px var(--font-body)", color: "var(--jv-text-faint)", marginTop: 8 }}>
-            {source === "ai" ? "Source: your AI Core model" : source === "template" ? "Source: template (connect a model in AI Core)" : "Source: —"}
-          </div>
+          {/* Ready-to-build banner under the ring — clearly finishable */}
+          {readyToBuild ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 7, marginTop: 8, padding: "5px 12px", borderRadius: "var(--r-pill)", background: "color-mix(in srgb, var(--jv-green) 14%, transparent)", border: "1px solid color-mix(in srgb, var(--jv-green) 45%, transparent)" }}>
+              <Icon name="check-circle" size={13} color="var(--jv-green)" />
+              <span style={{ font: "var(--fw-semibold) 10px var(--font-hud)", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--jv-green)" }}>Ready — enough to build</span>
+            </div>
+          ) : (
+            <div style={{ font: "var(--fw-regular) 11px var(--font-body)", color: "var(--jv-text-faint)", marginTop: 8 }}>
+              {source === "ai" ? "Source: your AI Core model" : source === "template" ? "Source: template (connect a model in AI Core)" : "Source: —"}
+            </div>
+          )}
         </div>
 
         {/* Current question */}
@@ -565,10 +763,16 @@ function BreathingDiscovery({
         </div>
         {error && <div style={{ font: "var(--fw-regular) 11px var(--font-body)", color: "var(--jv-amber)", marginTop: 8 }}>{error}</div>}
 
-        {/* Controls */}
+        {/* Controls — once ready, ACCEPT & BUILD is the prominent primary CTA */}
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 14 }}>
-          <Button variant="primary" iconRight={<Icon name="arrow-right" size={14} />} disabled={!ready} onClick={() => onApply(selectedProfile())}>
-            Build from this
+          <Button
+            variant="primary"
+            iconRight={<Icon name="arrow-right" size={14} />}
+            disabled={!ready}
+            onClick={() => onApply(selectedProfile())}
+            style={readyToBuild ? { background: "var(--grad-cyan)", boxShadow: "0 0 22px var(--jv-glow-cyan), inset 0 1px 0 rgba(255,255,255,0.25)", transform: "scale(1.02)" } : undefined}
+          >
+            Accept &amp; build
           </Button>
           <Button variant="ghost" onClick={onSkip}>Skip — I'll fill it in</Button>
         </div>
@@ -591,10 +795,39 @@ function BreathingDiscovery({
           </button>
         </div>
 
-        {profile.overview && (
+        {/* Helper: accept as-is or edit any field here */}
+        <div style={{ font: "var(--fw-regular) 11px/1.5 var(--font-body)", color: "var(--jv-text-faint)", marginBottom: 12 }}>
+          Accept as-is, or edit any field here — then continue.
+        </div>
+
+        {(effOverview || editingOverview) && (
           <div style={{ marginBottom: 14 }}>
-            <div style={{ font: "var(--fw-semibold) 9px var(--font-hud)", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--jv-text-muted)", marginBottom: 5 }}>Role</div>
-            <div style={{ font: "var(--fw-regular) 12px/1.5 var(--font-body)", color: "var(--jv-text-soft)" }}>{profile.overview}</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5 }}>
+              <span style={{ flex: 1, font: "var(--fw-semibold) 9px var(--font-hud)", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--jv-text-muted)" }}>Role / overview</span>
+              {!editingOverview && (
+                <button onClick={() => { if (overrideOverview == null) setOverrideOverview(profile.overview ?? ""); setEditingOverview(true); }} title="Edit" style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: "var(--jv-cyan-300)", display: "grid", placeItems: "center" }}>
+                  <Icon name="pencil" size={12} color="var(--jv-cyan-300)" />
+                </button>
+              )}
+            </div>
+            {editingOverview ? (
+              <textarea
+                value={effOverview}
+                autoFocus
+                onChange={(e) => setOverrideOverview(e.target.value)}
+                onBlur={() => setEditingOverview(false)}
+                placeholder="What this role is about…"
+                style={{ ...areaStyle, height: 76, font: "var(--fw-regular) 12px/1.5 var(--font-body)" }}
+              />
+            ) : (
+              <div
+                onClick={() => { if (overrideOverview == null) setOverrideOverview(profile.overview ?? ""); setEditingOverview(true); }}
+                title="Click to edit"
+                style={{ font: "var(--fw-regular) 12px/1.5 var(--font-body)", color: "var(--jv-text-soft)", cursor: "text" }}
+              >
+                {effOverview}
+              </div>
+            )}
           </div>
         )}
 
@@ -658,21 +891,36 @@ function BreathingDiscovery({
           )}
         </div>
 
-        {/* Goals */}
+        {/* Goals — inline editable lines with add/remove */}
         <div style={{ marginBottom: goalsList.length || conns.length ? 14 : 0 }}>
           <div style={{ font: "var(--fw-semibold) 9px var(--font-hud)", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--jv-text-muted)", marginBottom: 6 }}>Goals</div>
-          {goalsList.length === 0 ? (
-            <div style={{ font: "var(--fw-regular) 11px var(--font-body)", color: "var(--jv-text-faint)" }}>Forming…</div>
+          {goalsList.length === 0 && overrideGoals == null ? (
+            <div style={{ font: "var(--fw-regular) 11px var(--font-body)", color: "var(--jv-text-faint)", marginBottom: 6 }}>Forming…</div>
           ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 6 }}>
               {goalsList.map((g, i) => (
-                <div key={i} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: 6 }}>
                   <Icon name="target" size={13} color="var(--jv-cyan)" />
-                  <span style={{ font: "var(--fw-regular) 12px/1.4 var(--font-body)", color: "var(--jv-text-soft)" }}>{g.objective}{g.metric ? ` — ${g.metric}` : ""}</span>
+                  <input
+                    value={g.objective}
+                    onChange={(e) => patchGoal(i, { objective: e.target.value })}
+                    placeholder="Objective"
+                    style={{ ...inputStyle, height: 30, flex: 1.4 }}
+                  />
+                  <input
+                    value={g.metric ?? ""}
+                    onChange={(e) => patchGoal(i, { metric: e.target.value || undefined })}
+                    placeholder="Metric"
+                    style={{ ...inputStyle, height: 30, flex: 1 }}
+                  />
+                  <button onClick={() => removeGoal(i)} title="Remove goal" style={{ background: "none", border: "none", color: "var(--jv-text-faint)", cursor: "pointer", display: "grid", placeItems: "center" }}>
+                    <Icon name="x" size={13} />
+                  </button>
                 </div>
               ))}
             </div>
           )}
+          <Button variant="ghost" size="sm" icon={<Icon name="plus" size={12} />} onClick={addGoal}>Add goal</Button>
         </div>
 
         {/* Connections discovered */}
@@ -686,6 +934,19 @@ function BreathingDiscovery({
             </div>
           </div>
         )}
+
+        {/* Primary action — same ACCEPT & BUILD CTA as the ready state */}
+        <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid var(--jv-hairline)" }}>
+          <Button
+            variant="primary"
+            iconRight={<Icon name="arrow-right" size={14} />}
+            disabled={!ready}
+            onClick={() => onApply(selectedProfile())}
+            style={{ width: "100%", ...(readyToBuild ? { boxShadow: "0 0 22px var(--jv-glow-cyan), inset 0 1px 0 rgba(255,255,255,0.25)" } : {}) }}
+          >
+            Accept &amp; build
+          </Button>
+        </div>
       </div>
     </div>
   );
@@ -699,8 +960,13 @@ function OnboardingEditor({ onboarding, setOnboarding }: { onboarding: Onboardin
   const [accessDraft, setAccessDraft] = useState("");
   const [mtgName, setMtgName] = useState("");
   const [mtgCadence, setMtgCadence] = useState("");
+  // Index of the access item whose Connect guidance popup is open (null = closed).
+  const [connectIdx, setConnectIdx] = useState<number | null>(null);
 
   const STATUSES: AccessStatus[] = ["needed", "pending", "granted"];
+
+  const setAccessStatus = (i: number, status: AccessStatus) =>
+    setOnboarding((o) => ({ ...o, access: (o.access ?? []).map((a, j) => (j === i ? { ...a, status } : a)) }));
 
   const addAccess = () => {
     const v = accessDraft.trim();
@@ -741,7 +1007,7 @@ function OnboardingEditor({ onboarding, setOnboarding }: { onboarding: Onboardin
 
   return (
     <div>
-      <Field label="Access checklist" hint="What this clone needs on day one. Click a status pill to cycle needed → pending → granted.">
+      <Field label="Access checklist" hint="What this agent needs on day one. Hit Connect for step-by-step guidance, or click a status pill to cycle needed → pending → granted.">
         {access.length > 0 && (
           <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 10 }}>
             {access.map((a, i) => (
@@ -749,6 +1015,9 @@ function OnboardingEditor({ onboarding, setOnboarding }: { onboarding: Onboardin
                 <Icon name="key-round" size={14} color={ACCESS_TONE[a.status].color} />
                 <span style={{ flex: "0 0 130px", font: "var(--fw-semibold) 12px var(--font-body)", color: "var(--jv-text)" }}>{a.item}</span>
                 <input value={a.note ?? ""} onChange={(e) => patchAccessNote(i, e.target.value)} placeholder="Note (optional)" style={{ ...inputStyle, height: 30, flex: 1 }} />
+                <button onClick={() => setConnectIdx(i)} title="How to connect this system" style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "3px 10px", borderRadius: "var(--r-pill)", cursor: "pointer", font: "var(--fw-semibold) 9px var(--font-hud)", letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--jv-cyan-300)", background: "var(--grad-cyan-soft)", border: "1px solid var(--jv-border-cyan)" }}>
+                  <Icon name="plug" size={11} color="var(--jv-cyan-300)" /> Connect
+                </button>
                 <button onClick={() => cycleStatus(i)} title="Cycle status" style={{ padding: "3px 9px", borderRadius: "var(--r-pill)", cursor: "pointer", font: "var(--fw-semibold) 9px var(--font-hud)", letterSpacing: "0.08em", textTransform: "uppercase", color: ACCESS_TONE[a.status].color, background: "var(--jv-void)", border: `1px solid color-mix(in srgb, ${ACCESS_TONE[a.status].color} 45%, transparent)` }}>{ACCESS_TONE[a.status].label}</button>
                 <button onClick={() => removeAccess(i)} title="Remove" style={{ background: "none", border: "none", color: "var(--jv-text-faint)", cursor: "pointer", display: "grid", placeItems: "center" }}><Icon name="x" size={14} /></button>
               </div>
@@ -789,6 +1058,15 @@ function OnboardingEditor({ onboarding, setOnboarding }: { onboarding: Onboardin
           <Button variant="ghost" size="sm" icon={<Icon name="plus" size={13} />} disabled={!mtgName.trim()} onClick={addMeeting}>Add</Button>
         </div>
       </Field>
+
+      {connectIdx != null && access[connectIdx] && (
+        <ConnectGuidanceModal
+          item={access[connectIdx].item}
+          status={access[connectIdx].status}
+          onSetStatus={(s) => setAccessStatus(connectIdx, s)}
+          onClose={() => setConnectIdx(null)}
+        />
+      )}
     </div>
   );
 }
@@ -906,7 +1184,7 @@ export function AgentWizard({
     setIcon(t.icon);
     if (t.key !== "blank") setRole(t.label);
     // scratch: keep template-seeded evidence behaviors.
-    setEvidence(t.behaviors.map((b) => ({ behavior: b.behavior, instruction: b.instruction, examples: [] })));
+    setEvidence(t.behaviors.map((b) => ({ behavior: b.behavior, assetType: "output" as EvidenceAssetType, instruction: b.instruction, examples: [] })));
     // Pre-check recommended tools + connections.
     setTools((prev) => Array.from(new Set([...prev, ...t.tools])));
     setConnections((prev) => Array.from(new Set([...prev, ...t.connections])));
@@ -948,7 +1226,7 @@ export function AgentWizard({
   };
 
   // ---- Evidence editing (scratch B2) ----
-  const addBehavior = () => setEvidence((prev) => [...prev, { behavior: "", instruction: "", examples: [] }]);
+  const addBehavior = () => setEvidence((prev) => [...prev, { behavior: "", assetType: "output", instruction: "", examples: [] }]);
   const removeBehavior = (i: number) => setEvidence((prev) => prev.filter((_, j) => j !== i));
   const patchBehavior = (i: number, patch: Partial<EvidenceItem>) =>
     setEvidence((prev) => prev.map((e, j) => (j === i ? { ...e, ...patch } : e)));
@@ -957,12 +1235,19 @@ export function AgentWizard({
   const removeExample = (i: number, k: number) =>
     setEvidence((prev) => prev.map((e, j) => (j === i ? { ...e, examples: e.examples.filter((_, x) => x !== k) } : e)));
 
-  const uploadScreenshot = async (idx: number, file: File, caption: string) => {
+  const uploadScreenshot = async (idx: number, file: File, caption: string, assetType?: EvidenceAssetType) => {
     setUploadingIdx(idx);
     try {
       const { dataUrl, mime } = await fileToDataUrl(file);
       const res = await api.post<FileUploadResult>("/api/files", { filename: file.name, mime, dataBase64: dataUrl });
-      addExample(idx, { kind: "screenshot", fileId: res.id, caption: caption.trim() || undefined });
+      const isImage = mime.startsWith("image/");
+      addExample(idx, {
+        kind: isImage ? "screenshot" : "file",
+        assetType,
+        fileId: res.id,
+        fileName: isImage ? undefined : file.name,
+        caption: caption.trim() || undefined,
+      });
     } catch {
       /* surfaced by the disabled state resetting; keep silent to match DS tone */
     } finally {
@@ -984,6 +1269,30 @@ export function AgentWizard({
     if (profile.goals?.length) setGoals(() => profile.goals ?? []);
     if (profile.connections?.length) setConnections((prev) => Array.from(new Set([...prev, ...(profile.connections ?? [])])));
     if (profile.tools?.length) setTools((prev) => Array.from(new Set([...prev, ...(profile.tools ?? [])])));
+    // Seed the per-behavior evidence the agent should learn from. Merge with any
+    // template-seeded behaviors (match on behavior text); keep examples already
+    // provided. Clone mode wires the supplying connection instead of uploads.
+    if (profile.evidenceRequests?.length) {
+      setEvidence((prev) => {
+        const byKey = new Map(prev.map((e) => [e.behavior.trim().toLowerCase(), e]));
+        for (const r of profile.evidenceRequests ?? []) {
+          const key = (r.behavior ?? "").trim().toLowerCase();
+          if (!key) continue;
+          const existing = byKey.get(key);
+          if (existing) {
+            byKey.set(key, { ...existing, assetType: existing.assetType ?? r.assetType, ask: existing.ask ?? r.ask, cloneConnection: existing.cloneConnection ?? r.connection });
+          } else {
+            byKey.set(key, { behavior: r.behavior, assetType: r.assetType, ask: r.ask, cloneConnection: r.connection, instruction: "", examples: [] });
+          }
+        }
+        return Array.from(byKey.values());
+      });
+      // In clone mode, make sure the tools that supply this evidence are connected.
+      if (cloneMode) {
+        const conns = (profile.evidenceRequests ?? []).map((r) => r.connection).filter((c): c is string => !!c);
+        if (conns.length) setConnections((prev) => Array.from(new Set([...prev, ...conns])));
+      }
+    }
     setOnboarding((prev) => ({
       reportsTo: profile.reportsTo ?? prev.reportsTo,
       meetings: profile.meetings?.length ? profile.meetings : prev.meetings ?? [],
@@ -1091,8 +1400,11 @@ export function AgentWizard({
           const parts: string[] = [`## ${e.behavior.trim()}`];
           if (e.instruction?.trim()) parts.push(e.instruction.trim());
           e.examples.forEach((ex) => {
-            if (ex.kind === "text" && ex.text?.trim()) parts.push(`Good example:\n${ex.text.trim()}`);
-            else if (ex.kind === "screenshot") parts.push(`Good example: [screenshot: ${ex.caption?.trim() || "reference"}]`);
+            const lbl = assetMeta(ex.assetType).label;
+            if (ex.kind === "text" && ex.text?.trim()) parts.push(`${lbl} example:\n${ex.text.trim()}`);
+            else if (ex.kind === "link" && ex.url?.trim()) parts.push(`${lbl} reference: ${ex.url.trim()}`);
+            else if (ex.kind === "file") parts.push(`${lbl} attachment: [${ex.fileName?.trim() || ex.caption?.trim() || "file"}]`);
+            else if (ex.kind === "screenshot") parts.push(`${lbl} example: [screenshot: ${ex.caption?.trim() || "reference"}]`);
           });
           if (e.antiExample?.trim()) parts.push(`Avoid: ${e.antiExample.trim()}`);
           return parts.join("\n");
@@ -1319,47 +1631,81 @@ export function AgentWizard({
       {step === 2 && (
         <div>
           <div style={{ display: "flex", alignItems: "baseline", gap: 8, margin: "0 0 6px" }}>
-            <span style={{ font: "var(--fw-bold) 13px var(--font-body)", color: "var(--jv-text)" }}>Strengthen with examples</span>
+            <span style={{ font: "var(--fw-bold) 13px var(--font-body)", color: "var(--jv-text)" }}>
+              {cloneMode ? "What it learns from" : "Teach it by example"}
+            </span>
             <span style={{ padding: "1px 8px", borderRadius: "var(--r-pill)", font: "var(--fw-semibold) 9px var(--font-hud)", letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--jv-text-muted)", border: "1px solid var(--jv-border-soft)" }}>Optional</span>
           </div>
-          <p style={{ margin: "0 0 14px", font: "var(--fw-regular) 12.5px/1.55 var(--font-body)", color: "var(--jv-text-muted)" }}>
-            Ground each behavior with good examples (a screenshot or text) and, optionally, what to avoid. This sharpens the agent — you can skip it and deploy without any.
-          </p>
 
-          {/* Readiness score */}
-          <div style={{ marginBottom: 16, padding: "12px 14px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-2)", border: "1px solid var(--jv-border-soft)" }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-              <span style={{ font: "var(--fw-semibold) 10px var(--font-hud)", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--jv-cyan-300)" }}>Readiness score</span>
-              <span style={{ font: "var(--fw-bold) 13px var(--font-mono)", color: readiness >= 60 ? "var(--jv-green)" : "var(--jv-amber)" }}>{readiness}%</span>
-            </div>
-            <div style={{ height: 8, borderRadius: "var(--r-pill)", background: "var(--jv-void)", overflow: "hidden", border: "1px solid var(--jv-border-soft)" }}>
-              <div style={{ width: `${readiness}%`, height: "100%", background: readiness >= 60 ? "var(--jv-green)" : "var(--grad-cyan)", transition: "width var(--t)" }} />
-            </div>
-            <div style={{ font: "var(--fw-regular) 11px var(--font-body)", color: "var(--jv-text-faint)", marginTop: 6 }}>
-              {behaviorCount === 0
-                ? "No behaviors yet — add one to teach by example, or skip this step."
-                : `${groundedCount} of ${behaviorCount} behaviors have at least one example.${readiness < 60 ? " Add more for a sharper agent — you can still deploy." : ""}`}
-            </div>
-          </div>
+          {cloneMode ? (
+            <>
+              <p style={{ margin: "0 0 14px", font: "var(--fw-regular) 12.5px/1.55 var(--font-body)", color: "var(--jv-text-muted)" }}>
+                A clone learns from the real person's data. Connect the tools below and the agent picks up how they run calls, write, and follow process — no manual examples needed. Manage connections on the Access step.
+              </p>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {connections.length === 0 && (
+                  <div style={{ padding: "12px 14px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-2)", border: "1px solid var(--jv-border-soft)", font: "var(--fw-regular) 12px var(--font-body)", color: "var(--jv-text-faint)" }}>
+                    No sources connected yet — go back to the Access step and connect their calendar, email, notetaker, Slack or CRM.
+                  </div>
+                )}
+                {connections.map((id) => {
+                  const c = catalog.find((x) => x.id === id);
+                  const teaches = LEARNS[id] ?? ASSET_ORDER.map((t) => ASSET_TYPES[t]).find((m) => m.connection === id)?.hint ?? "reference material";
+                  return (
+                    <div key={id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 14px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-2)", border: "1px solid var(--jv-border-cyan)" }}>
+                      <Icon name="graduation-cap" size={16} color="var(--jv-cyan)" />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ font: "var(--fw-semibold) 12.5px var(--font-body)", color: "var(--jv-text)" }}>{c?.label ?? id}</div>
+                        <div style={{ font: "var(--fw-regular) 11px var(--font-body)", color: "var(--jv-text-muted)" }}>Learns {teaches}</div>
+                      </div>
+                      <span style={{ font: "var(--fw-semibold) 9px var(--font-hud)", letterSpacing: "0.1em", textTransform: "uppercase", color: c?.live ? "var(--jv-green)" : "var(--jv-amber)" }}>{c?.live ? "Live" : "Pending"}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          ) : (
+            <>
+              <p style={{ margin: "0 0 14px", font: "var(--fw-regular) 12.5px/1.55 var(--font-body)", color: "var(--jv-text-muted)" }}>
+                For the agent to actually learn the job, give it real evidence per behavior — a notetaker transcript, a policy, a Notion page, a calendar screenshot, an email, or an example of the ideal output. Paste text, upload a file/screenshot, or drop a link. You can skip and deploy without any.
+              </p>
 
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            {evidence.map((e, i) => (
-              <EvidenceCard
-                key={i}
-                idx={i}
-                item={e}
-                uploading={uploadingIdx === i}
-                fileRef={(el) => { fileRefs.current[i] = el; }}
-                onPickFile={() => fileRefs.current[i]?.click()}
-                onPatch={(patch) => patchBehavior(i, patch)}
-                onAddExample={(ex) => addExample(i, ex)}
-                onRemoveExample={(k) => removeExample(i, k)}
-                onRemove={() => removeBehavior(i)}
-                onUpload={(file, caption) => uploadScreenshot(i, file, caption)}
-              />
-            ))}
-            <Button variant="ghost" size="sm" icon={<Icon name="plus" size={13} />} onClick={addBehavior}>Add behavior</Button>
-          </div>
+              {/* Grounding meter */}
+              <div style={{ marginBottom: 16, padding: "12px 14px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-2)", border: "1px solid var(--jv-border-soft)" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                  <span style={{ font: "var(--fw-semibold) 10px var(--font-hud)", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--jv-cyan-300)" }}>Grounding</span>
+                  <span style={{ font: "var(--fw-bold) 13px var(--font-mono)", color: readiness >= 60 ? "var(--jv-green)" : "var(--jv-amber)" }}>{readiness}%</span>
+                </div>
+                <div style={{ height: 8, borderRadius: "var(--r-pill)", background: "var(--jv-void)", overflow: "hidden", border: "1px solid var(--jv-border-soft)" }}>
+                  <div style={{ width: `${readiness}%`, height: "100%", background: readiness >= 60 ? "var(--jv-green)" : "var(--grad-cyan)", transition: "width var(--t)" }} />
+                </div>
+                <div style={{ font: "var(--fw-regular) 11px var(--font-body)", color: "var(--jv-text-faint)", marginTop: 6 }}>
+                  {behaviorCount === 0
+                    ? "No behaviors yet — add one to teach by example, or skip this step."
+                    : `${groundedCount} of ${behaviorCount} behaviors have evidence.${readiness < 60 ? " More evidence = a sharper agent — you can still deploy." : ""}`}
+                </div>
+              </div>
+
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                {evidence.map((e, i) => (
+                  <EvidenceCard
+                    key={i}
+                    idx={i}
+                    item={e}
+                    uploading={uploadingIdx === i}
+                    fileRef={(el) => { fileRefs.current[i] = el; }}
+                    onPickFile={() => fileRefs.current[i]?.click()}
+                    onPatch={(patch) => patchBehavior(i, patch)}
+                    onAddExample={(ex) => addExample(i, ex)}
+                    onRemoveExample={(k) => removeExample(i, k)}
+                    onRemove={() => removeBehavior(i)}
+                    onUpload={(file, caption, assetType) => uploadScreenshot(i, file, caption, assetType)}
+                  />
+                ))}
+                <Button variant="ghost" size="sm" icon={<Icon name="plus" size={13} />} onClick={addBehavior}>Add behavior</Button>
+              </div>
+            </>
+          )}
         </div>
       )}
 
@@ -1520,69 +1866,124 @@ function EvidenceCard({
   onAddExample: (ex: EvidenceExample) => void;
   onRemoveExample: (k: number) => void;
   onRemove: () => void;
-  onUpload: (file: File, caption: string) => void;
+  onUpload: (file: File, caption: string, assetType?: EvidenceAssetType) => void;
 }) {
   const [caption, setCaption] = useState("");
   const [text, setText] = useState("");
+  const [link, setLink] = useState("");
+  const asset = assetMeta(item.assetType);
   const addText = () => {
     const v = text.trim();
     if (!v) return;
-    onAddExample({ kind: "text", text: v });
+    onAddExample({ kind: "text", assetType: item.assetType, text: v });
     setText("");
+  };
+  const addLink = () => {
+    const v = link.trim();
+    if (!v) return;
+    onAddExample({ kind: "link", assetType: item.assetType, url: v, text: v });
+    setLink("");
   };
   return (
     <div style={{ padding: "14px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-2)", border: `1px solid ${item.examples.length ? "var(--jv-border-cyan)" : "var(--jv-border-soft)"}` }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
         <span style={{ font: "var(--fw-bold) 12px var(--font-mono)", color: "var(--jv-cyan)" }}>#{idx + 1}</span>
         <input value={item.behavior} onChange={(e) => onPatch({ behavior: e.target.value })} placeholder="Behavior — e.g. Qualify an inbound lead" style={{ ...inputStyle, height: 34 }} />
         <button onClick={onRemove} title="Remove behavior" style={{ background: "none", border: "none", color: "var(--jv-text-faint)", cursor: "pointer", display: "grid", placeItems: "center" }}><Icon name="x" size={15} /></button>
       </div>
 
+      {/* The interview's evidence ask for this behavior */}
+      {item.ask && (
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 8, marginBottom: 10, padding: "8px 10px", borderRadius: "var(--r-sm)", background: "var(--grad-cyan-soft)", border: "1px solid var(--jv-border-cyan)" }}>
+          <Icon name="sparkles" size={13} color="var(--jv-cyan)" />
+          <span style={{ font: "var(--fw-regular) 11.5px/1.45 var(--font-body)", color: "var(--jv-text-soft)" }}>{item.ask}</span>
+        </div>
+      )}
+
+      {/* Artifact type picker — what kind of evidence best teaches this */}
+      <Field label="Evidence type" hint={asset.hint}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {ASSET_ORDER.map((t) => {
+            const m = ASSET_TYPES[t];
+            const on = (item.assetType ?? "output") === t;
+            return (
+              <button
+                key={t}
+                onClick={() => onPatch({ assetType: t })}
+                style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 9px", borderRadius: "var(--r-pill)", cursor: "pointer", font: "var(--fw-semibold) 11px var(--font-body)", color: on ? "var(--jv-cyan-300)" : "var(--jv-text-muted)", background: on ? "var(--grad-cyan-soft)" : "var(--jv-surface-3)", border: `1px solid ${on ? "var(--jv-border-cyan)" : "var(--jv-border-soft)"}` }}
+              >
+                <Icon name={m.icon} size={12} /> {m.label}
+              </button>
+            );
+          })}
+        </div>
+      </Field>
+
       <Field label="Instruction">
         <textarea value={item.instruction ?? ""} onChange={(e) => onPatch({ instruction: e.target.value })} placeholder="How to do this well…" style={{ ...areaStyle, height: 56 }} />
       </Field>
 
-      <Field label={`Good examples · ${item.examples.length}`}>
+      <Field label={`Evidence · ${item.examples.length}`}>
         {item.examples.length > 0 && (
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
-            {item.examples.map((ex, k) => (
-              <div key={k} style={{ position: "relative", width: ex.kind === "screenshot" ? 110 : 200, padding: ex.kind === "text" ? "8px 10px" : 0, borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)", overflow: "hidden" }}>
-                {ex.kind === "screenshot" && ex.fileId ? (
-                  <>
-                    <img src={`/api/files/${ex.fileId}`} alt={ex.caption ?? "screenshot"} style={{ width: "100%", height: 72, objectFit: "cover", display: "block" }} />
-                    {ex.caption && <div style={{ padding: "4px 6px", font: "var(--fw-regular) 10px var(--font-body)", color: "var(--jv-text-muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{ex.caption}</div>}
-                  </>
-                ) : (
-                  <div style={{ font: "var(--fw-regular) 11px/1.4 var(--font-body)", color: "var(--jv-text-soft)", maxHeight: 72, overflow: "hidden" }}>{ex.text}</div>
-                )}
-                <button onClick={() => onRemoveExample(k)} title="Remove" style={{ position: "absolute", top: 4, right: 4, width: 20, height: 20, display: "grid", placeItems: "center", borderRadius: "var(--r-sm)", background: "var(--jv-void)", border: "1px solid var(--jv-border)", color: "var(--jv-text-muted)", cursor: "pointer" }}><Icon name="x" size={12} /></button>
-              </div>
-            ))}
+            {item.examples.map((ex, k) => {
+              const em = assetMeta(ex.assetType);
+              const isImg = ex.kind === "screenshot" && ex.fileId;
+              return (
+                <div key={k} style={{ position: "relative", width: isImg ? 110 : 200, padding: isImg ? 0 : "8px 10px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)", overflow: "hidden" }}>
+                  {isImg ? (
+                    <>
+                      <img src={`/api/files/${ex.fileId}`} alt={ex.caption ?? "screenshot"} style={{ width: "100%", height: 72, objectFit: "cover", display: "block" }} />
+                      {ex.caption && <div style={{ padding: "4px 6px", font: "var(--fw-regular) 10px var(--font-body)", color: "var(--jv-text-muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{ex.caption}</div>}
+                    </>
+                  ) : ex.kind === "file" ? (
+                    <a href={`/api/files/${ex.fileId}`} target="_blank" rel="noreferrer" style={{ display: "flex", alignItems: "center", gap: 7, textDecoration: "none", color: "var(--jv-text-soft)" }}>
+                      <Icon name={em.icon} size={14} color="var(--jv-cyan)" />
+                      <span style={{ font: "var(--fw-medium) 11px var(--font-body)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{ex.fileName ?? ex.caption ?? "file"}</span>
+                    </a>
+                  ) : ex.kind === "link" ? (
+                    <a href={ex.url} target="_blank" rel="noreferrer" style={{ display: "flex", alignItems: "center", gap: 7, textDecoration: "none", color: "var(--jv-cyan-300)" }}>
+                      <Icon name="link" size={13} />
+                      <span style={{ font: "var(--fw-medium) 11px var(--font-body)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{ex.url}</span>
+                    </a>
+                  ) : (
+                    <div style={{ font: "var(--fw-regular) 11px/1.4 var(--font-body)", color: "var(--jv-text-soft)", maxHeight: 72, overflow: "hidden" }}>{ex.text}</div>
+                  )}
+                  <button onClick={() => onRemoveExample(k)} title="Remove" style={{ position: "absolute", top: 4, right: 4, width: 20, height: 20, display: "grid", placeItems: "center", borderRadius: "var(--r-sm)", background: "var(--jv-void)", border: "1px solid var(--jv-border)", color: "var(--jv-text-muted)", cursor: "pointer" }}><Icon name="x" size={12} /></button>
+                </div>
+              );
+            })}
           </div>
         )}
 
         {/* Add text example */}
         <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-          <input value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), addText())} placeholder="Add a text example…" style={{ ...inputStyle, height: 34 }} />
+          <input value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), addText())} placeholder={`Paste a ${asset.label.toLowerCase()} example as text…`} style={{ ...inputStyle, height: 34 }} />
           <Button variant="ghost" size="sm" icon={<Icon name="plus" size={13} />} disabled={!text.trim()} onClick={addText}>Text</Button>
         </div>
 
-        {/* Add screenshot example */}
+        {/* Add link */}
+        <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+          <input value={link} onChange={(e) => setLink(e.target.value)} onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), addLink())} placeholder="Link a source (Notion, Drive, recording…)" style={{ ...inputStyle, height: 34 }} />
+          <Button variant="ghost" size="sm" icon={<Icon name="link" size={13} />} disabled={!link.trim()} onClick={addLink}>Link</Button>
+        </div>
+
+        {/* Add file / screenshot */}
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <input value={caption} onChange={(e) => setCaption(e.target.value)} placeholder="Screenshot caption (optional)" style={{ ...inputStyle, height: 34 }} />
+          <input value={caption} onChange={(e) => setCaption(e.target.value)} placeholder="Caption (optional)" style={{ ...inputStyle, height: 34 }} />
           <input
             ref={fileRef}
             type="file"
-            accept="image/*,application/pdf"
+            accept="image/*,application/pdf,.txt,.md,.doc,.docx,.csv,.vtt"
             style={{ display: "none" }}
             onChange={(e) => {
               const f = e.target.files?.[0];
-              if (f) { onUpload(f, caption); setCaption(""); }
+              if (f) { onUpload(f, caption, item.assetType); setCaption(""); }
               e.target.value = "";
             }}
           />
-          <Button variant="secondary" size="sm" icon={<Icon name={uploading ? "loader" : "image"} size={13} />} disabled={uploading} onClick={onPickFile}>
-            {uploading ? "Uploading…" : "Screenshot"}
+          <Button variant="secondary" size="sm" icon={<Icon name={uploading ? "loader" : "upload"} size={13} />} disabled={uploading} onClick={onPickFile}>
+            {uploading ? "Uploading…" : "Upload"}
           </Button>
         </div>
       </Field>
