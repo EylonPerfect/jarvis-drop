@@ -236,6 +236,22 @@ CREATE TABLE IF NOT EXISTS ai_providers (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Run history: every task an agent executed (via Hermes kanban or the provider
+-- fallback), with its result. Hermes runs keep a task_id so their status/result
+-- can be refreshed from the kanban board while still running.
+CREATE TABLE IF NOT EXISTS agent_runs (
+  id         BIGSERIAL PRIMARY KEY,
+  agent_id   TEXT NOT NULL,
+  task_id    TEXT,                                -- hermes kanban task id (null for provider runs)
+  task       TEXT NOT NULL,
+  status     TEXT NOT NULL DEFAULT 'running',     -- running | done | failed
+  output     TEXT,
+  via        TEXT,                                -- hermes | provider | none
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS agent_runs_agent_idx ON agent_runs (agent_id, created_at DESC);
+
 -- Real integration credentials (Gmail, Calendar, Slack, notetaker, ElevenLabs
 -- voice, CRM, Notion, Drive, demo env, …). `values` holds the connect-form
 -- fields as JSON; secret fields are stored here server-side and never returned

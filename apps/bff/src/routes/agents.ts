@@ -5,7 +5,7 @@ import { getActiveProvider, completeProviderChat } from "../lib/providers.js";
 import { config } from "../config.js";
 import { getCompany } from "./company.js";
 import { getConnectedIntegrationIds } from "./integrations.js";
-import type { Agent, AgentRun, RuntimeStats, NewAgent, ConnectionCatalogItem, AgentRunResult } from "@jarvis/shared";
+import type { Agent, AgentRun, RuntimeStats, NewAgent, ConnectionCatalogItem, AgentRunResult, AgentRunRecord } from "@jarvis/shared";
 
 // Live company research: fetch the company website (via the server-side Chrome)
 // and return a text snippet, so the AI discovery can ground its recommendations
@@ -506,12 +506,14 @@ export default async function agentsRoutes(app: FastifyInstance) {
     // Clear child rows first (safe if a FK is ever added), then the agents.
     await query(`DELETE FROM agent_activity`);
     await query(`DELETE FROM agent_comms`);
+    await query(`DELETE FROM agent_runs`);
     await query(`DELETE FROM agents`);
     return { ok: true };
   });
 
   app.delete("/api/agents/:id", async (req) => {
     const { id } = req.params as { id: string };
+    await query(`DELETE FROM agent_runs WHERE agent_id = $1`, [id]).catch(() => {});
     await query(`DELETE FROM agents WHERE id = $1`, [id]);
     return { ok: true };
   });
@@ -568,6 +570,14 @@ export default async function agentsRoutes(app: FastifyInstance) {
     const system = await agentSystemPrompt(agent);
     const at = new Date().toISOString();
 
+    const record = async (fields: { taskId?: string | null; status: string; output?: string; via: string }) => {
+      await query(
+        `INSERT INTO agent_runs (agent_id, task_id, task, status, output, via) VALUES ($1, $2, $3, $4, $5, $6)`,
+        [id, fields.taskId ?? null, task, fields.status, fields.output ?? null, fields.via],
+      ).catch(() => {});
+      await query(`INSERT INTO agent_activity (agent_id, kind) VALUES ($1, 'task')`, [id]).catch(() => {});
+    };
+
     // 1) Dispatch to the Hermes agent's kanban queue — REAL autonomous execution
     //    with its own tools, terminal, memory and skills. Poll briefly for the
     //    result; if it's still working past the window, return the task handle.
@@ -587,16 +597,19 @@ export default async function agentsRoutes(app: FastifyInstance) {
           const t = g.data?.task ?? g.data;
           const st: string | undefined = t?.status;
           if (st === "done") {
-            await query(`INSERT INTO agent_activity (agent_id, kind) VALUES ($1, 'task')`, [id]).catch(() => {});
-            return { ok: true, output: String(t.latest_summary || t.result || "Task complete."), via: "hermes", at };
+            const output = String(t.latest_summary || t.result || "Task complete.");
+            await record({ taskId: tid, status: "done", output, via: "hermes" });
+            return { ok: true, output, via: "hermes", at };
           }
           if (st === "blocked" || st === "failed" || st === "error") {
-            return { ok: false, output: "", detail: `Hermes task ${st}: ${t?.latest_summary ?? "see the Hermes board"}`, via: "hermes", at };
+            const detail = `Hermes task ${st}: ${t?.latest_summary ?? "see the Hermes board"}`;
+            await record({ taskId: tid, status: "failed", output: detail, via: "hermes" });
+            return { ok: false, output: "", detail, via: "hermes", at };
           }
         }
         // Still running past the poll window — real autonomous work can take a while.
-        await query(`INSERT INTO agent_activity (agent_id, kind) VALUES ($1, 'task')`, [id]).catch(() => {});
-        return { ok: true, output: `Dispatched to the Hermes agent (task ${tid}) and it's running autonomously — this one is taking longer than 90s. It will finish in the background; check back shortly.`, via: "hermes", at };
+        await record({ taskId: tid, status: "running", via: "hermes" });
+        return { ok: true, output: `Dispatched to the Hermes agent (task ${tid}) and it's running autonomously — this one is taking longer than 90s. It will finish in the background; watch Run history.`, via: "hermes", at };
       }
     } catch { /* fall through to provider */ }
 
@@ -605,12 +618,48 @@ export default async function agentsRoutes(app: FastifyInstance) {
     if (active) {
       const r = await completeProviderChat(active, [ { role: "system", content: system }, { role: "user", content: task } ]);
       if (r.ok && r.content) {
-        await query(`INSERT INTO agent_activity (agent_id, kind) VALUES ($1, 'task')`, [id]).catch(() => {});
+        await record({ status: "done", output: r.content, via: "provider" });
         return { ok: true, output: r.content, via: "provider", at };
       }
     }
     reply.code(502);
     return { ok: false, output: "", detail: "No runtime available — connect a model in AI Core, or start the Hermes gateway.", via: "none", at };
+  });
+
+  // Run history for one agent. Refreshes any still-running Hermes tasks from the
+  // kanban board so completed work shows its result.
+  app.get("/api/agents/:id/runs", async (req): Promise<AgentRunRecord[]> => {
+    const { id } = req.params as { id: string };
+    const rows = await query<{ id: number; agent_id: string; task_id: string | null; task: string; status: string; output: string | null; via: string | null; created_at: string; updated_at: string }>(
+      `SELECT * FROM agent_runs WHERE agent_id = $1 ORDER BY created_at DESC LIMIT 30`,
+      [id],
+    );
+    // Refresh in-flight Hermes runs.
+    for (const r of rows.filter((x) => x.status === "running" && x.task_id)) {
+      try {
+        const g = await hermes.get<any>(`/api/plugins/kanban/tasks/${r.task_id}`);
+        const t = g.data?.task ?? g.data;
+        const st: string | undefined = t?.status;
+        if (st === "done" || st === "blocked" || st === "failed" || st === "error") {
+          const done = st === "done";
+          const output = String(t.latest_summary || t.result || (done ? "Task complete." : `Task ${st}`));
+          await query(`UPDATE agent_runs SET status = $1, output = $2, updated_at = now() WHERE id = $3`, [done ? "done" : "failed", output, r.id]).catch(() => {});
+          r.status = done ? "done" : "failed";
+          r.output = output;
+        }
+      } catch { /* leave as running */ }
+    }
+    return rows.map((r) => ({
+      id: r.id,
+      agentId: r.agent_id,
+      taskId: r.task_id ?? undefined,
+      task: r.task,
+      status: (r.status as AgentRunRecord["status"]) ?? "done",
+      output: r.output ?? undefined,
+      via: r.via ?? undefined,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+    }));
   });
 
   // Runtime executions. Prefer live hermes runs; fall back to the seeded log.

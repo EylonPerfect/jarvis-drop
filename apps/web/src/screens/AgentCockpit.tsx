@@ -7,7 +7,7 @@ import type { ReactNode } from "react";
 import { Panel, Badge, Button, Icon, EmptyState, IconButton, StatTile } from "../ds";
 import { useApi } from "../api/hooks";
 import { api } from "../api/client";
-import type { Agent, AgentPermission, AgentPerformance, AgentComm, LedgerEntry, WeekdayKey, AgentRunResult } from "@jarvis/shared";
+import type { Agent, AgentPermission, AgentPerformance, AgentComm, LedgerEntry, WeekdayKey, AgentRunResult, AgentRunRecord } from "@jarvis/shared";
 
 const TOOL_CHOICES = ["web_search", "code_interpreter", "filesystem", "github", "memory.query", "calendar", "gmail", "whatsapp", "shell", "vision"];
 
@@ -223,6 +223,9 @@ function RunBox({ agent, agentId, reload }: { agent: Agent | undefined; agentId:
   const [deploying, setDeploying] = useState(false);
   const [result, setResult] = useState<AgentRunResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const { data: historyData, reload: reloadHistory } = useApi<AgentRunRecord[]>(`/api/agents/${agentId}/runs`);
+  const history = historyData ?? [];
+  const [openRun, setOpenRun] = useState<number | null>(null);
 
   const deployed = agent?.status === "optimal";
 
@@ -247,6 +250,8 @@ function RunBox({ agent, agentId, reload }: { agent: Agent | undefined; agentId:
     try {
       const res = await api.post<AgentRunResult>(`/api/agents/${agentId}/run`, { task: t });
       setResult(res);
+      setTask("");
+      reloadHistory();
     } catch {
       setError("The task couldn't be run. Please try again.");
     } finally {
@@ -255,6 +260,12 @@ function RunBox({ agent, agentId, reload }: { agent: Agent | undefined; agentId:
   };
 
   const viaLabel = (via: AgentRunResult["via"]) => (via === "hermes" ? "Ran on Hermes" : via === "provider" ? "Ran via AI Core" : "No runtime available");
+  const fmtWhen = (iso?: string) => {
+    if (!iso) return "";
+    try { return new Date(iso).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }); } catch { return ""; }
+  };
+  const runTone = (s: AgentRunRecord["status"]) => (s === "done" ? "var(--jv-green)" : s === "failed" ? "var(--jv-red)" : "var(--jv-cyan-300)");
+  const runIcon = (s: AgentRunRecord["status"]) => (s === "done" ? "check-circle" : s === "failed" ? "octagon-x" : "loader");
 
   return (
     <Panel
@@ -325,6 +336,48 @@ function RunBox({ agent, agentId, reload }: { agent: Agent | undefined; agentId:
           )}
         </div>
       )}
+
+      {/* Run history — every task this agent has executed. */}
+      <div style={{ marginTop: 4, paddingTop: 12, borderTop: "1px solid var(--jv-hairline)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+          <span style={{ flex: 1, font: "var(--fw-semibold) 10px var(--font-hud)", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--jv-text-muted)" }}>Run history</span>
+          {history.length > 0 && <span style={{ font: "var(--fw-regular) 11px var(--font-body)", color: "var(--jv-text-faint)" }}>{history.length}</span>}
+          <button onClick={reloadHistory} title="Refresh" style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: "var(--jv-cyan-300)", display: "grid", placeItems: "center" }}>
+            <Icon name="refresh-cw" size={13} color="var(--jv-cyan-300)" />
+          </button>
+        </div>
+        {history.length === 0 ? (
+          <div style={{ font: "var(--fw-regular) 12px var(--font-body)", color: "var(--jv-text-faint)" }}>No runs yet — give the agent a task above.</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {history.map((h) => {
+              const open = openRun === h.id;
+              return (
+                <div key={h.id} style={{ borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)", overflow: "hidden" }}>
+                  <button onClick={() => setOpenRun(open ? null : h.id)} style={{ width: "100%", display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", background: "none", border: "none", cursor: "pointer", textAlign: "left" }}>
+                    <Icon name={runIcon(h.status)} size={13} color={runTone(h.status)} />
+                    <span style={{ flex: 1, minWidth: 0, font: "var(--fw-medium) 12.5px var(--font-body)", color: "var(--jv-text-soft)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{h.task}</span>
+                    {h.via && <span style={{ font: "var(--fw-medium) 9px var(--font-hud)", letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--jv-text-faint)" }}>{h.via === "hermes" ? "Hermes" : h.via === "provider" ? "AI Core" : h.via}</span>}
+                    <span style={{ font: "var(--fw-regular) 10.5px var(--font-mono)", color: "var(--jv-text-faint)", whiteSpace: "nowrap" }}>{fmtWhen(h.createdAt)}</span>
+                    <Icon name={open ? "chevron-down" : "chevron-right"} size={13} color="var(--jv-text-faint)" />
+                  </button>
+                  {open && (
+                    <div style={{ padding: "0 12px 12px 34px" }}>
+                      {h.status === "running" ? (
+                        <div style={{ font: "var(--fw-regular) 12px var(--font-body)", color: "var(--jv-cyan-300)" }}>Still running on Hermes… refresh to check.</div>
+                      ) : h.output ? (
+                        <pre style={{ margin: 0, maxHeight: 280, overflowY: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word", font: "var(--fw-regular) 12px/1.6 var(--font-mono)", color: "var(--jv-text-soft)", background: "var(--jv-void)", border: "1px solid var(--jv-border)", borderRadius: "var(--r-xs)", padding: "10px 12px" }}>{h.output}</pre>
+                      ) : (
+                        <div style={{ font: "var(--fw-regular) 12px var(--font-body)", color: "var(--jv-text-faint)" }}>No output recorded.</div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
     </Panel>
   );
 }

@@ -328,6 +328,19 @@ export interface AgentRunResult {
   at: string;
 }
 
+// A recorded run in an agent's history.
+export interface AgentRunRecord {
+  id: number;
+  agentId: string;
+  taskId?: string;
+  task: string;
+  status: "running" | "done" | "failed";
+  output?: string;
+  via?: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
 export interface RunStep {
   agent: string;
   detail: string;
