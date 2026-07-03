@@ -113,7 +113,7 @@ export function AgentBuilder({ onClose, onCreate }: { onClose: () => void; onCre
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        style={{ width: 700, maxWidth: "92%", borderRadius: "var(--r-lg)", background: "var(--grad-panel)", border: "1px solid var(--jv-border-cyan)", boxShadow: "var(--panel-shadow-active)" }}
+        style={{ width: 1120, maxWidth: "94%", borderRadius: "var(--r-lg)", background: "var(--grad-panel)", border: "1px solid var(--jv-border-cyan)", boxShadow: "var(--panel-shadow-active)" }}
       >
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 20px", borderBottom: "1px solid var(--jv-hairline)" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>

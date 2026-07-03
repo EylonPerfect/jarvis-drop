@@ -350,6 +350,13 @@ function BreathingDiscovery({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const started = useRef(false);
+  // User's per-item exclusions for the access checklist, keyed by item label.
+  // Kept separate from `profile` so the periodic /discover refreshes (which
+  // replace `profile`) never clobber the user's choices — we re-apply the
+  // excluded set by label after each refresh. Default = every item included.
+  const [excludedAccess, setExcludedAccess] = useState<Set<string>>(new Set());
+  const [copied, setCopied] = useState(false);
+  const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const ask = async (nextTranscript: DiscoverTurn[]) => {
     setBusy(true);
@@ -386,6 +393,9 @@ function BreathingDiscovery({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Clear the "Copied" confirmation timer on unmount.
+  useEffect(() => () => { if (copyTimer.current) clearTimeout(copyTimer.current); }, []);
+
   const send = () => {
     const a = answer.trim();
     if (!a || busy || !question) return;
@@ -405,6 +415,76 @@ function BreathingDiscovery({
   const goalsList = profile.goals ?? [];
   const conns = profile.connections ?? [];
   const reportsTo = profile.reportsTo;
+
+  const isIncluded = (label: string) => !excludedAccess.has(label);
+  const toggleAccess = (label: string) =>
+    setExcludedAccess((prev) => {
+      const next = new Set(prev);
+      if (next.has(label)) next.delete(label);
+      else next.add(label);
+      return next;
+    });
+
+  // The profile that flows out on "Build from this" — only the access items the
+  // user kept selected. Everything else is passed through unchanged.
+  const selectedProfile = (): DiscoverProfile => ({
+    ...profile,
+    access: access.filter((a) => isIncluded(a.item)),
+  });
+
+  // Copy the recommendation as clean, readable plain text.
+  const buildCopyText = (): string => {
+    const lines: string[] = [];
+    lines.push(`Recommended setup${companyName ? ` for ${companyName}` : ""}`);
+    lines.push("");
+    if (profile.overview) {
+      lines.push("ROLE");
+      lines.push(profile.overview);
+      lines.push("");
+    }
+    if (summary) {
+      lines.push("WHY THIS FITS");
+      lines.push(summary);
+      lines.push("");
+    }
+    if (goalsList.length) {
+      lines.push("GOALS");
+      for (const g of goalsList) lines.push(`- ${g.objective}${g.metric ? ` (metric: ${g.metric})` : ""}`);
+      lines.push("");
+    }
+    const selectedAccess = access.filter((a) => isIncluded(a.item));
+    if (selectedAccess.length) {
+      lines.push("ACCESS CHECKLIST");
+      for (const a of selectedAccess) lines.push(`- ${a.item} [${ACCESS_TONE[a.status].label}]${a.note ? ` — ${a.note}` : ""}`);
+      lines.push("");
+    }
+    if (conns.length) {
+      lines.push("CONNECTIONS");
+      lines.push(conns.join(", "));
+      lines.push("");
+    }
+    if (meetings.length) {
+      lines.push("MEETINGS");
+      for (const m of meetings) lines.push(`- ${m.name}${m.cadence ? ` (${m.cadence})` : ""}`);
+      lines.push("");
+    }
+    if (reportsTo?.name || reportsTo?.email) {
+      lines.push("REPORTS TO");
+      lines.push(`${reportsTo.name || ""}${reportsTo.name && reportsTo.email ? " · " : ""}${reportsTo.email || ""}`.trim());
+      lines.push("");
+    }
+    return lines.join("\n").trim() + "\n";
+  };
+
+  const copyRecommendation = () => {
+    void navigator.clipboard.writeText(buildCopyText()).then(() => {
+      setCopied(true);
+      if (copyTimer.current) clearTimeout(copyTimer.current);
+      copyTimer.current = setTimeout(() => setCopied(false), 1500);
+    }).catch(() => {
+      /* clipboard blocked — stay quiet to match DS tone */
+    });
+  };
 
   // Concentric breathing core. Everything animates while alive; the busy state
   // ("thinking") speeds the pulse to feel like active reasoning.
@@ -463,15 +543,21 @@ function BreathingDiscovery({
           </div>
         )}
 
-        {/* Answer box */}
-        <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-          <input
+        {/* Answer box — multi-line. Enter sends; Shift+Enter inserts a newline. */}
+        <div style={{ display: "flex", gap: 8, marginTop: 10, alignItems: "flex-end" }}>
+          <textarea
             value={answer}
             onChange={(e) => setAnswer(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), send())}
-            placeholder={done ? "Add anything else…" : "Type your answer…"}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                send();
+              }
+            }}
+            rows={3}
+            placeholder={done ? "Add anything else…  (Enter to send, Shift+Enter for a new line)" : "Type your answer…  (Enter to send, Shift+Enter for a new line)"}
             disabled={busy && !question}
-            style={inputStyle}
+            style={{ ...areaStyle, minHeight: 74, resize: "vertical" }}
           />
           <Button variant="secondary" icon={<Icon name={busy ? "loader" : "send"} size={14} />} disabled={!answer.trim() || busy} onClick={send}>
             {busy ? "…" : "Send"}
@@ -481,7 +567,7 @@ function BreathingDiscovery({
 
         {/* Controls */}
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 14 }}>
-          <Button variant="primary" iconRight={<Icon name="arrow-right" size={14} />} disabled={!ready} onClick={() => onApply(profile)}>
+          <Button variant="primary" iconRight={<Icon name="arrow-right" size={14} />} disabled={!ready} onClick={() => onApply(selectedProfile())}>
             Build from this
           </Button>
           <Button variant="ghost" onClick={onSkip}>Skip — I'll fill it in</Button>
@@ -492,9 +578,17 @@ function BreathingDiscovery({
       <div style={{ padding: "14px 16px", borderRadius: "var(--r-md)", background: "var(--jv-surface-2)", border: "1px solid var(--jv-border-soft)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
           <Icon name="scan-line" size={14} color="var(--jv-cyan)" />
-          <span style={{ font: "var(--fw-semibold) 10px var(--font-hud)", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--jv-cyan-300)" }}>
+          <span style={{ flex: 1, minWidth: 0, font: "var(--fw-semibold) 10px var(--font-hud)", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--jv-cyan-300)" }}>
             {companyName ? `Recommended setup for ${companyName}` : "Recommended setup"}
           </span>
+          <button
+            onClick={copyRecommendation}
+            title="Copy recommendation as text"
+            style={{ display: "flex", alignItems: "center", gap: 5, padding: "3px 9px", borderRadius: "var(--r-pill)", cursor: "pointer", font: "var(--fw-semibold) 9px var(--font-hud)", letterSpacing: "0.08em", textTransform: "uppercase", color: copied ? "var(--jv-green)" : "var(--jv-cyan-300)", background: "var(--jv-void)", border: `1px solid ${copied ? "color-mix(in srgb, var(--jv-green) 45%, transparent)" : "var(--jv-border-cyan)"}` }}
+          >
+            <Icon name={copied ? "check" : "copy"} size={12} color={copied ? "var(--jv-green)" : "var(--jv-cyan-300)"} />
+            {copied ? "Copied" : "Copy"}
+          </button>
         </div>
 
         {profile.overview && (
@@ -504,20 +598,31 @@ function BreathingDiscovery({
           </div>
         )}
 
-        {/* Access checklist forming */}
+        {/* Access checklist forming — each item is individually selectable.
+            Excluded items dim/strike and are dropped from the applied profile. */}
         <div style={{ marginBottom: 14 }}>
           <div style={{ font: "var(--fw-semibold) 9px var(--font-hud)", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--jv-text-muted)", marginBottom: 6 }}>Access checklist</div>
           {access.length === 0 ? (
             <div style={{ font: "var(--fw-regular) 11px var(--font-body)", color: "var(--jv-text-faint)" }}>Discovering what they need access to…</div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-              {access.map((a, i) => (
-                <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)" }}>
-                  <Icon name="key-round" size={13} color={ACCESS_TONE[a.status].color} />
-                  <span style={{ flex: 1, minWidth: 0, font: "var(--fw-medium) 12px var(--font-body)", color: "var(--jv-text-soft)" }}>{a.item}</span>
-                  <span style={{ padding: "1px 7px", borderRadius: "var(--r-pill)", font: "var(--fw-semibold) 8px var(--font-hud)", letterSpacing: "0.08em", textTransform: "uppercase", color: ACCESS_TONE[a.status].color, border: `1px solid color-mix(in srgb, ${ACCESS_TONE[a.status].color} 40%, transparent)` }}>{ACCESS_TONE[a.status].label}</span>
-                </div>
-              ))}
+              {access.map((a, i) => {
+                const included = isIncluded(a.item);
+                return (
+                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 9px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)", opacity: included ? 1 : 0.5 }}>
+                    <button
+                      onClick={() => toggleAccess(a.item)}
+                      title={included ? "Included — click to exclude" : "Excluded — click to include"}
+                      style={{ background: "none", border: "none", padding: 0, cursor: "pointer", display: "grid", placeItems: "center" }}
+                    >
+                      <Icon name={included ? "check-square" : "square"} size={14} color={included ? "var(--jv-cyan)" : "var(--jv-text-faint)"} />
+                    </button>
+                    <Icon name="key-round" size={13} color={ACCESS_TONE[a.status].color} />
+                    <span style={{ flex: 1, minWidth: 0, font: "var(--fw-medium) 12px var(--font-body)", color: "var(--jv-text-soft)", textDecoration: included ? "none" : "line-through" }}>{a.item}</span>
+                    <span style={{ padding: "1px 7px", borderRadius: "var(--r-pill)", font: "var(--fw-semibold) 8px var(--font-hud)", letterSpacing: "0.08em", textTransform: "uppercase", color: ACCESS_TONE[a.status].color, border: `1px solid color-mix(in srgb, ${ACCESS_TONE[a.status].color} 40%, transparent)` }}>{ACCESS_TONE[a.status].label}</span>
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>
