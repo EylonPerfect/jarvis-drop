@@ -209,6 +209,21 @@ CREATE TABLE IF NOT EXISTS approvals (
   resolved_at TIMESTAMPTZ
 );
 
+-- Company org: the HUMANS in the company (onboarded on the Company screen).
+-- reports_to_id references another row (nullable = top of the org); is_you marks
+-- the operator. The org chart (GET /api/company/org) unifies these with agents.
+CREATE TABLE IF NOT EXISTS company_people (
+  id            TEXT PRIMARY KEY,
+  name          TEXT NOT NULL,
+  title         TEXT,
+  email         TEXT,
+  department    TEXT,
+  reports_to_id TEXT,          -- references company_people.id (nullable = top of org)
+  is_you        BOOLEAN DEFAULT FALSE, -- marks the operator
+  notes         TEXT,
+  created_at    TIMESTAMPTZ DEFAULT now()
+);
+
 -- Operator-added AI providers (OpenAI-compatible). The active one is used
 -- directly by the Command Center chat; the key is stored server-side only.
 CREATE TABLE IF NOT EXISTS ai_providers (

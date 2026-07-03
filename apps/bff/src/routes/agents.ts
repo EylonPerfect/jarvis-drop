@@ -278,6 +278,27 @@ export default async function agentsRoutes(app: FastifyInstance) {
     };
   });
 
+  // Wizard draft — persists the in-progress "Hire an Agent" wizard so each step
+  // survives a refresh / navigation. Stored as one JSON blob in settings under
+  // 'agent_draft'. The client saves on every step change; clears on deploy.
+  app.get("/api/agents/draft", async () => {
+    const row = await one<{ value: unknown }>(`SELECT value FROM settings WHERE key = 'agent_draft'`);
+    return { draft: row?.value ?? null };
+  });
+  app.put("/api/agents/draft", async (req) => {
+    const b = (req.body ?? {}) as { draft?: unknown };
+    await query(
+      `INSERT INTO settings (key, value) VALUES ('agent_draft', $1)
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+      [JSON.stringify(b.draft ?? null)],
+    );
+    return { ok: true };
+  });
+  app.delete("/api/agents/draft", async () => {
+    await query(`DELETE FROM settings WHERE key = 'agent_draft'`);
+    return { ok: true };
+  });
+
   // Catalog of connectable systems, mapped to real Hermes toolsets, with a live
   // vs. configured-pending flag. Runtime tools (web/browser/terminal/…) are live
   // when Hermes is reachable; messaging is live when the gateway is running;

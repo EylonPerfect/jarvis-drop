@@ -447,7 +447,6 @@ function BreathingDiscovery({
 }) {
   const [transcript, setTranscript] = useState<DiscoverTurn[]>([]);
   const [question, setQuestion] = useState<string>("");
-  const [answer, setAnswer] = useState("");
   const [understanding, setUnderstanding] = useState(0);
   const [done, setDone] = useState(false);
   const [profile, setProfile] = useState<DiscoverProfile>({});
@@ -470,6 +469,28 @@ function BreathingDiscovery({
   const [overrideOverview, setOverrideOverview] = useState<string | null>(null);
   const [overrideGoals, setOverrideGoals] = useState<AgentGoal[] | null>(null);
   const [editingOverview, setEditingOverview] = useState(false);
+  // Inline edit of the left "Recommended for {company}" rationale.
+  const [overrideSummary, setOverrideSummary] = useState<string | null>(null);
+  const [editingSummary, setEditingSummary] = useState(false);
+
+  // ---- Reasoning while thinking — so it never looks stuck. Rotates a line
+  // describing what the AI is working out behind the scenes while `busy`. ----
+  const THINKING_LINES = [
+    `Researching ${companyName || "the company"} and what this role needs…`,
+    "Mapping the core responsibilities…",
+    "Working out the systems & access they'll need…",
+    "Drafting goals and what “great” looks like…",
+    "Deciding who they report to and which meetings to join…",
+    "Lining up the evidence it should learn from…",
+  ];
+  const [thinkIdx, setThinkIdx] = useState(0);
+  useEffect(() => {
+    if (!busy) return;
+    setThinkIdx(0);
+    const id = setInterval(() => setThinkIdx((i) => (i + 1) % THINKING_LINES.length), 1500);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [busy]);
 
   // ---- Voice narration of the interview (TTS). Muteable + persisted. ----
   const voice = useVoiceOutput();
@@ -553,30 +574,31 @@ function BreathingDiscovery({
   const voiceCancel = voice.cancel;
   useEffect(() => () => { voiceCancel(); }, [voiceCancel]);
 
-  const send = () => {
-    const a = answer.trim();
-    if (!a || busy || !question) return;
-    voice.cancel(); // stop narrating the prior question as the user moves on
-    const next: DiscoverTurn[] = [
-      ...transcript,
-      { role: "assistant", content: question },
-      { role: "user", content: a },
-    ];
-    setTranscript(next);
-    setAnswer("");
-    void ask(next);
+  // No answer box: the AI gives its full recommendation and you refine it inline
+  // or accept as-is. "Regenerate" re-runs the discovery (with reasoning shown) so
+  // the operator can ask for a fresh take.
+  const regenerate = () => {
+    if (busy) return;
+    voice.cancel();
+    void ask(transcript);
   };
 
-  const ready = done || understanding >= 80;
-  // "Ready to build" state — clearly finishable, fixes the "stuck at high %" feel.
-  const readyToBuild = done || understanding >= 85;
   const access = profile.access ?? [];
   const meetings = profile.meetings ?? [];
-  // Effective (possibly operator-edited) overview + goals.
+  // Effective (possibly operator-edited) overview + goals + summary.
   const effOverview = overrideOverview ?? profile.overview ?? "";
   const goalsList = overrideGoals ?? profile.goals ?? [];
+  const effSummary = overrideSummary ?? summary ?? "";
   const conns = profile.connections ?? [];
   const reportsTo = profile.reportsTo;
+
+  // The interview produces its full recommendation up front; you refine it by
+  // editing inline or accept it as-is (no chat box). So "ready" = a usable
+  // recommendation exists and we're not mid-refresh — not gated on a % that can
+  // never climb without answers.
+  const hasRecommendation = !!(effOverview.trim() || access.length || goalsList.length);
+  const ready = hasRecommendation && !busy;
+  const readyToBuild = done || understanding >= 85 || hasRecommendation;
 
   const isIncluded = (label: string) => !excludedAccess.has(label);
   const toggleAccess = (label: string) =>
@@ -621,9 +643,9 @@ function BreathingDiscovery({
       lines.push(effOverview.trim());
       lines.push("");
     }
-    if (summary) {
+    if (effSummary.trim()) {
       lines.push("WHY THIS FITS");
-      lines.push(summary);
+      lines.push(effSummary.trim());
       lines.push("");
     }
     if (goalsList.length) {
@@ -717,53 +739,71 @@ function BreathingDiscovery({
           )}
         </div>
 
-        {/* Current question */}
+        {/* What the AI is doing — the current question, or its reasoning while it
+            thinks (so it never looks stuck). */}
         <div style={{ marginTop: 8, padding: "14px 16px", borderRadius: "var(--r-md)", background: "var(--jv-surface-2)", border: "1px solid var(--jv-border-cyan)" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-            <Icon name="sparkles" size={14} color="var(--jv-cyan)" />
-            <span style={{ font: "var(--fw-semibold) 9px var(--font-hud)", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--jv-cyan-300)" }}>Discovery interview</span>
+            <Icon name={busy ? "loader" : "sparkles"} size={14} color="var(--jv-cyan)" />
+            <span style={{ font: "var(--fw-semibold) 9px var(--font-hud)", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--jv-cyan-300)" }}>
+              {busy ? "Thinking it through" : "Discovery interview"}
+            </span>
           </div>
-          <div style={{ font: "var(--fw-medium) 13.5px/1.5 var(--font-body)", color: "var(--jv-text)", minHeight: 20 }}>
-            {busy && !question ? "Waking up — reading the room…" : question || (ready ? "That's enough to build from — apply below or keep going." : "…")}
+          <div style={{ font: "var(--fw-medium) 13.5px/1.5 var(--font-body)", color: busy ? "var(--jv-cyan-300)" : "var(--jv-text)", minHeight: 20 }}>
+            {busy
+              ? THINKING_LINES[thinkIdx]
+              : question || (ready ? "Here's my recommendation — edit anything inline, or accept it as-is." : "…")}
           </div>
+          {busy && (
+            <div style={{ display: "flex", gap: 4, marginTop: 8 }}>
+              {[0, 1, 2].map((d) => (
+                <span key={d} style={{ width: 5, height: 5, borderRadius: "50%", background: "var(--jv-cyan)", opacity: 0.4, animation: `jv-pulse 1s ${d * 0.18}s var(--ease-out) infinite` }} />
+              ))}
+            </div>
+          )}
         </div>
 
-        {/* Company-tailored rationale — the AI's "why this fits" recommendation */}
-        {summary && (
+        {/* Company-tailored rationale — the AI's "why this fits" recommendation.
+            Editable inline, or accept as-is. This is the left-side artifact. */}
+        {(effSummary || hasRecommendation) && (
           <div style={{ marginTop: 10, padding: "12px 14px", borderRadius: "var(--r-md)", background: "var(--grad-cyan-soft)", border: "1px solid var(--jv-border-cyan)" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 6 }}>
               <Icon name="sparkles" size={13} color="var(--jv-cyan)" />
-              <span style={{ font: "var(--fw-semibold) 9px var(--font-hud)", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--jv-cyan-300)" }}>
+              <span style={{ flex: 1, font: "var(--fw-semibold) 9px var(--font-hud)", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--jv-cyan-300)" }}>
                 {companyName ? `Recommended for ${companyName}` : "Why this fits"}
               </span>
+              {!editingSummary && (
+                <button onClick={() => { if (overrideSummary == null) setOverrideSummary(summary ?? ""); setEditingSummary(true); }} title="Edit" style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: "var(--jv-cyan-300)", display: "grid", placeItems: "center" }}>
+                  <Icon name="pencil" size={12} color="var(--jv-cyan-300)" />
+                </button>
+              )}
             </div>
-            <div style={{ font: "var(--fw-regular) 11.5px/1.55 var(--font-body)", color: "var(--jv-text-soft)" }}>{summary}</div>
+            {editingSummary ? (
+              <textarea
+                value={effSummary}
+                autoFocus
+                onChange={(e) => setOverrideSummary(e.target.value)}
+                onBlur={() => setEditingSummary(false)}
+                placeholder="Why this setup fits…"
+                style={{ ...areaStyle, height: 96, font: "var(--fw-regular) 11.5px/1.55 var(--font-body)" }}
+              />
+            ) : (
+              <div
+                onClick={() => { if (overrideSummary == null) setOverrideSummary(summary ?? ""); setEditingSummary(true); }}
+                title="Click to edit"
+                style={{ font: "var(--fw-regular) 11.5px/1.55 var(--font-body)", color: "var(--jv-text-soft)", cursor: "text", whiteSpace: "pre-wrap" }}
+              >
+                {effSummary || (busy ? "Working out why this fits…" : "Click to add why this fits…")}
+              </div>
+            )}
+            <div style={{ font: "var(--fw-regular) 10px var(--font-body)", color: "var(--jv-text-faint)", marginTop: 8 }}>
+              Edit any field inline (here and on the right), or accept as-is.
+            </div>
           </div>
         )}
-
-        {/* Answer box — multi-line. Enter sends; Shift+Enter inserts a newline. */}
-        <div style={{ display: "flex", gap: 8, marginTop: 10, alignItems: "flex-end" }}>
-          <textarea
-            value={answer}
-            onChange={(e) => setAnswer(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                send();
-              }
-            }}
-            rows={3}
-            placeholder={done ? "Add anything else…  (Enter to send, Shift+Enter for a new line)" : "Type your answer…  (Enter to send, Shift+Enter for a new line)"}
-            disabled={busy && !question}
-            style={{ ...areaStyle, minHeight: 74, resize: "vertical" }}
-          />
-          <Button variant="secondary" icon={<Icon name={busy ? "loader" : "send"} size={14} />} disabled={!answer.trim() || busy} onClick={send}>
-            {busy ? "…" : "Send"}
-          </Button>
-        </div>
         {error && <div style={{ font: "var(--fw-regular) 11px var(--font-body)", color: "var(--jv-amber)", marginTop: 8 }}>{error}</div>}
 
-        {/* Controls — once ready, ACCEPT & BUILD is the prominent primary CTA */}
+        {/* Controls — ACCEPT & BUILD is the prominent primary CTA. Regenerate
+            re-runs discovery (shows reasoning); Skip fills it in manually. */}
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 14 }}>
           <Button
             variant="primary"
@@ -773,6 +813,9 @@ function BreathingDiscovery({
             style={readyToBuild ? { background: "var(--grad-cyan)", boxShadow: "0 0 22px var(--jv-glow-cyan), inset 0 1px 0 rgba(255,255,255,0.25)", transform: "scale(1.02)" } : undefined}
           >
             Accept &amp; build
+          </Button>
+          <Button variant="secondary" icon={<Icon name={busy ? "loader" : "refresh-cw"} size={14} />} disabled={busy} onClick={regenerate}>
+            {busy ? "…" : "Regenerate"}
           </Button>
           <Button variant="ghost" onClick={onSkip}>Skip — I'll fill it in</Button>
         </div>
@@ -1175,6 +1218,88 @@ export function AgentWizard({
     if (!model && activeModel) setModel(activeModel);
   }, [activeModel, model]);
 
+  // ---- Draft persistence — every completed step is saved server-side so the
+  // wizard survives a refresh / navigation and resumes exactly where you left off.
+  const [draftStatus, setDraftStatus] = useState<"idle" | "saving" | "saved">("idle");
+  const hydratedRef = useRef(false);
+  const lastSavedRef = useRef<string>("");
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // A snapshot is "empty" (a fresh, untouched wizard) — we never persist those,
+  // and we clear any stored draft once the wizard is back to empty (post-deploy).
+  const isEmptyDraft = (d: Record<string, unknown>): boolean =>
+    (d.step ?? 0) === 0 && !d.cloneMode && !d.templateKey &&
+    !(d.name as string)?.trim?.() && !(d.role as string)?.trim?.() && !(d.overview as string)?.trim?.() &&
+    !((d.goals as unknown[])?.length) && !((d.evidence as unknown[])?.length) && !(d.profileApplied);
+
+  // Hydrate from a saved draft on mount.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const r = await api.get<{ draft: Record<string, unknown> | null }>("/api/agents/draft");
+        const d = r?.draft;
+        if (!cancelled && d && typeof d === "object" && !isEmptyDraft(d)) {
+          if (typeof d.cloneMode === "boolean") setCloneMode(d.cloneMode);
+          if (typeof d.name === "string") setName(d.name);
+          if (typeof d.role === "string") setRole(d.role);
+          if (typeof d.icon === "string") setIcon(d.icon);
+          if (typeof d.model === "string") setModel(d.model);
+          if (typeof d.autonomy === "string") setAutonomy(d.autonomy);
+          if (typeof d.overview === "string") setOverview(d.overview);
+          if (Array.isArray(d.goals)) setGoals(d.goals as AgentGoal[]);
+          if (Array.isArray(d.permissions)) setPermissions(d.permissions as AgentPermission[]);
+          if (Array.isArray(d.connections)) setConnections(d.connections as string[]);
+          if (Array.isArray(d.tools)) setTools(d.tools as string[]);
+          if (d.budget && typeof d.budget === "object") setBudget(d.budget as BudgetConfig);
+          if (d.clone && typeof d.clone === "object") setClone(d.clone as CloneSource);
+          if (d.onboarding && typeof d.onboarding === "object") setOnboarding(d.onboarding as Onboarding);
+          if (typeof d.templateKey === "string") setTemplateKey(d.templateKey);
+          if (Array.isArray(d.evidence)) setEvidence(d.evidence as EvidenceItem[]);
+          if (typeof d.stashPlan === "string") setStashPlan(d.stashPlan);
+          if (typeof d.stashRoutine === "string") setStashRoutine(d.stashRoutine);
+          if (typeof d.stashInstr === "string") setStashInstr(d.stashInstr);
+          if (typeof d.profileApplied === "boolean") setProfileApplied(d.profileApplied);
+          if (typeof d.step === "number") setStep(Math.max(0, Math.min(stepTitles.length - 1, d.step)));
+          setDraftStatus("saved");
+        }
+      } catch { /* no draft / offline — start fresh */ }
+      finally { hydratedRef.current = true; }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Autosave (debounced) whenever any captured field changes — so each completed
+  // step is persisted. Empty snapshots delete the draft instead of storing blanks.
+  useEffect(() => {
+    if (!hydratedRef.current) return;
+    const snap: Record<string, unknown> = { v: 1, step, cloneMode, name, role, icon, model, autonomy, overview, goals, permissions, connections, tools, budget, clone, onboarding, templateKey, evidence, stashPlan, stashRoutine, stashInstr, profileApplied };
+    const s = JSON.stringify(snap);
+    if (s === lastSavedRef.current) return;
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    const empty = isEmptyDraft(snap);
+    if (!empty) setDraftStatus("saving");
+    saveTimer.current = setTimeout(() => {
+      void (async () => {
+        try {
+          if (empty) { await api.del("/api/agents/draft"); lastSavedRef.current = s; setDraftStatus("idle"); }
+          else { await api.put("/api/agents/draft", { draft: snap }); lastSavedRef.current = s; setDraftStatus("saved"); }
+        } catch { setDraftStatus("idle"); }
+      })();
+    }, 600);
+    return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, cloneMode, name, role, icon, model, autonomy, overview, goals, permissions, connections, tools, budget, clone, onboarding, templateKey, evidence, stashPlan, stashRoutine, stashInstr, profileApplied]);
+
+  // Explicitly discard the saved draft and reset the wizard to a clean slate.
+  const discardDraft = () => {
+    lastSavedRef.current = "";
+    void api.del("/api/agents/draft").catch(() => { /* ignore */ });
+    setDraftStatus("idle");
+    reset();
+  };
+
   // ---- Template picker — seeds evidence behaviors + tools/connections + icon/role,
   // then re-primes the interview so it confirms what's known and asks the gaps. ----
   const pickTemplate = (t: RoleTemplate) => {
@@ -1443,6 +1568,10 @@ export function AgentWizard({
       budget: budgetStr,
     };
     onSubmit(agent);
+    // The draft has been deployed — clear it so a fresh wizard starts clean.
+    lastSavedRef.current = "";
+    void api.del("/api/agents/draft").catch(() => { /* ignore */ });
+    setDraftStatus("idle");
     if (resetOnSubmit) reset();
   };
 
@@ -1474,10 +1603,22 @@ export function AgentWizard({
             />
           ))}
         </div>
-        <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
+        <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12 }}>
           <div style={{ font: "var(--fw-bold) 15px var(--font-body)", color: "var(--jv-text)" }}>{stepTitles[step]}</div>
-          <div style={{ font: "var(--fw-semibold) 10px var(--font-hud)", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--jv-text-muted)" }}>
-            {cloneMode ? "Clone" : "From scratch"} · Step {step + 1} of {stepTitles.length}
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            {/* Draft save indicator — every completed step is saved automatically */}
+            <span style={{ display: "flex", alignItems: "center", gap: 4, font: "var(--fw-semibold) 9px var(--font-hud)", letterSpacing: "0.1em", textTransform: "uppercase", color: draftStatus === "saved" ? "var(--jv-green)" : "var(--jv-text-faint)" }}>
+              <Icon name={draftStatus === "saving" ? "loader" : draftStatus === "saved" ? "cloud-check" : "cloud"} size={12} color={draftStatus === "saved" ? "var(--jv-green)" : "var(--jv-text-faint)"} />
+              {draftStatus === "saving" ? "Saving…" : draftStatus === "saved" ? "Draft saved" : "Draft"}
+            </span>
+            {draftStatus !== "idle" && (
+              <button onClick={discardDraft} title="Discard this draft and start fresh" style={{ background: "none", border: "none", padding: 0, cursor: "pointer", font: "var(--fw-semibold) 9px var(--font-hud)", letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--jv-text-faint)" }}>
+                Discard
+              </button>
+            )}
+            <div style={{ font: "var(--fw-semibold) 10px var(--font-hud)", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--jv-text-muted)" }}>
+              {cloneMode ? "Clone" : "From scratch"} · Step {step + 1} of {stepTitles.length}
+            </div>
           </div>
         </div>
       </div>
@@ -1486,7 +1627,7 @@ export function AgentWizard({
       {step === 0 && (
         <div>
           <p style={{ margin: "0 0 14px", font: "var(--fw-regular) 12.5px/1.55 var(--font-body)", color: "var(--jv-text-muted)" }}>
-            Let the AI interview you — it's already running below. It forms the access checklist, manager, meetings and goals as you answer, then pre-fills the rest. Optionally start from a template or clone an existing employee to jump ahead.
+            The AI researches {companyName || "your company"} and drafts a complete recommendation below — role, access checklist, manager, meetings and goals. Edit anything inline, or accept it as-is. Optionally start from a template or clone an existing employee to jump ahead.
           </p>
 
           {/* Company context banner — the AI researches this company to tailor its setup */}

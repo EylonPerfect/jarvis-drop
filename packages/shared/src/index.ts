@@ -551,3 +551,42 @@ export interface NewApproval {
   options?: string[];
   diff?: string;
 }
+
+// ---- Company people & org chart ----
+// A HUMAN in the company (onboarded on the Company screen). reportsToId points
+// at another Person's id (null/absent = top of the org). isYou marks the operator.
+export interface Person {
+  id: string;
+  name: string;
+  title?: string;
+  email?: string;
+  department?: string;
+  reportsToId?: string | null;
+  isYou?: boolean;
+  notes?: string;
+  createdAt?: string;
+}
+
+export interface NewPerson {
+  name: string;
+  title?: string;
+  email?: string;
+  department?: string;
+  reportsToId?: string | null;
+  isYou?: boolean;
+  notes?: string;
+}
+
+// A unified org-chart node covering both humans and AI agents. Agents are
+// attached under the person they report to (matched by email, then name).
+export interface OrgNode {
+  id: string;
+  kind: "person" | "agent";
+  name: string;
+  title?: string;
+  email?: string;
+  department?: string;
+  reportsToId?: string | null;
+  icon?: string;
+  children: OrgNode[];
+}
