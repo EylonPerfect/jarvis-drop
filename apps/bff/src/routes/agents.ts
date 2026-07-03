@@ -6,7 +6,6 @@ import { config } from "../config.js";
 import { getCompany } from "./company.js";
 import { getConnectedIntegrationIds } from "./integrations.js";
 import type { Agent, AgentRun, RuntimeStats, NewAgent, ConnectionCatalogItem, AgentRunResult } from "@jarvis/shared";
-import { HERMES_ENDPOINTS } from "@jarvis/shared";
 
 // Live company research: fetch the company website (via the server-side Chrome)
 // and return a text snippet, so the AI discovery can ground its recommendations
@@ -567,23 +566,44 @@ export default async function agentsRoutes(app: FastifyInstance) {
     if (!task) { reply.code(400); return { ok: false, output: "", detail: "task is required", via: "none", at: new Date().toISOString() }; }
     const agent = rowToAgent(row);
     const system = await agentSystemPrompt(agent);
-    const messages = [ { role: "system", content: system }, { role: "user", content: task } ];
     const at = new Date().toISOString();
 
-    // 1) Prefer the Hermes agent runtime (persistent memory via a per-agent session).
+    // 1) Dispatch to the Hermes agent's kanban queue — REAL autonomous execution
+    //    with its own tools, terminal, memory and skills. Poll briefly for the
+    //    result; if it's still working past the window, return the task handle.
     try {
-      const h = await hermes.post<any>(HERMES_ENDPOINTS.chatCompletions, { model: config.hermes.model, messages, stream: false }, `agent-${id}`);
-      const content = h.ok ? (h.data?.choices?.[0]?.message?.content ?? h.data?.content ?? "") : "";
-      if (h.ok && content) {
+      const create = await hermes.post<any>("/api/plugins/kanban/tasks", {
+        title: `${agent.name}: ${task.slice(0, 70)}`,
+        body: `${system}\n\n--- TASK ---\n${task}`,
+        assignee: "default",
+        max_runtime_seconds: 900,
+      });
+      const tid: string | undefined = create.data?.task?.id;
+      if (create.ok && tid) {
+        const deadline = Date.now() + 90_000;
+        while (Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 4000));
+          const g = await hermes.get<any>(`/api/plugins/kanban/tasks/${tid}`);
+          const t = g.data?.task ?? g.data;
+          const st: string | undefined = t?.status;
+          if (st === "done") {
+            await query(`INSERT INTO agent_activity (agent_id, kind) VALUES ($1, 'task')`, [id]).catch(() => {});
+            return { ok: true, output: String(t.latest_summary || t.result || "Task complete."), via: "hermes", at };
+          }
+          if (st === "blocked" || st === "failed" || st === "error") {
+            return { ok: false, output: "", detail: `Hermes task ${st}: ${t?.latest_summary ?? "see the Hermes board"}`, via: "hermes", at };
+          }
+        }
+        // Still running past the poll window — real autonomous work can take a while.
         await query(`INSERT INTO agent_activity (agent_id, kind) VALUES ($1, 'task')`, [id]).catch(() => {});
-        return { ok: true, output: String(content), via: "hermes", at };
+        return { ok: true, output: `Dispatched to the Hermes agent (task ${tid}) and it's running autonomously — this one is taking longer than 90s. It will finish in the background; check back shortly.`, via: "hermes", at };
       }
-    } catch { /* fall through */ }
+    } catch { /* fall through to provider */ }
 
     // 2) Fall back to the active AI Core provider (reasoning without Hermes tools).
     const active = await getActiveProvider();
     if (active) {
-      const r = await completeProviderChat(active, messages);
+      const r = await completeProviderChat(active, [ { role: "system", content: system }, { role: "user", content: task } ]);
       if (r.ok && r.content) {
         await query(`INSERT INTO agent_activity (agent_id, kind) VALUES ($1, 'task')`, [id]).catch(() => {});
         return { ok: true, output: r.content, via: "provider", at };

@@ -294,6 +294,31 @@ export interface DiscoverResult {
   source: "ai" | "template";
 }
 
+// ---- Artifacts (per-agent department dashboard / roadmap) ----
+export interface ArtifactKPI {
+  label: string;
+  value?: string; // current value ("" until the agent produces data)
+  target?: string; // goal / benchmark
+  unit?: string; // "%", "$", "days", …
+  hint?: string;
+}
+export interface ArtifactSection {
+  title: string; // e.g. "Now", "Next", "Later" for a roadmap
+  items: string[];
+}
+export interface Artifact {
+  id: string; // = agent id
+  agentId: string;
+  agentName: string;
+  role: string;
+  department: string; // "Customer Success", "Engineering (R&D)", …
+  kind: "dashboard" | "roadmap";
+  icon: string;
+  summary?: string;
+  kpis: ArtifactKPI[];
+  sections?: ArtifactSection[];
+}
+
 // ---- Agent execution (deploy + run on Hermes) ----
 export interface AgentRunResult {
   ok: boolean;

@@ -15,6 +15,7 @@ export type ViewId =
   | "ledger"
   | "integrations"
   | "company"
+  | "artifacts"
   | "tasks"
   | "calendar"
   | "memory"
@@ -59,6 +60,7 @@ const SECTIONS: NavSection[] = [
     header: "System",
     items: [
       { id: "company", icon: "building-2", label: "Company" },
+      { id: "artifacts", icon: "layout-dashboard", label: "Artifacts" },
       { id: "aicore", icon: "cpu", label: "AI Core" },
       { id: "integrations", icon: "plug", label: "Integrations" },
       { id: "memory", icon: "database", label: "Memory" },

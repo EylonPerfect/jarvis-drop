@@ -19,6 +19,7 @@ import Spend from "./screens/Spend";
 import Ledger from "./screens/Ledger";
 import Integrations from "./screens/Integrations";
 import Company from "./screens/Company";
+import Artifacts from "./screens/Artifacts";
 
 export function App() {
   const [view, setView] = useState<ViewId>("command");
@@ -56,6 +57,9 @@ export function App() {
       break;
     case "company":
       body = <Company />;
+      break;
+    case "artifacts":
+      body = <Artifacts />;
       break;
     case "tasks":
       body = <TasksKanban />;
