@@ -456,6 +456,9 @@ function BreathingDiscovery({
   const [done, setDone] = useState(false);
   const [profile, setProfile] = useState<DiscoverProfile>({});
   const [summary, setSummary] = useState<string | undefined>(undefined);
+  // A recommended ANSWER to the CURRENT question (question-specific), shown in the
+  // editable box under the question. overrideSummary holds the operator's edit.
+  const [suggestion, setSuggestion] = useState<string>("");
   const [source, setSource] = useState<"ai" | "template" | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -529,10 +532,11 @@ function BreathingDiscovery({
       setQuestion(r.nextQuestion ?? "");
       setProfile(r.profile ?? {});
       setSummary(r.summary);
+      setSuggestion(r.suggestion ?? "");
       setSource(r.source);
-      // Each turn the AI restates what it understands — clear any prior inline
-      // edit of the summary so the fresh understanding shows (the user's edit was
-      // already sent to the AI as input by acceptAndContinue).
+      // Each turn the AI proposes a fresh, question-specific suggested answer —
+      // clear any prior inline edit so the new suggestion shows (the operator's
+      // edit was already sent to the AI as input by acceptAndContinue).
       setOverrideSummary(null);
       setEditingSummary(false);
     } catch {
@@ -602,9 +606,12 @@ function BreathingDiscovery({
     // If the operator edited the "What I understand" text, treat that as their
     // answer/correction and send it to the AI so it's folded in. Otherwise just
     // confirm and move to the next question.
-    const edited = overrideSummary != null && overrideSummary.trim() && overrideSummary.trim() !== (summary ?? "").trim();
-    const userMsg = edited
-      ? `My input / correction: ${overrideSummary!.trim()}. Fold this into your understanding, then ask the next most important question.`
+    // The box holds a question-specific suggested answer. Accept sends it (edited
+    // or as-is) as the operator's answer to THIS question, so it's folded in.
+    const answerText = (overrideSummary ?? suggestion ?? "").trim();
+    const edited = overrideSummary != null && overrideSummary.trim() !== (suggestion ?? "").trim();
+    const userMsg = answerText
+      ? `${edited ? "My answer (edited)" : "Yes — use this suggested answer"}: ${answerText}. Fold it in, then ask the next most important question.`
       : "Looks good — I accept this. Ask the next most important question to deepen your understanding of this role.";
     const next: DiscoverTurn[] = [
       ...transcript,
@@ -650,7 +657,9 @@ function BreathingDiscovery({
   // Effective (possibly operator-edited) overview + goals + summary.
   const effOverview = overrideOverview ?? profile.overview ?? "";
   const goalsList = overrideGoals ?? profile.goals ?? [];
-  const effSummary = overrideSummary ?? summary ?? "";
+  // The editable box under the question shows the question-specific SUGGESTION
+  // (overrideSummary holds the operator's inline edit of it).
+  const effSummary = overrideSummary ?? suggestion ?? "";
   const conns = profile.connections ?? [];
   const reportsTo = profile.reportsTo;
 
@@ -705,9 +714,9 @@ function BreathingDiscovery({
       lines.push(effOverview.trim());
       lines.push("");
     }
-    if (effSummary.trim()) {
-      lines.push("WHY THIS FITS");
-      lines.push(effSummary.trim());
+    if ((summary ?? "").trim()) {
+      lines.push("WHAT I UNDERSTAND");
+      lines.push((summary ?? "").trim());
       lines.push("");
     }
     if (goalsList.length) {
@@ -824,17 +833,17 @@ function BreathingDiscovery({
           )}
         </div>
 
-        {/* Company-tailored rationale — the AI's "why this fits" recommendation.
-            Editable inline, or accept as-is. This is the left-side artifact. */}
-        {(effSummary || hasRecommendation) && (
+        {/* A recommended ANSWER to the question above — question-specific.
+            Edit it or accept as-is; Accept sends it as your answer. */}
+        {(effSummary || question) && (
           <div style={{ marginTop: 10, padding: "12px 14px", borderRadius: "var(--r-md)", background: "var(--grad-cyan-soft)", border: "1px solid var(--jv-border-cyan)" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 6 }}>
               <Icon name="sparkles" size={13} color="var(--jv-cyan)" />
               <span style={{ flex: 1, font: "var(--fw-semibold) 9px var(--font-hud)", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--jv-cyan-300)" }}>
-                {companyName ? `What I understand · ${companyName}` : "What I understand"}
+                My suggested answer
               </span>
               {!editingSummary && (
-                <button onClick={() => { if (overrideSummary == null) setOverrideSummary(summary ?? ""); setEditingSummary(true); }} title="Edit" style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: "var(--jv-cyan-300)", display: "grid", placeItems: "center" }}>
+                <button onClick={() => { if (overrideSummary == null) setOverrideSummary(suggestion ?? ""); setEditingSummary(true); }} title="Edit" style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: "var(--jv-cyan-300)", display: "grid", placeItems: "center" }}>
                   <Icon name="pencil" size={12} color="var(--jv-cyan-300)" />
                 </button>
               )}
@@ -845,20 +854,20 @@ function BreathingDiscovery({
                 autoFocus
                 onChange={(e) => setOverrideSummary(e.target.value)}
                 onBlur={() => setEditingSummary(false)}
-                placeholder="Correct or add anything — I'll fold it in when you Accept…"
+                placeholder="Edit the answer to this question — Accept sends it…"
                 style={{ ...areaStyle, height: 96, font: "var(--fw-regular) 11.5px/1.55 var(--font-body)" }}
               />
             ) : (
               <div
-                onClick={() => { if (overrideSummary == null) setOverrideSummary(summary ?? ""); setEditingSummary(true); }}
-                title="Click to correct — Accept folds it in"
+                onClick={() => { if (overrideSummary == null) setOverrideSummary(suggestion ?? ""); setEditingSummary(true); }}
+                title="Click to edit this answer — Accept sends it"
                 style={{ font: "var(--fw-regular) 11.5px/1.55 var(--font-body)", color: "var(--jv-text-soft)", cursor: "text", whiteSpace: "pre-wrap" }}
               >
-                {effSummary || (busy ? "Working out what I understand…" : "Click to tell me what I'm missing…")}
+                {effSummary || (busy ? "Drafting an answer to this question…" : "Click to answer this question…")}
               </div>
             )}
             <div style={{ font: "var(--fw-regular) 10px var(--font-body)", color: "var(--jv-text-faint)", marginTop: 8 }}>
-              This is what I understand so far. Click to correct or add — then <b style={{ color: "var(--jv-text-muted)" }}>Accept</b> and I'll fold it in and ask the next question.
+              My recommended answer to the question above. Edit it or leave it — <b style={{ color: "var(--jv-text-muted)" }}>Accept</b> sends it and asks the next question.
             </div>
           </div>
         )}

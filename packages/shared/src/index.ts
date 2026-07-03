@@ -287,7 +287,8 @@ export interface DiscoverResult {
   understanding: number; // 0-100
   done: boolean;
   nextQuestion: string;
-  summary?: string;
+  suggestion?: string; // a recommended ANSWER to nextQuestion (question-specific)
+  summary?: string; // running overall understanding of the role
   profile: DiscoverProfile;
   source: "ai" | "template";
 }

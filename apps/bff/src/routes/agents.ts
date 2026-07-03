@@ -215,7 +215,8 @@ export default async function agentsRoutes(app: FastifyInstance) {
     const sys =
       `You are onboarding ${subject}. Interview the operator ONE focused question at a time to reach a COMPLETE understanding, exactly like onboarding a new human hire. ` +
       `Cover: day-to-day work; the ACCESS they need (Slack, an email address, the demo environment, and anything else the role requires); who they report to (manager); which recurring company/team meetings they must join; the tools/systems they use; goals and what "great" looks like; and edge cases. ` +
-      `Respond with ONLY minified JSON, no markdown: {"understanding":<0-100 int>,"done":<bool>,"nextQuestion":<string>,"summary":<string>,"profile":{"overview":<string>,"goals":[{"objective":<string>,"metric":<string>}],"reportsTo":{"name":<string>,"email":<string>},"meetings":[{"name":<string>,"cadence":<string>}],"access":[{"item":<string>,"status":"needed"|"pending"|"granted","note":<string>}],"connections":<string[]>,"tools":<string[]>,"routine":<string[]>,"evidenceRequests":[{"behavior":<string>,"ask":<string>,"assetType":"output"|"notetaker"|"policy"|"notion"|"calendar"|"email"|"crm"|"doc"|"other","connection":<string>}]}}. ` +
+      `Respond with ONLY minified JSON, no markdown: {"understanding":<0-100 int>,"done":<bool>,"nextQuestion":<string>,"suggestion":<string>,"summary":<string>,"profile":{"overview":<string>,"goals":[{"objective":<string>,"metric":<string>}],"reportsTo":{"name":<string>,"email":<string>},"meetings":[{"name":<string>,"cadence":<string>}],"access":[{"item":<string>,"status":"needed"|"pending"|"granted","note":<string>}],"connections":<string[]>,"tools":<string[]>,"routine":<string[]>,"evidenceRequests":[{"behavior":<string>,"ask":<string>,"assetType":"output"|"notetaker"|"policy"|"notion"|"calendar"|"email"|"crm"|"doc"|"other","connection":<string>}]}}. ` +
+      `CRITICAL: "suggestion" MUST be a concrete recommended ANSWER to THIS exact "nextQuestion" (not a general role summary) — directly addressing what the question asks, tailored to ${company.name}, as a short list or 1–4 sentences the operator can accept or edit. If the question asks about goals/KPIs, suggestion lists the specific goals/KPIs; if it asks about access, suggestion lists the specific access; if it asks for an example artifact, suggestion says what a great example would contain. Keep "suggestion" tightly relevant to "nextQuestion" every turn. ` +
       `"understanding" starts low and grows as answers arrive. Set "done":true when understanding>=85 or the operator says they're finished. ` +
       `Always keep "access" seeded with at least Slack, an email address, and a demo environment, plus role-specific items. connections/tools are lowercase ids like email,calendar,slack,notetaker,crm,drive,browser,web,web_search,gmail. Ask exactly one question per turn. ` +
       `For the agent to actually LEARN the job, populate "evidenceRequests": for each key behavior, name the single most useful piece of real evidence to learn from and how to get it — a "notetaker" transcript of a great call, a "policy" doc, a "notion" SOP page, a "calendar" cadence screenshot, an "email" example, a "crm" record, or an "output" example of the ideal result. Set "connection" to the tool id that supplies it (notetaker,calendar,email,crm,drive,notion,slack) so clone hires get it automatically. In your nextQuestion, when it fits, ASK the operator to share one concrete example (e.g. "Can you drop in a notetaker transcript of a great discovery call, or a screenshot?"). ` +
@@ -238,6 +239,7 @@ export default async function agentsRoutes(app: FastifyInstance) {
             understanding: Math.max(0, Math.min(100, Math.round(Number(j.understanding) || 0))),
             done: !!j.done,
             nextQuestion: String(j.nextQuestion ?? ""),
+            suggestion: String(j.suggestion ?? ""),
             summary: String(j.summary ?? ""),
             profile: j.profile && typeof j.profile === "object" ? j.profile : {},
             source: "ai" as const,
@@ -255,11 +257,21 @@ export default async function agentsRoutes(app: FastifyInstance) {
       "What does a great week look like — the goals and numbers you'd hold them to?",
       "Any edge cases or 'never do this' rules I should bake in?",
     ];
+    // A suggested answer that matches each fallback question (kept relevant).
+    const FALLBACK_SUGGESTION = [
+      "Runs the core workflow end-to-end, handles inbound questions, drives adoption, and escalates risks.",
+      "Slack, a dedicated email address, the demo environment, CRM, and calendar.",
+      "Reports to the team lead; joins the weekly team sync, planning, and all-hands.",
+      "Clear targets on activation, retention/renewal, response time, and quality of escalations.",
+      "Never send anything customer-facing without review; never move money or change access.",
+    ];
     const answered = transcript.filter((m) => m.role === "user").length;
+    const qIdx = Math.min(answered, FALLBACK_Q.length - 1);
     return {
       understanding: Math.min(90, answered * 20),
       done: answered >= FALLBACK_Q.length,
-      nextQuestion: FALLBACK_Q[Math.min(answered, FALLBACK_Q.length - 1)],
+      nextQuestion: FALLBACK_Q[qIdx],
+      suggestion: FALLBACK_SUGGESTION[qIdx],
       summary: "",
       profile: {
         overview: name ? `${name}${title ? ` — ${title}` : ""}` : title,
