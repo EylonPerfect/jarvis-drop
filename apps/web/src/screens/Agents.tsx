@@ -6,6 +6,56 @@ import type { Agent, AgentRun, RuntimeStats, NewAgent } from "@jarvis/shared";
 import { AgentWizard } from "../components/AgentWizard";
 import AgentCockpit from "./AgentCockpit";
 
+// The in-progress wizard draft (subset of the snapshot the wizard persists).
+interface WizardDraft {
+  step?: number;
+  cloneMode?: boolean;
+  name?: string;
+  role?: string;
+  icon?: string;
+  templateKey?: string;
+  clone?: { name?: string; title?: string; email?: string };
+}
+
+const WIZARD_STEP_COUNT = 5;
+
+// A resumable draft agent — shown in the roster above completed agents so an
+// unfinished build can be picked back up (or discarded).
+function DraftCard({ draft, onResume, onDiscard }: { draft: WizardDraft; onResume: () => void; onDiscard: () => void }) {
+  const name = draft.cloneMode
+    ? (draft.clone?.name?.trim() ? `${draft.clone.name.trim()} (AI clone)` : "AI clone")
+    : (draft.name?.trim() || "Untitled agent");
+  const role = draft.cloneMode ? (draft.clone?.title?.trim() || "Clone in progress") : (draft.role?.trim() || "Draft in progress");
+  const step = Math.min(WIZARD_STEP_COUNT, (draft.step ?? 0) + 1);
+  const c = "var(--jv-amber)";
+  return (
+    <div
+      onClick={onResume}
+      style={{ display: "flex", alignItems: "center", gap: 12, padding: "13px 14px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px dashed color-mix(in srgb, var(--jv-amber) 55%, var(--jv-border))", cursor: "pointer" }}
+    >
+      <span style={{ width: 38, height: 38, flex: "0 0 38px", borderRadius: "var(--r-sm)", display: "grid", placeItems: "center", color: c, background: `color-mix(in srgb, ${c} 14%, transparent)`, border: `1px solid color-mix(in srgb, ${c} 32%, transparent)` }}>
+        <Icon name={draft.icon || "bot"} size={18} />
+      </span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ font: "var(--fw-semibold) 13px var(--font-body)", color: "var(--jv-text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</div>
+        <div style={{ font: "var(--fw-regular) 11px var(--font-body)", color: "var(--jv-text-muted)", marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{role} · step {step} of {WIZARD_STEP_COUNT}</div>
+      </div>
+      <span style={{ display: "flex", alignItems: "center", gap: 5, font: "var(--fw-medium) 10px var(--font-hud)", letterSpacing: "0.06em", textTransform: "uppercase", color: c }}>
+        <Icon name="pencil-ruler" size={12} color={c} />
+        Draft
+      </span>
+      <IconButton
+        icon="trash-2"
+        tone="danger"
+        title="Discard draft"
+        size={28}
+        onClick={(e) => { e.stopPropagation(); onDiscard(); }}
+      />
+      <Icon name="chevron-right" size={15} color="var(--jv-text-faint)" />
+    </div>
+  );
+}
+
 function AgentCard({ a, onClick, onDelete }: { a: Agent; onClick?: () => void; onDelete?: () => void }) {
   const c = a.status === "optimal" ? "var(--jv-green)" : "var(--jv-violet)";
   return (
@@ -144,9 +194,11 @@ export default function Agents() {
   const { data: rosterData, reload } = useApi<Agent[]>("/api/agents");
   const { data: runsData } = useApi<AgentRun[]>("/api/agents/runs");
   const { data: runtime } = useApi<RuntimeStats>("/api/agents/runtime");
+  const { data: draftResp, reload: reloadDraft } = useApi<{ draft: WizardDraft | null }>("/api/agents/draft");
   const roster = rosterData ?? [];
   const runs = runsData ?? [];
   const stats = runtime ?? { active: 0, recentRuns: 0, stepsToday: 0, errors: 0 };
+  const draft = draftResp?.draft ?? null;
 
   const create = async (a: NewAgent) => {
     try {
@@ -156,6 +208,21 @@ export default function Agents() {
       /* offline — ignore */
     }
     setBuilding(false);
+    reloadDraft(); // the wizard clears the draft on deploy
+  };
+
+  const closeBuilder = () => {
+    setBuilding(false);
+    reloadDraft(); // reflect any progress saved while the wizard was open
+  };
+
+  const discardDraft = async () => {
+    try {
+      await api.del("/api/agents/draft");
+    } catch {
+      /* offline — ignore */
+    }
+    reloadDraft();
   };
 
   const removeAgent = async (id: string) => {
@@ -221,17 +288,22 @@ export default function Agents() {
             }
             bodyStyle={{ display: "flex", flexDirection: "column", gap: 8 }}
           >
+            {draft && (
+              <DraftCard draft={draft} onResume={() => setBuilding(true)} onDiscard={discardDraft} />
+            )}
             {roster.length === 0 ? (
-              <EmptyState
-                icon="bot"
-                title="No agents yet"
-                hint="Your roster is empty. Hire an agent to start orchestrating multi-agent work."
-                action={
-                  <Button variant="primary" size="sm" icon={<Icon name="plus" size={14} />} onClick={() => setBuilding(true)}>
-                    Hire an Agent
-                  </Button>
-                }
-              />
+              draft ? null : (
+                <EmptyState
+                  icon="bot"
+                  title="No agents yet"
+                  hint="Your roster is empty. Hire an agent to start orchestrating multi-agent work."
+                  action={
+                    <Button variant="primary" size="sm" icon={<Icon name="plus" size={14} />} onClick={() => setBuilding(true)}>
+                      Hire an Agent
+                    </Button>
+                  }
+                />
+              )
             ) : (
               roster.map((a) => (
                 <AgentCard key={a.id} a={a} onClick={() => setCockpit(a.id)} onDelete={() => removeAgent(a.id)} />
@@ -264,7 +336,7 @@ export default function Agents() {
           )}
         </Panel>
       </div>
-      {building && <AgentBuilder onClose={() => setBuilding(false)} onCreate={create} />}
+      {building && <AgentBuilder onClose={closeBuilder} onCreate={create} />}
       <ConfirmDialog
         open={confirmClear}
         danger
