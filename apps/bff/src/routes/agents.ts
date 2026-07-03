@@ -584,7 +584,7 @@ export default async function agentsRoutes(app: FastifyInstance) {
     try {
       const create = await hermes.post<any>("/api/plugins/kanban/tasks", {
         title: `${agent.name}: ${task.slice(0, 70)}`,
-        body: `${system}\n\n--- TASK ---\n${task}`,
+        body: `${system}\n\n--- TASK ---\n${task}\n\n--- OUTPUT REQUIREMENT ---\nWhen you finish, your completion summary MUST BE the full deliverable itself — the actual content requested (the email text, the bullet list, the answer, etc.), ready to use as-is. Do NOT return a description of what you did; return the work product.`,
         assignee: "default",
         max_runtime_seconds: 900,
       });
