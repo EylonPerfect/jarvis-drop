@@ -5,7 +5,8 @@ import { getActiveProvider, completeProviderChat } from "../lib/providers.js";
 import { config } from "../config.js";
 import { getCompany } from "./company.js";
 import { getConnectedIntegrationIds } from "./integrations.js";
-import type { Agent, AgentRun, RuntimeStats, NewAgent, ConnectionCatalogItem } from "@jarvis/shared";
+import type { Agent, AgentRun, RuntimeStats, NewAgent, ConnectionCatalogItem, AgentRunResult } from "@jarvis/shared";
+import { HERMES_ENDPOINTS } from "@jarvis/shared";
 
 // Live company research: fetch the company website (via the server-side Chrome)
 // and return a text snippet, so the AI discovery can ground its recommendations
@@ -217,6 +218,7 @@ export default async function agentsRoutes(app: FastifyInstance) {
       `Cover: day-to-day work; the ACCESS they need (Slack, an email address, the demo environment, and anything else the role requires); who they report to (manager); which recurring company/team meetings they must join; the tools/systems they use; goals and what "great" looks like; and edge cases. ` +
       `Respond with ONLY minified JSON, no markdown: {"understanding":<0-100 int>,"done":<bool>,"nextQuestion":<string>,"suggestion":<string>,"summary":<string>,"profile":{"overview":<string>,"goals":[{"objective":<string>,"metric":<string>}],"reportsTo":{"name":<string>,"email":<string>},"meetings":[{"name":<string>,"cadence":<string>}],"access":[{"item":<string>,"status":"needed"|"pending"|"granted","note":<string>}],"connections":<string[]>,"tools":<string[]>,"routine":<string[]>,"evidenceRequests":[{"behavior":<string>,"ask":<string>,"assetType":"output"|"notetaker"|"policy"|"notion"|"calendar"|"email"|"crm"|"doc"|"other","connection":<string>}]}}. ` +
       `CRITICAL: "suggestion" MUST be a concrete recommended ANSWER to THIS exact "nextQuestion" (not a general role summary) — directly addressing what the question asks, tailored to ${company.name}, as a short list or 1–4 sentences the operator can accept or edit. If the question asks about goals/KPIs, suggestion lists the specific goals/KPIs; if it asks about access, suggestion lists the specific access; if it asks for an example artifact, suggestion says what a great example would contain. Keep "suggestion" tightly relevant to "nextQuestion" every turn. ` +
+      `Add "evidenceAsk": when (and only when) "nextQuestion" is asking the operator to provide a concrete artifact/example (a recording, transcript, dashboard, scorecard, doc, screenshot, email, sample output, policy…), set it to a SHORT imperative telling them exactly what file to attach for THIS question (e.g. "Attach a notetaker recording of a strong demo, or a dashboard screenshot"). If the question is not requesting an artifact, set "evidenceAsk" to an empty string. Include "evidenceAsk" in the JSON. ` +
       `"understanding" starts low and grows as answers arrive. Set "done":true when understanding>=85 or the operator says they're finished. ` +
       `Always keep "access" seeded with at least Slack, an email address, and a demo environment, plus role-specific items. connections/tools are lowercase ids like email,calendar,slack,notetaker,crm,drive,browser,web,web_search,gmail. Ask exactly one question per turn. ` +
       `For the agent to actually LEARN the job, populate "evidenceRequests": for each key behavior, name the single most useful piece of real evidence to learn from and how to get it — a "notetaker" transcript of a great call, a "policy" doc, a "notion" SOP page, a "calendar" cadence screenshot, an "email" example, a "crm" record, or an "output" example of the ideal result. Set "connection" to the tool id that supplies it (notetaker,calendar,email,crm,drive,notion,slack) so clone hires get it automatically. In your nextQuestion, when it fits, ASK the operator to share one concrete example (e.g. "Can you drop in a notetaker transcript of a great discovery call, or a screenshot?"). ` +
@@ -240,6 +242,7 @@ export default async function agentsRoutes(app: FastifyInstance) {
             done: !!j.done,
             nextQuestion: String(j.nextQuestion ?? ""),
             suggestion: String(j.suggestion ?? ""),
+            evidenceAsk: String(j.evidenceAsk ?? ""),
             summary: String(j.summary ?? ""),
             profile: j.profile && typeof j.profile === "object" ? j.profile : {},
             source: "ai" as const,
@@ -272,6 +275,7 @@ export default async function agentsRoutes(app: FastifyInstance) {
       done: answered >= FALLBACK_Q.length,
       nextQuestion: FALLBACK_Q[qIdx],
       suggestion: FALLBACK_SUGGESTION[qIdx],
+      evidenceAsk: qIdx === 3 ? "Optional: attach an example scorecard or dashboard that shows what “great” looks like." : "",
       summary: "",
       profile: {
         overview: name ? `${name}${title ? ` — ${title}` : ""}` : title,
@@ -511,6 +515,82 @@ export default async function agentsRoutes(app: FastifyInstance) {
     const { id } = req.params as { id: string };
     await query(`DELETE FROM agents WHERE id = $1`, [id]);
     return { ok: true };
+  });
+
+  // Compile the agent's operating system prompt: its instructions + the concrete
+  // capabilities/connections it may use (so it knows its toolset), grounded on
+  // Hermes core (memory, context, web + headless browser).
+  async function agentSystemPrompt(a: Agent): Promise<string> {
+    const connected = await getConnectedIntegrationIds();
+    const connLabels: Record<string, string> = {
+      gmail: "Gmail (read/send email)", google_calendar: "Google Calendar", slack: "Slack",
+      elevenlabs: "voice (ElevenLabs)", notetaker: "meeting notetaker", crm: "CRM",
+      notion: "Notion", drive: "Drive/Docs", stripe: "Stripe", demo: "the product demo environment",
+    };
+    const credMap: Record<string, string> = { email: "gmail", calendar: "google_calendar", voice: "elevenlabs" };
+    const tools = (a.connections ?? []).map((c) => {
+      const credId = credMap[c] ?? c;
+      const live = connected.has(credId);
+      const label = connLabels[credId] ?? c;
+      return `- ${label}${live ? "" : " (not yet connected — ask the operator to connect it)"}`;
+    });
+    return [
+      a.instructions?.trim() || `You are ${a.name}, ${a.role}.`,
+      a.overview?.trim() ? `Context: ${a.overview.trim()}` : "",
+      a.goals?.length ? `Your goals:\n${a.goals.map((g) => `- ${g.objective}${g.metric ? ` (measure: ${g.metric})` : ""}`).join("\n")}` : "",
+      tools.length ? `Systems you can use:\n${tools.join("\n")}` : "",
+      "You run on the Hermes agent runtime: you have long-term memory, persistent context across runs, live web search, and a headless browser. Use them to actually do the work. Think step by step, take real actions with your tools, and report what you did and the result.",
+      a.autonomy ? `Autonomy: ${a.autonomy}. When an action is irreversible or spends money, follow this setting.` : "",
+    ].filter(Boolean).join("\n\n");
+  }
+
+  // Deploy: mark the agent live so it can be run. (Its runtime is Hermes; runs
+  // are executed on demand / on schedule via /run.)
+  app.post("/api/agents/:id/deploy", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const row = await one(`SELECT * FROM agents WHERE id = $1`, [id]);
+    if (!row) return reply.code(404).send({ error: "not found" });
+    await query(`UPDATE agents SET status = 'optimal', status_label = 'Deployed' WHERE id = $1`, [id]);
+    const updated = await one(`SELECT * FROM agents WHERE id = $1`, [id]);
+    return rowToAgent(updated);
+  });
+
+  // Run: execute a task AS this agent. Uses the Hermes agent (memory + tools) when
+  // its chat endpoint is available, else the active AI Core provider. Returns the
+  // agent's result and records the run.
+  app.post("/api/agents/:id/run", async (req, reply): Promise<AgentRunResult> => {
+    const { id } = req.params as { id: string };
+    const body = (req.body ?? {}) as { task?: string };
+    const task = (body.task ?? "").toString().trim();
+    const row = await one(`SELECT * FROM agents WHERE id = $1`, [id]);
+    if (!row) { reply.code(404); return { ok: false, output: "", detail: "agent not found", via: "none", at: new Date().toISOString() }; }
+    if (!task) { reply.code(400); return { ok: false, output: "", detail: "task is required", via: "none", at: new Date().toISOString() }; }
+    const agent = rowToAgent(row);
+    const system = await agentSystemPrompt(agent);
+    const messages = [ { role: "system", content: system }, { role: "user", content: task } ];
+    const at = new Date().toISOString();
+
+    // 1) Prefer the Hermes agent runtime (persistent memory via a per-agent session).
+    try {
+      const h = await hermes.post<any>(HERMES_ENDPOINTS.chatCompletions, { model: config.hermes.model, messages, stream: false }, `agent-${id}`);
+      const content = h.ok ? (h.data?.choices?.[0]?.message?.content ?? h.data?.content ?? "") : "";
+      if (h.ok && content) {
+        await query(`INSERT INTO agent_activity (agent_id, kind) VALUES ($1, 'task')`, [id]).catch(() => {});
+        return { ok: true, output: String(content), via: "hermes", at };
+      }
+    } catch { /* fall through */ }
+
+    // 2) Fall back to the active AI Core provider (reasoning without Hermes tools).
+    const active = await getActiveProvider();
+    if (active) {
+      const r = await completeProviderChat(active, messages);
+      if (r.ok && r.content) {
+        await query(`INSERT INTO agent_activity (agent_id, kind) VALUES ($1, 'task')`, [id]).catch(() => {});
+        return { ok: true, output: r.content, via: "provider", at };
+      }
+    }
+    reply.code(502);
+    return { ok: false, output: "", detail: "No runtime available — connect a model in AI Core, or start the Hermes gateway.", via: "none", at };
   });
 
   // Runtime executions. Prefer live hermes runs; fall back to the seeded log.

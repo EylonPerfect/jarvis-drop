@@ -288,9 +288,19 @@ export interface DiscoverResult {
   done: boolean;
   nextQuestion: string;
   suggestion?: string; // a recommended ANSWER to nextQuestion (question-specific)
+  evidenceAsk?: string; // when the question wants an artifact: what file to attach
   summary?: string; // running overall understanding of the role
   profile: DiscoverProfile;
   source: "ai" | "template";
+}
+
+// ---- Agent execution (deploy + run on Hermes) ----
+export interface AgentRunResult {
+  ok: boolean;
+  output: string; // the agent's response / result
+  detail?: string; // error detail when !ok
+  via: "hermes" | "provider" | "none";
+  at: string;
 }
 
 export interface RunStep {

@@ -7,7 +7,7 @@ import type { ReactNode } from "react";
 import { Panel, Badge, Button, Icon, EmptyState, IconButton, StatTile } from "../ds";
 import { useApi } from "../api/hooks";
 import { api } from "../api/client";
-import type { Agent, AgentPermission, AgentPerformance, AgentComm, LedgerEntry, WeekdayKey } from "@jarvis/shared";
+import type { Agent, AgentPermission, AgentPerformance, AgentComm, LedgerEntry, WeekdayKey, AgentRunResult } from "@jarvis/shared";
 
 const TOOL_CHOICES = ["web_search", "code_interpreter", "filesystem", "github", "memory.query", "calendar", "gmail", "whatsapp", "shell", "vision"];
 
@@ -213,6 +213,122 @@ function SessionsPane() {
   );
 }
 
+// Deploy the agent and run a one-off task now. Deploy flips status → "optimal"
+// on the backend, then we trigger the cockpit's existing agent reload. Run posts
+// the task and shows the runtime's result (executed on Hermes, or the AI-provider
+// fallback). The last result stays visible until the next run.
+function RunBox({ agent, agentId, reload }: { agent: Agent | undefined; agentId: string; reload: () => void }) {
+  const [task, setTask] = useState("");
+  const [running, setRunning] = useState(false);
+  const [deploying, setDeploying] = useState(false);
+  const [result, setResult] = useState<AgentRunResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const deployed = agent?.status === "optimal";
+
+  const deploy = async () => {
+    setDeploying(true);
+    setError(null);
+    try {
+      await api.post<Agent>(`/api/agents/${agentId}/deploy`);
+      reload();
+    } catch {
+      setError("Couldn't deploy the agent. Please try again.");
+    } finally {
+      setDeploying(false);
+    }
+  };
+
+  const run = async () => {
+    const t = task.trim();
+    if (!t) return;
+    setRunning(true);
+    setError(null);
+    try {
+      const res = await api.post<AgentRunResult>(`/api/agents/${agentId}/run`, { task: t });
+      setResult(res);
+    } catch {
+      setError("The task couldn't be run. Please try again.");
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  const viaLabel = (via: AgentRunResult["via"]) => (via === "hermes" ? "Ran on Hermes" : via === "provider" ? "Ran via AI Core" : "No runtime available");
+
+  return (
+    <Panel
+      title="Run"
+      eyebrow
+      brackets
+      action={
+        deployed ? (
+          <Badge status="optimal" solid={false}>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><Icon name="check-circle" size={11} />Deployed</span>
+          </Badge>
+        ) : (
+          <Button size="sm" variant="primary" icon={<Icon name={deploying ? "loader" : "rocket"} size={14} />} disabled={deploying} onClick={deploy}>
+            {deploying ? "Deploying…" : "Deploy agent"}
+          </Button>
+        )
+      }
+      bodyStyle={{ display: "flex", flexDirection: "column", gap: 12 }}
+    >
+      <div style={{ font: "var(--fw-regular) 12.5px/1.5 var(--font-body)", color: "var(--jv-text-muted)" }}>
+        Give this agent a task to do right now. It runs on the Hermes runtime, falling back to the AI Core.
+      </div>
+      <textarea
+        value={task}
+        onChange={(e) => setTask(e.target.value)}
+        placeholder="Describe a task for this agent to do now — e.g. 'Draft a renewal check-in email for account X'"
+        style={{ ...fieldStyle, height: 96, resize: "vertical", font: "var(--fw-regular) 13px/1.5 var(--font-body)" }}
+      />
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div style={{ flex: 1 }} />
+        <Button
+          size="md"
+          variant="primary"
+          icon={<Icon name={running ? "loader" : "play"} size={14} />}
+          disabled={running || task.trim().length === 0}
+          onClick={run}
+        >
+          {running ? "Running…" : "Run task"}
+        </Button>
+      </div>
+
+      {error && (
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 7, padding: "9px 12px", borderRadius: "var(--r-sm)", color: "var(--jv-red)", background: "color-mix(in srgb, var(--jv-red) 10%, transparent)", border: "1px solid color-mix(in srgb, var(--jv-red) 30%, transparent)", font: "var(--fw-medium) 12px/1.5 var(--font-body)" }}>
+          <Icon name="octagon-x" size={13} />
+          <span style={{ flex: 1 }}>{error}</span>
+        </div>
+      )}
+
+      {result && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)", padding: "12px 14px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ display: "flex", alignItems: "center", gap: 5, font: "var(--fw-semibold) 10px var(--font-hud)", letterSpacing: "0.06em", textTransform: "uppercase", color: result.ok ? "var(--jv-green)" : "var(--jv-amber)" }}>
+              <Icon name={result.ok ? "check-circle" : "octagon-x"} size={12} />{result.ok ? "Done" : "Failed"}
+            </span>
+            <div style={{ flex: 1 }} />
+            <span style={{ display: "flex", alignItems: "center", gap: 4, padding: "2px 9px", borderRadius: "var(--r-pill)", font: "var(--fw-medium) 10px var(--font-hud)", letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--jv-cyan-300)", background: "var(--grad-cyan-soft)", border: "1px solid var(--jv-border-cyan)" }}>
+              <Icon name="cpu" size={11} />{viaLabel(result.via)}
+            </span>
+          </div>
+          {!result.ok && result.detail && (
+            <div style={{ display: "flex", alignItems: "flex-start", gap: 7, padding: "9px 12px", borderRadius: "var(--r-xs)", color: "var(--jv-amber)", background: "color-mix(in srgb, var(--jv-amber) 10%, transparent)", border: "1px solid color-mix(in srgb, var(--jv-amber) 30%, transparent)", font: "var(--fw-medium) 12px/1.5 var(--font-body)" }}>
+              <Icon name="triangle-alert" size={13} />
+              <span style={{ flex: 1 }}>{result.detail}</span>
+            </div>
+          )}
+          {result.output && (
+            <pre style={{ margin: 0, maxHeight: 320, overflowY: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word", font: "var(--fw-regular) 12.5px/1.6 var(--font-mono)", color: "var(--jv-text-soft)", background: "var(--jv-void)", border: "1px solid var(--jv-border)", borderRadius: "var(--r-xs)", padding: "12px 14px" }}>{result.output}</pre>
+          )}
+        </div>
+      )}
+    </Panel>
+  );
+}
+
 export default function AgentCockpit({ agentId, onExit }: { agentId: string; onExit: () => void }) {
   const { data, reload } = useApi<Agent[]>("/api/agents");
   const agent = (data ?? []).find((a) => a.id === agentId);
@@ -307,6 +423,8 @@ export default function AgentCockpit({ agentId, onExit }: { agentId: string; onE
 
       {/* body */}
       <div style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column", gap: 14 }}>
+      {/* Run — deploy + give the agent a task now (Hermes runtime, AI-provider fallback) */}
+      <RunBox agent={agent} agentId={agentId} reload={reload} />
       <div style={{ display: "grid", gridTemplateColumns: "300px 1fr 300px", gap: 14 }}>
         {/* LEFT */}
         <div style={{ display: "flex", flexDirection: "column", gap: 14, minHeight: 0 }}>

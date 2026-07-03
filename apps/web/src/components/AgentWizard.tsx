@@ -163,6 +163,32 @@ const ROLE_TEMPLATES: RoleTemplate[] = [
     connections: ["drive", "slack"],
   },
   {
+    key: "swe",
+    label: "Full Stack Engineer",
+    icon: "code",
+    behaviors: [
+      { behavior: "Implement a feature from a ticket", instruction: "Read the ticket, write code + tests, open a PR" },
+      { behavior: "Fix a bug", instruction: "Reproduce, diagnose, patch, add a regression test" },
+      { behavior: "Review a pull request", instruction: "Check correctness, style, security; leave actionable comments" },
+      { behavior: "Investigate an incident", instruction: "Read logs/errors, find root cause, propose a fix" },
+    ],
+    tools: ["web_search", "code_interpreter", "filesystem", "github", "shell"],
+    connections: ["code", "terminal", "browser", "web", "memory", "notion"],
+  },
+  {
+    key: "ae",
+    label: "Account Executive",
+    icon: "briefcase",
+    behaviors: [
+      { behavior: "Run a discovery call", instruction: "Qualify (MEDDIC/BANT), uncover pain, set next steps" },
+      { behavior: "Send a follow-up + proposal", instruction: "Recap value, attach pricing, one clear CTA" },
+      { behavior: "Advance a deal in the pipeline", instruction: "Update CRM, multi-thread, drive to close" },
+      { behavior: "Handle pricing / objections", instruction: "Reframe on value, offer options, protect margin" },
+    ],
+    tools: ["web_search", "gmail", "calendar", "memory.query"],
+    connections: ["email", "calendar", "slack", "crm", "notetaker", "voice", "browser"],
+  },
+  {
     key: "blank",
     label: "Blank — define your own",
     icon: "bot",
@@ -459,6 +485,9 @@ function BreathingDiscovery({
   // A recommended ANSWER to the CURRENT question (question-specific), shown in the
   // editable box under the question. overrideSummary holds the operator's edit.
   const [suggestion, setSuggestion] = useState<string>("");
+  // When the current question requests a concrete artifact, this is the imperative
+  // describing exactly what file to attach (drives the evidence upload block).
+  const [evidenceAsk, setEvidenceAsk] = useState<string>("");
   const [source, setSource] = useState<"ai" | "template" | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -533,6 +562,7 @@ function BreathingDiscovery({
       setProfile(r.profile ?? {});
       setSummary(r.summary);
       setSuggestion(r.suggestion ?? "");
+      setEvidenceAsk(r.evidenceAsk ?? "");
       setSource(r.source);
       // Each turn the AI proposes a fresh, question-specific suggested answer —
       // clear any prior inline edit so the new suggestion shows (the operator's
@@ -873,18 +903,6 @@ function BreathingDiscovery({
         )}
         {error && <div style={{ font: "var(--fw-regular) 11px var(--font-body)", color: "var(--jv-amber)", marginTop: 8 }}>{error}</div>}
 
-        {/* Attached examples — files uploaded right from the interview. */}
-        {attachments.length > 0 && (
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 12 }}>
-            {attachments.map((f, i) => (
-              <a key={i} href={`/api/files/${f.fileId}`} target="_blank" rel="noreferrer" style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 9px", borderRadius: "var(--r-pill)", textDecoration: "none", background: "color-mix(in srgb, var(--jv-green) 12%, transparent)", border: "1px solid color-mix(in srgb, var(--jv-green) 40%, transparent)", color: "var(--jv-green)" }}>
-                <Icon name={f.isImage ? "image" : "file-text"} size={12} color="var(--jv-green)" />
-                <span style={{ font: "var(--fw-medium) 11px var(--font-body)", maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.name}</span>
-              </a>
-            ))}
-          </div>
-        )}
-
         {/* hidden picker for interview attachments */}
         <input
           ref={attachInputRef}
@@ -893,6 +911,40 @@ function BreathingDiscovery({
           style={{ display: "none" }}
           onChange={(e) => { const f = e.target.files?.[0]; if (f) void attachFile(f); e.target.value = ""; }}
         />
+
+        {/* Evidence block — a descriptive upload prompt tailored to the question.
+            Prominent (cyan) when the AI is actively asking for an artifact. */}
+        <div
+          onClick={() => !attaching && attachInputRef.current?.click()}
+          role="button"
+          style={{ marginTop: 12, padding: "12px 14px", borderRadius: "var(--r-md)", cursor: attaching ? "default" : "pointer", background: evidenceAsk ? "var(--grad-cyan-soft)" : "var(--jv-surface-2)", border: `1px dashed ${evidenceAsk ? "var(--jv-border-cyan)" : "var(--jv-border)"}` }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+            <Icon name={attaching ? "loader" : "upload"} size={14} color="var(--jv-cyan)" />
+            <span style={{ font: "var(--fw-semibold) 9px var(--font-hud)", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--jv-cyan-300)" }}>
+              {evidenceAsk ? "Evidence requested" : "Have an example?"}
+            </span>
+          </div>
+          <div style={{ font: "var(--fw-regular) 12px/1.5 var(--font-body)", color: "var(--jv-text-soft)" }}>
+            {attaching ? "Uploading…" : (evidenceAsk || "If you have a relevant example — a doc, screenshot, recording, or transcript — attach it and the agent learns from it.")}
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10 }}>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 12px", borderRadius: "var(--r-sm)", background: "var(--jv-void)", border: "1px solid var(--jv-border-cyan)", color: "var(--jv-cyan-300)", font: "var(--fw-semibold) 11px var(--font-body)" }}>
+              <Icon name="paperclip" size={13} color="var(--jv-cyan-300)" /> {attaching ? "Uploading…" : "Choose a file to upload"}
+            </span>
+            <span style={{ font: "var(--fw-regular) 10px var(--font-body)", color: "var(--jv-text-faint)" }}>image · PDF · doc · sheet · slides · transcript</span>
+          </div>
+          {attachments.length > 0 && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 10 }} onClick={(e) => e.stopPropagation()}>
+              {attachments.map((f, i) => (
+                <a key={i} href={`/api/files/${f.fileId}`} target="_blank" rel="noreferrer" style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 9px", borderRadius: "var(--r-pill)", textDecoration: "none", background: "color-mix(in srgb, var(--jv-green) 12%, transparent)", border: "1px solid color-mix(in srgb, var(--jv-green) 40%, transparent)", color: "var(--jv-green)" }}>
+                  <Icon name={f.isImage ? "image" : "file-text"} size={12} color="var(--jv-green)" />
+                  <span style={{ font: "var(--fw-medium) 11px var(--font-body)", maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.name}</span>
+                </a>
+              ))}
+            </div>
+          )}
+        </div>
 
         {/* Controls. ACCEPT confirms this understanding and moves to the NEXT
             QUESTION — it does not leave the interview. BUILD THE AGENT (green,
@@ -906,9 +958,6 @@ function BreathingDiscovery({
             style={{ background: "var(--grad-cyan)", boxShadow: "0 0 14px var(--jv-glow-cyan)" }}
           >
             {busy ? "…" : "Accept"}
-          </Button>
-          <Button variant="secondary" icon={<Icon name={attaching ? "loader" : "paperclip"} size={14} />} disabled={attaching || busy} onClick={() => attachInputRef.current?.click()}>
-            {attaching ? "Uploading…" : "Attach a file"}
           </Button>
           <Button variant="secondary" icon={<Icon name={busy ? "loader" : "refresh-cw"} size={14} />} disabled={busy} onClick={regenerate}>
             {busy ? "…" : "Regenerate"}
