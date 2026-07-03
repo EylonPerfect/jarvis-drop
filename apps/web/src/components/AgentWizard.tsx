@@ -585,6 +585,22 @@ function BreathingDiscovery({
     void ask(transcript);
   };
 
+  // Accept the current recommendation/understanding and ADVANCE THE INTERVIEW to
+  // the next question — this does NOT move to the next wizard step. Understanding
+  // climbs with each accept; when it's high enough, "Build the agent" appears.
+  const acceptAndContinue = () => {
+    if (busy) return;
+    voice.cancel();
+    const confirm = "Looks good — I accept this. Ask the next most important question to deepen your understanding of this role.";
+    const next: DiscoverTurn[] = [
+      ...transcript,
+      ...(question ? [{ role: "assistant" as const, content: question }] : []),
+      { role: "user" as const, content: confirm },
+    ];
+    setTranscript(next);
+    void ask(next);
+  };
+
   const access = profile.access ?? [];
   const meetings = profile.meetings ?? [];
   // Effective (possibly operator-edited) overview + goals + summary.
@@ -594,13 +610,13 @@ function BreathingDiscovery({
   const conns = profile.connections ?? [];
   const reportsTo = profile.reportsTo;
 
-  // The interview produces its full recommendation up front; you refine it by
-  // editing inline or accept it as-is (no chat box). So "ready" = a usable
-  // recommendation exists and we're not mid-refresh — not gated on a % that can
-  // never climb without answers.
+  // The interview is a loop: Accept confirms the current understanding and asks
+  // the next question, so understanding climbs. "Build the agent" only appears
+  // once understanding is high enough (or the model says done) — Accept before
+  // then keeps deepening the interview rather than jumping to setup.
   const hasRecommendation = !!(effOverview.trim() || access.length || goalsList.length);
-  const ready = hasRecommendation && !busy;
-  const readyToBuild = done || understanding >= 85 || hasRecommendation;
+  const readyToBuild = done || understanding >= 70;
+  const ready = readyToBuild && !busy;
 
   const isIncluded = (label: string) => !excludedAccess.has(label);
   const toggleAccess = (label: string) =>
@@ -771,7 +787,7 @@ function BreathingDiscovery({
             <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 6 }}>
               <Icon name="sparkles" size={13} color="var(--jv-cyan)" />
               <span style={{ flex: 1, font: "var(--fw-semibold) 9px var(--font-hud)", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--jv-cyan-300)" }}>
-                {companyName ? `Recommended for ${companyName}` : "Why this fits"}
+                {companyName ? `What I understand · ${companyName}` : "What I understand"}
               </span>
               {!editingSummary && (
                 <button onClick={() => { if (overrideSummary == null) setOverrideSummary(summary ?? ""); setEditingSummary(true); }} title="Edit" style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: "var(--jv-cyan-300)", display: "grid", placeItems: "center" }}>
@@ -804,22 +820,40 @@ function BreathingDiscovery({
         )}
         {error && <div style={{ font: "var(--fw-regular) 11px var(--font-body)", color: "var(--jv-amber)", marginTop: 8 }}>{error}</div>}
 
-        {/* Controls — ACCEPT & BUILD is the prominent primary CTA. Regenerate
-            re-runs discovery (shows reasoning); Skip fills it in manually. */}
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 14 }}>
+        {/* Controls. ACCEPT confirms this understanding and moves to the NEXT
+            QUESTION — it does not leave the interview. BUILD THE AGENT (green,
+            only once ready) is the deliberate step that proceeds to setup. */}
+        <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 10, marginTop: 14 }}>
           <Button
             variant="primary"
-            iconRight={<Icon name="arrow-right" size={14} />}
-            disabled={!ready}
-            onClick={() => onApply(selectedProfile())}
-            style={readyToBuild ? { background: "var(--grad-cyan)", boxShadow: "0 0 22px var(--jv-glow-cyan), inset 0 1px 0 rgba(255,255,255,0.25)", transform: "scale(1.02)" } : undefined}
+            icon={<Icon name={busy ? "loader" : "check"} size={14} />}
+            disabled={busy || !question}
+            onClick={acceptAndContinue}
+            style={{ background: "var(--grad-cyan)", boxShadow: "0 0 14px var(--jv-glow-cyan)" }}
           >
-            Accept &amp; build
+            {busy ? "…" : "Accept"}
           </Button>
           <Button variant="secondary" icon={<Icon name={busy ? "loader" : "refresh-cw"} size={14} />} disabled={busy} onClick={regenerate}>
             {busy ? "…" : "Regenerate"}
           </Button>
           <Button variant="ghost" onClick={onSkip}>Skip — I'll fill it in</Button>
+          {readyToBuild && (
+            <>
+              <div style={{ flex: 1 }} />
+              <Button
+                variant="primary"
+                iconRight={<Icon name="arrow-right" size={14} />}
+                disabled={!ready}
+                onClick={() => onApply(selectedProfile())}
+                style={{ background: "linear-gradient(180deg, var(--jv-green), color-mix(in srgb, var(--jv-green) 78%, black))", boxShadow: "0 0 20px color-mix(in srgb, var(--jv-green) 55%, transparent)", color: "#04140b" }}
+              >
+                Build the agent
+              </Button>
+            </>
+          )}
+        </div>
+        <div style={{ font: "var(--fw-regular) 10px var(--font-body)", color: "var(--jv-text-faint)", marginTop: 8 }}>
+          Accept keeps the interview going — I'll ask the next question. Edit anything inline. “Build the agent” moves on to setup.
         </div>
       </div>
 
@@ -980,17 +1014,21 @@ function BreathingDiscovery({
           </div>
         )}
 
-        {/* Primary action — same ACCEPT & BUILD CTA as the ready state */}
+        {/* Deliberate proceed — this is the ONLY control that leaves the
+            interview for the setup step. Green once the interview is ready. */}
         <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid var(--jv-hairline)" }}>
           <Button
             variant="primary"
             iconRight={<Icon name="arrow-right" size={14} />}
             disabled={!ready}
             onClick={() => onApply(selectedProfile())}
-            style={{ width: "100%", ...(readyToBuild ? { boxShadow: "0 0 22px var(--jv-glow-cyan), inset 0 1px 0 rgba(255,255,255,0.25)" } : {}) }}
+            style={{ width: "100%", ...(readyToBuild ? { background: "linear-gradient(180deg, var(--jv-green), color-mix(in srgb, var(--jv-green) 78%, black))", boxShadow: "0 0 20px color-mix(in srgb, var(--jv-green) 55%, transparent)", color: "#04140b" } : {}) }}
           >
-            Accept &amp; build
+            Build the agent
           </Button>
+          <div style={{ font: "var(--fw-regular) 10px var(--font-body)", color: "var(--jv-text-faint)", marginTop: 6, textAlign: "center" }}>
+            Proceeds to setup — everything above carries over.
+          </div>
         </div>
       </div>
     </div>
