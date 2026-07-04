@@ -191,6 +191,17 @@ function MeetingRow({ m, selected, onSelect, onDelete }: { m: Meeting; selected:
 function MeetingDetail({ id }: { id: string }) {
   const { data, reload } = useApi<Meeting>(`/api/meetings/${id}`, [id]);
   const m = data;
+  const [say, setSay] = useState("");
+  const [speaking, setSpeaking] = useState(false);
+  const [speakErr, setSpeakErr] = useState<string | null>(null);
+  const speak = async () => {
+    const t = say.trim();
+    if (!t || speaking) return;
+    setSpeaking(true); setSpeakErr(null);
+    try { await api.post(`/api/meetings/${id}/speak`, { text: t }); setSay(""); }
+    catch { setSpeakErr("Couldn't speak — the bot must be in the call (and a voice provider connected)."); }
+    finally { setSpeaking(false); }
+  };
 
   // Light auto-refresh (~10s) of the selected meeting while its status is
   // active, so the transcript and status stream in without manual clicks.
@@ -225,6 +236,21 @@ function MeetingDetail({ id }: { id: string }) {
             <Icon name="link" size={14} color="var(--jv-cyan)" />
             <a href={m.meetingUrl} target="_blank" rel="noopener noreferrer" style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", font: "var(--fw-medium) 12px var(--font-mono)", color: "var(--jv-cyan-300)", textDecoration: "none" }}>{m.meetingUrl}</a>
           </div>
+
+          {/* Make the AI say something out loud in the call, on demand */}
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <Input
+              icon={<Icon name="mic" size={15} />}
+              placeholder="Type something for the AI to say in the call…"
+              value={say}
+              onChange={(e) => setSay(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && speak()}
+            />
+            <Button size="md" variant="primary" icon={<Icon name={speaking ? "loader" : "volume-2"} size={14} />} disabled={speaking || !say.trim()} onClick={speak}>
+              {speaking ? "…" : "Speak"}
+            </Button>
+          </div>
+          {speakErr && <div style={{ font: "var(--fw-regular) 11.5px var(--font-body)", color: "var(--jv-amber)" }}>{speakErr}</div>}
           <div style={{ display: "flex", alignItems: "center", gap: 8, font: "var(--fw-semibold) 10px var(--font-hud)", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--jv-text-muted)" }}>
             <Icon name="file-text" size={13} color="var(--jv-text-muted)" />Transcript
           </div>
