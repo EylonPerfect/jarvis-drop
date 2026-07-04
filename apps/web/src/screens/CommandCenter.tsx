@@ -4,7 +4,7 @@ import { useApi } from "../api/hooks";
 import { streamChat, api } from "../api/client";
 import { useSpeech, useVoiceOutput } from "../hooks/useSpeech";
 import type { ViewId } from "../components/AppShell";
-import type { Agent, FeedItem, SystemHealth, StatusStripItem } from "@jarvis/shared";
+import type { Agent, FeedItem, SystemHealth, StatusStripItem, AgentRunResult } from "@jarvis/shared";
 
 const ACCENT = "var(--jv-cyan)";
 
@@ -203,6 +203,9 @@ function VoiceCore({ onModeChange }: { onModeChange?: (active: boolean) => void 
   const [browser, setBrowser] = useState<{ url: string; label: string } | null>(null);
   // Voice output on by default; the operator can mute it. Persist the choice.
   const [voiceOut, setVoiceOut] = useState(() => localStorage.getItem("jv.voiceOut") !== "off");
+  // Command Center brain mode. "act" = grounded in this system's live state +
+  // executes on Hermes (does things); "ask" = general Q&A. Persisted.
+  const [mode, setMode] = useState<"act" | "ask">(() => (localStorage.getItem("jv.ccMode") === "ask" ? "ask" : "act"));
 
   const out = useVoiceOutput();
   // Refs so the streaming callback + effects always see current controls
@@ -212,6 +215,8 @@ function VoiceCore({ onModeChange }: { onModeChange?: (active: boolean) => void 
   outRef.current = out;
   const voiceOutRef = useRef(voiceOut);
   voiceOutRef.current = voiceOut;
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
 
   const send = useCallback(async (text: string) => {
     const t = text.trim();
@@ -236,10 +241,18 @@ function VoiceCore({ onModeChange }: { onModeChange?: (active: boolean) => void 
     setBusy(true);
     let full = "";
     try {
-      await streamChat({ message: t, mode: null }, (d) => {
-        full += d;
-        setReply((r) => r + d);
-      });
+      if (modeRef.current === "act") {
+        // ACT: grounded in this system's live state + executed on Hermes (tools).
+        const res = await api.post<AgentRunResult>("/api/command/run", { text: t });
+        full = res.ok ? res.output : (res.detail || "I couldn't complete that.");
+        setReply(full);
+      } else {
+        // ASK: general Q&A (streamed).
+        await streamChat({ message: t, mode: null }, (d) => {
+          full += d;
+          setReply((r) => r + d);
+        });
+      }
     } catch {
       full = "I couldn't reach the agent gateway just now.";
       setReply(full);
@@ -275,14 +288,8 @@ function VoiceCore({ onModeChange }: { onModeChange?: (active: boolean) => void 
     return () => window.clearTimeout(id);
   }, [rawActive, onModeChange]);
 
-  // Auto-open the mic when the Command Center loads (if the browser allows it).
-  const autostarted = useRef(false);
-  useEffect(() => {
-    if (autostarted.current || !speech.supported) return;
-    autostarted.current = true;
-    speech.start();
-  }, [speech]);
-
+  // Voice never auto-starts — the mic opens ONLY when the operator taps the core
+  // (or the mic button). This keeps it off until explicitly activated.
   const toggle = () => {
     if (!speech.supported) return;
     outRef.current.cancel();
@@ -299,12 +306,14 @@ function VoiceCore({ onModeChange }: { onModeChange?: (active: boolean) => void 
     });
   };
 
+  const pickMode = (m: "act" | "ask") => { setMode(m); localStorage.setItem("jv.ccMode", m); };
+
   const status = out.speaking
     ? "Speaking…"
     : listening
       ? "I am listening…"
       : busy
-        ? "Thinking…"
+        ? (mode === "act" ? "Working on it…" : "Thinking…")
         : speech.supported
           ? "Tap the core to speak"
           : "Voice unavailable";
@@ -372,7 +381,20 @@ function VoiceCore({ onModeChange }: { onModeChange?: (active: boolean) => void 
         )}
       </div>
 
-      <div style={{ position: "relative", width: "100%", maxWidth: 460, marginTop: 22, display: "flex", flexDirection: "column", gap: 8, minHeight: 92 }}>
+      {/* Mode: Act (grounded in this system + does things on Hermes) vs Ask (general Q&A) */}
+      <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 14, padding: 3, borderRadius: "var(--r-pill)", background: "var(--jv-void)", border: "1px solid var(--jv-border-soft)" }}>
+        {([["act", "briefcase", "Act on the system"], ["ask", "message-circle", "Ask anything"]] as const).map(([m, ic, label]) => {
+          const on = mode === m;
+          return (
+            <button key={m} onClick={() => pickMode(m)} title={m === "act" ? "Uses this system's live state + Hermes tools to actually do things" : "General questions — a normal assistant"}
+              style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 12px", borderRadius: "var(--r-pill)", cursor: "pointer", border: "none", background: on ? "var(--grad-cyan)" : "transparent", color: on ? "var(--accent-contrast)" : "var(--jv-text-muted)", font: `${on ? "var(--fw-semibold)" : "var(--fw-medium)"} 11px var(--font-hud)`, letterSpacing: "0.08em", textTransform: "uppercase" }}>
+              <Icon name={ic} size={12} /> {label}
+            </button>
+          );
+        })}
+      </div>
+
+      <div style={{ position: "relative", width: "100%", maxWidth: 460, marginTop: 16, display: "flex", flexDirection: "column", gap: 8, minHeight: 92 }}>
         {displayedYou && (
           <div style={{ alignSelf: "flex-end", maxWidth: "82%", padding: "9px 13px", borderRadius: "12px 12px 3px 12px", background: "var(--grad-cyan-soft)", border: "1px solid var(--jv-border-cyan)", font: "var(--fw-medium) 12.5px/1.45 var(--font-body)", color: "var(--jv-text)" }}>
             {displayedYou}
@@ -390,7 +412,9 @@ function VoiceCore({ onModeChange }: { onModeChange?: (active: boolean) => void 
         )}
         {!displayedYou && !reply && !busy && !voiceProblem && (
           <div style={{ textAlign: "center", font: "var(--fw-regular) 12.5px/1.5 var(--font-body)", color: "var(--jv-text-faint)" }}>
-            Tap the core and speak — After Human replies out loud.
+            {mode === "act"
+              ? "Tap the core and tell me what to do — I know what's connected and can act on the system."
+              : "Tap the core and ask me anything — general questions."}
           </div>
         )}
         {voiceProblem && (
