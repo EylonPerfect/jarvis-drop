@@ -1,6 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AppShell, type ViewId } from "./components/AppShell";
 import { AboutModal } from "./screens/AboutModal";
+import LoginGate from "./screens/LoginGate";
+import { getAccessKey } from "./api/client";
 import CommandCenter from "./screens/CommandCenter";
 import AICore from "./screens/AICore";
 import Agents from "./screens/Agents";
@@ -24,7 +26,18 @@ import Artifacts from "./screens/Artifacts";
 export function App() {
   const [view, setView] = useState<ViewId>("command");
   const [about, setAbout] = useState(false);
+  const [authed, setAuthed] = useState(() => !!getAccessKey());
   const nav = (id: ViewId) => setView(id);
+
+  // If any request 401s (bad/expired code), the client clears the key and fires
+  // this event — bounce back to the login gate.
+  useEffect(() => {
+    const onUnauth = () => setAuthed(false);
+    window.addEventListener("jv-unauthorized", onUnauth);
+    return () => window.removeEventListener("jv-unauthorized", onUnauth);
+  }, []);
+
+  if (!authed) return <LoginGate onAuthed={() => setAuthed(true)} />;
 
   let body: React.ReactNode;
   switch (view) {

@@ -1,10 +1,23 @@
 // Same-origin by default (production: Nginx/BFF serve web + /api together).
 // In dev, set VITE_API_BASE=http://localhost:8787 in .env to reach the BFF.
 const BASE = (import.meta.env.VITE_API_BASE ?? "").replace(/\/$/, "");
-// Optional BFF auth key. In an Nginx-fronted deploy the proxy injects the key so
-// the browser needn't hold it; set this only for the single-process/dev path.
-const API_KEY = import.meta.env.VITE_BFF_API_KEY;
-const authHeaders = (): Record<string, string> => (API_KEY ? { "X-API-Key": API_KEY } : {});
+// Access key. The runtime login gate stores it in localStorage; a build-time
+// VITE_BFF_API_KEY is a dev fallback. Sent as X-API-Key so the BFF (when
+// BFF_API_KEY is configured) authorizes the request.
+const KEY_STORAGE = "jv.access";
+const BUILD_KEY = import.meta.env.VITE_BFF_API_KEY as string | undefined;
+export function getAccessKey(): string {
+  try { return localStorage.getItem(KEY_STORAGE) || BUILD_KEY || ""; } catch { return BUILD_KEY || ""; }
+}
+export function setAccessKey(k: string): void { try { localStorage.setItem(KEY_STORAGE, k.trim()); } catch { /* ignore */ } }
+export function clearAccessKey(): void { try { localStorage.removeItem(KEY_STORAGE); } catch { /* ignore */ } }
+const authHeaders = (): Record<string, string> => { const k = getAccessKey(); return k ? { "X-API-Key": k } : {}; };
+
+// On an auth failure, drop the stored key and bounce to the login gate.
+function onUnauthorized(): void {
+  clearAccessKey();
+  try { window.dispatchEvent(new Event("jv-unauthorized")); } catch { /* ignore */ }
+}
 
 async function j<T>(path: string, init?: RequestInit): Promise<T> {
   // Only advertise a JSON body when we're actually sending one. Sending
@@ -20,6 +33,7 @@ async function j<T>(path: string, init?: RequestInit): Promise<T> {
     },
     ...init,
   });
+  if (res.status === 401) { onUnauthorized(); throw new Error(`${init?.method ?? "GET"} ${path} → 401`); }
   if (!res.ok) throw new Error(`${init?.method ?? "GET"} ${path} → ${res.status}`);
   return (await res.json()) as T;
 }
@@ -49,6 +63,7 @@ export async function streamChat(
   });
   // Throw on HTTP errors so the caller shows its error fallback (an error
   // response has a body too, so checking res.body alone isn't enough).
+  if (res.status === 401) { onUnauthorized(); throw new Error("chat/stream → 401"); }
   if (!res.ok) throw new Error(`chat/stream → ${res.status}`);
   if (!res.body) throw new Error("no stream");
   const reader = res.body.getReader();
