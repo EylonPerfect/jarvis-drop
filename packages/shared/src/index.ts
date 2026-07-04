@@ -328,6 +328,19 @@ export interface AgentRunResult {
   at: string;
 }
 
+// Command Center "Act" result. Questions/drafting resolve instantly (status
+// "done"); real tasks run on Hermes and return status "running" + a taskId the
+// client polls via /api/command/status for live progress.
+export interface CommandResult {
+  ok: boolean;
+  via: "hermes" | "provider" | "none";
+  status: "running" | "done" | "failed";
+  taskId?: string;
+  output?: string; // final answer/result (when done)
+  progress?: string; // live "what it's doing" line (while running)
+  detail?: string;
+}
+
 // A recorded run in an agent's history.
 export interface AgentRunRecord {
   id: number;

@@ -3,7 +3,23 @@ import { one, query } from "../db/pool.js";
 import { hermes } from "../hermes.js";
 import { getConnectedIntegrationIds } from "./integrations.js";
 import { getActiveProvider, completeProviderChat } from "../lib/providers.js";
-import type { FeedItem, AgentRunResult } from "@jarvis/shared";
+import type { FeedItem, CommandResult } from "@jarvis/shared";
+
+// Commands that need real tool execution (web, browser, sending, scheduling,
+// live data, running agents) go to Hermes. Everything else — questions about the
+// system and pure content drafting — is answered instantly by the grounded model.
+const TOOL_ACTION = /\b(research|browse|open|go to|navigate|visit|search the web|look ?up|scrape|fetch|pull|download|upload|screenshot|send|post|message|dm|email|notify|deploy|launch|schedule|book|remind|run |execute|monitor|check (the|my|our|for|on)|log ?in|sign ?in|crawl|call )\b/i;
+
+// Strip ANSI + box-drawing noise and return the last meaningful line of a log —
+// a short "what it's doing right now" hint.
+function progressFromLog(log: string): string {
+  const clean = log
+    .replace(/\x1b\[[0-9;]*m/g, "")
+    .replace(/[─-╿▀-▟■-◿⚙]/g, "")
+    .split("\n").map((l) => l.trim()).filter((l) => l.length > 2 && !/^[-─┊|]+$/.test(l));
+  const last = clean[clean.length - 1] ?? "";
+  return last.slice(0, 160);
+}
 
 // Build a system prompt grounded in THIS system's live state — what's connected
 // to the Hermes agent, which integrations have credentials, the agent roster,
@@ -32,16 +48,26 @@ export default async function commandRoutes(app: FastifyInstance) {
     return (await one<{ value: FeedItem[] }>(`SELECT value FROM settings WHERE key = 'feed'`))?.value ?? [];
   });
 
-  // "Act" mode for the Command Center voice: grounded in the system state and
-  // executed ON the Hermes agent runtime (real tools/memory), with a provider
-  // fallback for a fast grounded answer when Hermes can't run it.
-  app.post("/api/command/run", async (req): Promise<AgentRunResult> => {
+  // "Act" mode. Questions + drafting → instant grounded answer from the model.
+  // Real tasks → dispatched to the Hermes runtime (tools/memory); returns a
+  // taskId immediately so the client can show live progress via /status.
+  app.post("/api/command/run", async (req): Promise<CommandResult> => {
     const text = ((req.body as { text?: string })?.text ?? "").toString().trim();
-    const at = new Date().toISOString();
-    if (!text) return { ok: false, output: "", detail: "empty command", via: "none", at };
+    if (!text) return { ok: false, via: "none", status: "failed", detail: "empty command" };
     const system = await systemContext();
+    const needsTools = TOOL_ACTION.test(text);
 
-    // 1) Execute on Hermes (can actually act with tools). Poll briefly.
+    // Fast path: questions / drafting → grounded model answer, right now.
+    if (!needsTools) {
+      const active = await getActiveProvider();
+      if (active) {
+        const r = await completeProviderChat(active, [ { role: "system", content: system }, { role: "user", content: text } ]);
+        if (r.ok && r.content) return { ok: true, via: "provider", status: "done", output: r.content };
+      }
+      // No provider — fall through to Hermes.
+    }
+
+    // Task path: dispatch to Hermes and return immediately (client polls /status).
     try {
       const create = await hermes.post<{ task?: { id?: string } }>("/api/plugins/kanban/tasks", {
         title: `Command: ${text.slice(0, 60)}`,
@@ -50,26 +76,38 @@ export default async function commandRoutes(app: FastifyInstance) {
         max_runtime_seconds: 600,
       });
       const tid = create.data?.task?.id;
-      if (create.ok && tid) {
-        const deadline = Date.now() + 75_000;
-        while (Date.now() < deadline) {
-          await new Promise((r) => setTimeout(r, 4000));
-          const g = await hermes.get<{ task?: Record<string, unknown> }>(`/api/plugins/kanban/tasks/${tid}`);
-          const t = (g.data?.task ?? g.data) as Record<string, unknown> | undefined;
-          const st = t?.status as string | undefined;
-          if (st === "done") return { ok: true, output: String(t?.latest_summary || t?.result || "Done."), via: "hermes", at };
-          if (st === "blocked" || st === "failed" || st === "error") break;
-        }
-        return { ok: true, output: `Working on it on Hermes (task ${tid}). It's taking longer than a moment — it'll finish in the background.`, via: "hermes", at };
-      }
+      if (create.ok && tid) return { ok: true, via: "hermes", status: "running", taskId: tid, progress: "Dispatched to Hermes…" };
     } catch { /* fall through */ }
 
-    // 2) Provider fallback — a fast, grounded answer (no tool execution).
+    // Last resort: grounded provider answer even for a tool request.
     const active = await getActiveProvider();
     if (active) {
       const r = await completeProviderChat(active, [ { role: "system", content: system }, { role: "user", content: text } ]);
-      if (r.ok && r.content) return { ok: true, output: r.content, via: "provider", at };
+      if (r.ok && r.content) return { ok: true, via: "provider", status: "done", output: r.content };
     }
-    return { ok: false, output: "", detail: "No runtime available — connect a model in AI Core or start the Hermes gateway.", via: "none", at };
+    return { ok: false, via: "none", status: "failed", detail: "No runtime available — connect a model in AI Core or start the Hermes gateway." };
+  });
+
+  // Poll a running Hermes command for live progress + the final result.
+  app.post("/api/command/status", async (req): Promise<CommandResult> => {
+    const tid = ((req.body as { taskId?: string })?.taskId ?? "").toString().trim();
+    if (!tid) return { ok: false, via: "hermes", status: "failed", detail: "missing taskId" };
+    try {
+      const g = await hermes.get<{ task?: Record<string, unknown> }>(`/api/plugins/kanban/tasks/${tid}`);
+      const t = (g.data?.task ?? g.data) as Record<string, unknown> | undefined;
+      const st = t?.status as string | undefined;
+      if (st === "done") return { ok: true, via: "hermes", status: "done", output: String(t?.latest_summary || t?.result || "Done.") };
+      if (st === "blocked" || st === "failed" || st === "error") return { ok: false, via: "hermes", status: "failed", detail: String(t?.latest_summary || `Hermes task ${st}`) };
+      // Still running — surface a live progress hint from the task log.
+      let progress = "Working…";
+      try {
+        const l = await hermes.get<{ content?: string }>(`/api/plugins/kanban/tasks/${tid}/log`);
+        const p = progressFromLog(l.data?.content ?? "");
+        if (p) progress = p;
+      } catch { /* keep default */ }
+      return { ok: true, via: "hermes", status: "running", taskId: tid, progress };
+    } catch (e) {
+      return { ok: false, via: "hermes", status: "failed", detail: `Could not reach Hermes: ${(e as Error).message}` };
+    }
   });
 }

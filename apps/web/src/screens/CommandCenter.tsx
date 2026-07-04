@@ -4,7 +4,7 @@ import { useApi } from "../api/hooks";
 import { streamChat, api } from "../api/client";
 import { useSpeech, useVoiceOutput } from "../hooks/useSpeech";
 import type { ViewId } from "../components/AppShell";
-import type { Agent, FeedItem, SystemHealth, StatusStripItem, AgentRunResult } from "@jarvis/shared";
+import type { Agent, FeedItem, SystemHealth, StatusStripItem, CommandResult } from "@jarvis/shared";
 
 const ACCENT = "var(--jv-cyan)";
 
@@ -200,6 +200,7 @@ function VoiceCore({ onModeChange }: { onModeChange?: (active: boolean) => void 
   const [youText, setYouText] = useState("");
   const [reply, setReply] = useState("");
   const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState<string | null>(null); // live "what it's doing" while a Hermes task runs
   const [browser, setBrowser] = useState<{ url: string; label: string } | null>(null);
   // Voice output on by default; the operator can mute it. Persist the choice.
   const [voiceOut, setVoiceOut] = useState(() => localStorage.getItem("jv.voiceOut") !== "off");
@@ -242,9 +243,24 @@ function VoiceCore({ onModeChange }: { onModeChange?: (active: boolean) => void 
     let full = "";
     try {
       if (modeRef.current === "act") {
-        // ACT: grounded in this system's live state + executed on Hermes (tools).
-        const res = await api.post<AgentRunResult>("/api/command/run", { text: t });
-        full = res.ok ? res.output : (res.detail || "I couldn't complete that.");
+        // ACT: questions/drafting resolve instantly; real tasks run on Hermes and
+        // we poll for live progress ("what it's doing") until the result lands.
+        const res = await api.post<CommandResult>("/api/command/run", { text: t });
+        if (res.status === "running" && res.taskId) {
+          setProgress(res.progress || "Working…");
+          const deadline = Date.now() + 300_000; // up to 5 min of real work
+          let done: CommandResult | null = null;
+          while (Date.now() < deadline) {
+            await new Promise((r) => setTimeout(r, 3000));
+            const s = await api.post<CommandResult>("/api/command/status", { taskId: res.taskId });
+            if (s.status === "running") { setProgress(s.progress || "Working…"); continue; }
+            done = s; break;
+          }
+          setProgress(null);
+          full = done?.status === "done" ? (done.output || "Done.") : (done?.detail || "That took too long — it may still be finishing on Hermes.");
+        } else {
+          full = res.status === "done" ? (res.output || "") : (res.detail || "I couldn't complete that.");
+        }
         setReply(full);
       } else {
         // ASK: general Q&A (streamed).
@@ -258,6 +274,7 @@ function VoiceCore({ onModeChange }: { onModeChange?: (active: boolean) => void 
       setReply(full);
     } finally {
       setBusy(false);
+      setProgress(null);
       // Speak the finished reply aloud, ducking the mic so JARVIS doesn't
       // transcribe its own voice; resume listening when it's done.
       if (voiceOutRef.current && full.trim()) {
@@ -406,7 +423,16 @@ function VoiceCore({ onModeChange }: { onModeChange?: (active: boolean) => void 
               <Icon name="sparkles" size={13} />
             </span>
             <div style={{ padding: "9px 13px", borderRadius: "12px 12px 12px 3px", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)", font: "var(--fw-regular) 12.5px/1.5 var(--font-body)", color: "var(--jv-text-soft)" }}>
-              {reply || <span style={{ opacity: 0.5 }}>…</span>}
+              {reply
+                ? reply
+                : progress
+                  ? (
+                    <span style={{ display: "flex", alignItems: "center", gap: 8, color: "var(--jv-cyan-300)" }}>
+                      <span style={{ flex: "0 0 auto", display: "grid", placeItems: "center", animation: "jv-spin 1.1s linear infinite" }}><Icon name="loader" size={13} /></span>
+                      <span style={{ minWidth: 0 }}>{progress}</span>
+                    </span>
+                  )
+                  : <span style={{ opacity: 0.5 }}>…</span>}
             </div>
           </div>
         )}
