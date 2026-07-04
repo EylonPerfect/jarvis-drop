@@ -294,6 +294,21 @@ export interface DiscoverResult {
   source: "ai" | "template";
 }
 
+// ---- Meetings (Recall.ai meeting bot: join a live call, transcribe, speak) ----
+export interface MeetingTranscriptLine {
+  speaker?: string;
+  text: string;
+}
+export interface Meeting {
+  id: string; // Recall bot id
+  meetingUrl: string;
+  botName: string;
+  agentId?: string;
+  status: string; // joining | in_call | done | error | left | …
+  createdAt: string;
+  transcript?: MeetingTranscriptLine[];
+}
+
 // ---- Artifacts (per-agent department dashboard / roadmap) ----
 export interface ArtifactKPI {
   label: string;

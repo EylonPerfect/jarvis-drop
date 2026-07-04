@@ -22,6 +22,7 @@ import Ledger from "./screens/Ledger";
 import Integrations from "./screens/Integrations";
 import Company from "./screens/Company";
 import Artifacts from "./screens/Artifacts";
+import Meetings from "./screens/Meetings";
 
 export function App() {
   const [view, setView] = useState<ViewId>("command");
@@ -55,6 +56,9 @@ export function App() {
       break;
     case "approvals":
       body = <ApprovalsInbox />;
+      break;
+    case "meetings":
+      body = <Meetings />;
       break;
     case "permissions":
       body = <Permissions />;

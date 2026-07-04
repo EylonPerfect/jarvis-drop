@@ -28,6 +28,7 @@ import companyRoutes from "./routes/company.js";
 import integrationsRoutes from "./routes/integrations.js";
 import voiceRoutes from "./routes/voice.js";
 import artifactsRoutes from "./routes/artifacts.js";
+import meetingsRoutes from "./routes/meetings.js";
 
 const app = Fastify({ logger: true });
 
@@ -92,6 +93,7 @@ await app.register(companyRoutes);
 await app.register(integrationsRoutes);
 await app.register(voiceRoutes);
 await app.register(artifactsRoutes);
+await app.register(meetingsRoutes);
 
 // Optional single-process mode: serve the built web app + SPA fallback.
 if (config.serveWeb) {

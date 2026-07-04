@@ -252,6 +252,16 @@ CREATE TABLE IF NOT EXISTS agent_runs (
 );
 CREATE INDEX IF NOT EXISTS agent_runs_agent_idx ON agent_runs (agent_id, created_at DESC);
 
+-- Meetings an agent bot (Recall.ai) has joined. id = the Recall bot id.
+CREATE TABLE IF NOT EXISTS meetings (
+  id          TEXT PRIMARY KEY,
+  meeting_url TEXT NOT NULL,
+  bot_name    TEXT,
+  agent_id    TEXT,
+  status      TEXT,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- Real integration credentials (Gmail, Calendar, Slack, notetaker, ElevenLabs
 -- voice, CRM, Notion, Drive, demo env, …). `values` holds the connect-form
 -- fields as JSON; secret fields are stored here server-side and never returned

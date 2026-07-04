@@ -10,6 +10,7 @@ export type ViewId =
   | "agents"
   | "hire"
   | "approvals"
+  | "meetings"
   | "permissions"
   | "spend"
   | "ledger"
@@ -46,6 +47,7 @@ const SECTIONS: NavSection[] = [
         children: [
           { id: "agents", icon: "users", label: "Roster" },
           { id: "hire", icon: "user-plus", label: "Hire an Agent" },
+          { id: "meetings", icon: "video", label: "Meetings" },
           { id: "approvals", icon: "inbox", label: "Approvals" },
           { id: "permissions", icon: "shield", label: "Permissions" },
         ],
