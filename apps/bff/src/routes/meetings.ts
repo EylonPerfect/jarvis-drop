@@ -1,7 +1,17 @@
 import type { FastifyInstance } from "fastify";
 import { query, one } from "../db/pool.js";
 import { getIntegrationValues } from "./integrations.js";
+import { getActiveProvider, completeProviderChat } from "../lib/providers.js";
+import { ttsMp3 } from "../lib/tts.js";
+import { getCompany } from "./company.js";
+import { config } from "../config.js";
 import type { Meeting, MeetingTranscriptLine } from "@jarvis/shared";
+
+// Where Recall reaches our webhook (must be publicly reachable).
+const PUBLIC_BASE = (process.env.PRESENTER_BASE_URL || "https://jarvis.srv1797540.hstgr.cloud").replace(/\/$/, "");
+// Per-bot conversation guard: cooldown so the bot doesn't answer its own audio,
+// and a busy flag so it doesn't talk over itself. In-memory (best-effort).
+const convo = new Map<string, { busy: boolean; mutedUntil: number }>();
 
 // Recall.ai meeting bot: send an AI bot into a live Zoom/Meet/Teams call, watch
 // its status, and pull the transcript. Credentials come from the Integrations
@@ -37,6 +47,49 @@ function rowToMeeting(r: any): Meeting {
   return { id: r.id, meetingUrl: r.meeting_url, botName: r.bot_name ?? "", agentId: r.agent_id ?? undefined, status: r.status ?? "unknown", createdAt: r.created_at };
 }
 
+// Real-time transcription → our webhook, so the bot can converse. Needs a
+// transcript provider (meeting_captions = platform captions, no extra key) or
+// Recall drops the realtime_endpoints.
+function realtimeConfig() {
+  return {
+    transcript: { provider: { meeting_captions: {} } },
+    realtime_endpoints: [{ type: "webhook", url: `${PUBLIC_BASE}/api/meetings/webhook?t=${encodeURIComponent(config.bffApiKey ?? "open")}`, events: ["transcript.data"] }],
+  };
+}
+
+// Make a bot say something out loud in the call (TTS → Recall output_audio).
+async function speakInCall(botId: string, text: string): Promise<boolean> {
+  const rc = await recall();
+  if (!rc) return false;
+  const mp3 = await ttsMp3(text);
+  if (!mp3) return false;
+  try {
+    const r = await fetch(`${rc.base}/api/v1/bot/${botId}/output_audio/`, {
+      method: "POST",
+      headers: { authorization: `Token ${rc.key}`, "content-type": "application/json" },
+      body: JSON.stringify({ kind: "mp3", b64_data: mp3.toString("base64") }),
+    });
+    return r.ok;
+  } catch { return false; }
+}
+
+// Generate a short, spoken, grounded reply to something a participant said.
+async function replyTo(botId: string, said: string): Promise<string | null> {
+  const c = await getCompany();
+  const m = await one<{ agent_id: string | null }>(`SELECT agent_id FROM meetings WHERE id = $1`, [botId]);
+  let persona = `You are ${c.name}'s AI on a live call.`;
+  if (m?.agent_id) {
+    const a = await one<{ instructions: string | null; role: string | null; name: string | null }>(`SELECT instructions, role, name FROM agents WHERE id = $1`, [m.agent_id]);
+    if (a?.instructions) persona = a.instructions;
+    else if (a?.name) persona = `You are ${a.name}${a.role ? `, ${a.role}` : ""} at ${c.name}.`;
+  }
+  const active = await getActiveProvider();
+  if (!active) return null;
+  const sys = `${persona}\nYou are speaking OUT LOUD in a live video call. A participant just said something — respond helpfully in 1-2 short spoken sentences (natural to hear, no markdown, no lists). If they didn't ask anything answerable, reply briefly and warmly. Company: ${c.name} — ${c.coreBusiness || c.industry}.`;
+  const r = await completeProviderChat(active, [ { role: "system", content: sys }, { role: "user", content: said } ]);
+  return r.ok && r.content ? r.content.trim() : null;
+}
+
 export default async function meetingsRoutes(app: FastifyInstance) {
   // Send a bot into a meeting.
   app.post("/api/meetings/join", async (req, reply) => {
@@ -50,7 +103,7 @@ export default async function meetingsRoutes(app: FastifyInstance) {
       const r = await fetch(`${rc.base}/api/v1/bot/`, {
         method: "POST",
         headers: { authorization: `Token ${rc.key}`, "content-type": "application/json" },
-        body: JSON.stringify({ meeting_url: meetingUrl, bot_name: botName }),
+        body: JSON.stringify({ meeting_url: meetingUrl, bot_name: botName, recording_config: realtimeConfig() }),
       });
       const j = await r.json().catch(() => ({}));
       if (!r.ok) return reply.code(502).send({ error: `Recall rejected the request (${r.status})`, detail: JSON.stringify(j).slice(0, 300) });
@@ -114,5 +167,47 @@ export default async function meetingsRoutes(app: FastifyInstance) {
     }
     await query(`DELETE FROM meetings WHERE id = $1`, [id]).catch(() => {});
     return { ok: true };
+  });
+
+  // Make the bot say something in the call on demand (operator-triggered).
+  app.post("/api/meetings/:id/speak", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const text = ((req.body as { text?: string })?.text ?? "").toString().trim();
+    if (!text) return reply.code(400).send({ error: "text required" });
+    const ok = await speakInCall(id, text);
+    return ok ? { ok: true } : reply.code(502).send({ error: "Could not speak (check Recall + a voice provider, and that the bot is in the call)." });
+  });
+
+  // Recall real-time transcription webhook → the bot converses. Auth-exempt (the
+  // ?t token authorizes it); guarded against answering its own audio.
+  app.post("/api/meetings/webhook", async (req, reply) => {
+    const t = (req.query as { t?: string })?.t;
+    if (config.bffApiKey && t !== config.bffApiKey) return reply.code(401).send({ error: "unauthorized" });
+    const body = (req.body ?? {}) as any;
+    // Parse defensively across Recall payload shapes.
+    const data = body?.data ?? body;
+    const botId: string | undefined = data?.bot_id || data?.bot?.id || body?.bot_id;
+    const tr = data?.transcript ?? data?.data ?? data;
+    const isFinal = tr?.is_final ?? tr?.is_complete ?? true;
+    const text: string = (typeof tr?.text === "string" ? tr.text : Array.isArray(tr?.words) ? tr.words.map((w: any) => w?.text ?? "").join(" ") : "").trim();
+    reply.send({ ok: true }); // ack immediately; process async
+
+    if (!botId || !isFinal || text.length < 8) return;
+    const state = convo.get(botId) ?? { busy: false, mutedUntil: 0 };
+    if (state.busy || Date.now() < state.mutedUntil) return; // ignore our own echo / overlap
+    // Only respond to things that look addressed to us (question or a direct ask).
+    if (!/[?]|\b(what|how|why|when|can you|could you|tell me|show|explain|do you|walk|price|cost|demo)\b/i.test(text)) return;
+    state.busy = true; convo.set(botId, state);
+    try {
+      const answer = await replyTo(botId, text);
+      if (answer) {
+        await speakInCall(botId, answer);
+        // Mute for ~ the spoken duration so we don't transcribe+answer ourselves.
+        const secs = Math.min(30, Math.max(4, Math.round(answer.split(/\s+/).length / 2.5)));
+        convo.set(botId, { busy: false, mutedUntil: Date.now() + secs * 1000 });
+        return;
+      }
+    } catch { /* ignore */ }
+    convo.set(botId, { busy: false, mutedUntil: Date.now() + 2000 });
   });
 }

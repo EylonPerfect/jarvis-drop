@@ -72,7 +72,12 @@ export default async function presentRoutes(app: FastifyInstance) {
       const r = await fetch(`${rc.base}/api/v1/bot/`, {
         method: "POST",
         headers: { authorization: `Token ${rc.key}`, "content-type": "application/json" },
-        body: JSON.stringify({ meeting_url: meetingUrl, bot_name: b.botName?.trim() || `${company.name} AI`, output_media: { camera: { kind: "webpage", config: { url: presentUrl } } } }),
+        body: JSON.stringify({
+          meeting_url: meetingUrl,
+          bot_name: b.botName?.trim() || `${company.name} AI`,
+          output_media: { camera: { kind: "webpage", config: { url: presentUrl } } },
+          recording_config: { transcript: { provider: { meeting_captions: {} } }, realtime_endpoints: [{ type: "webhook", url: `${PRESENTER_BASE}/api/meetings/webhook?t=${encodeURIComponent(config.bffApiKey ?? "open")}`, events: ["transcript.data"] }] },
+        }),
       });
       const j = await r.json().catch(() => ({} as Record<string, unknown>));
       if (!r.ok) return reply.code(502).send({ error: `Recall rejected the request (${r.status})`, detail: JSON.stringify(j).slice(0, 300) });

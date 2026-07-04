@@ -53,6 +53,8 @@ app.addHook("onRequest", async (req, reply) => {
   // Presenter page runs inside Recall's headless browser (no login). Its GET
   // endpoints are authorized by the unguessable session id in the URL.
   if (req.method === "GET" && req.url.startsWith("/api/present/")) return;
+  // Recall posts real-time transcription here; authorized by the ?t token.
+  if (req.method === "POST" && req.url.startsWith("/api/meetings/webhook")) return;
   const auth = req.headers["authorization"];
   const provided =
     (req.headers["x-api-key"] as string | undefined) ??
