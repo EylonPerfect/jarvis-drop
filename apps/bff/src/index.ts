@@ -29,6 +29,7 @@ import integrationsRoutes from "./routes/integrations.js";
 import voiceRoutes from "./routes/voice.js";
 import artifactsRoutes from "./routes/artifacts.js";
 import meetingsRoutes from "./routes/meetings.js";
+import presentRoutes from "./routes/present.js";
 
 const app = Fastify({ logger: true });
 
@@ -49,6 +50,9 @@ app.addHook("onRequest", async (req, reply) => {
   if (!config.bffApiKey) return;
   if (req.url === "/api/health") return;
   if (req.method === "GET" && !req.url.startsWith("/api")) return; // static / SPA
+  // Presenter page runs inside Recall's headless browser (no login). Its GET
+  // endpoints are authorized by the unguessable session id in the URL.
+  if (req.method === "GET" && req.url.startsWith("/api/present/")) return;
   const auth = req.headers["authorization"];
   const provided =
     (req.headers["x-api-key"] as string | undefined) ??
@@ -94,6 +98,7 @@ await app.register(integrationsRoutes);
 await app.register(voiceRoutes);
 await app.register(artifactsRoutes);
 await app.register(meetingsRoutes);
+await app.register(presentRoutes);
 
 // Optional single-process mode: serve the built web app + SPA fallback.
 if (config.serveWeb) {

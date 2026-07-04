@@ -39,6 +39,8 @@ const fmtWhen = (iso: string) => {
 function SendBotForm({ onSent }: { onSent: (m: Meeting) => void }) {
   const [meetingUrl, setMeetingUrl] = useState("");
   const [botName, setBotName] = useState("");
+  const [topic, setTopic] = useState("");
+  const [mode, setMode] = useState<"record" | "present">("present");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -47,14 +49,19 @@ function SendBotForm({ onSent }: { onSent: (m: Meeting) => void }) {
     if (!url || sending) return;
     setSending(true);
     setError(null);
+    const name = botName.trim();
     try {
-      const name = botName.trim();
-      const m = await api.post<Meeting>("/api/meetings/join", { meetingUrl: url, botName: name || undefined });
-      setMeetingUrl("");
-      setBotName("");
-      onSent(m);
+      if (mode === "present") {
+        const r = await api.post<{ botId?: string }>("/api/meetings/present", { meetingUrl: url, topic: topic.trim() || undefined, botName: name || undefined });
+        setMeetingUrl(""); setTopic("");
+        onSent({ id: r.botId || "", meetingUrl: url, botName: name || "After Human AI", status: "presenting", createdAt: new Date().toISOString() });
+      } else {
+        const m = await api.post<Meeting>("/api/meetings/join", { meetingUrl: url, botName: name || undefined });
+        setMeetingUrl(""); setBotName("");
+        onSent(m);
+      }
     } catch {
-      setError("Couldn't send the bot. Check the meeting link and try again.");
+      setError(mode === "present" ? "Couldn't start the presentation. Check the link and try again." : "Couldn't send the bot. Check the meeting link and try again.");
     } finally {
       setSending(false);
     }
@@ -66,8 +73,21 @@ function SendBotForm({ onSent }: { onSent: (m: Meeting) => void }) {
       brackets
       bodyStyle={{ display: "flex", flexDirection: "column", gap: 12 }}
     >
+      {/* Mode: Present (bot speaks + shares the product) vs Record (join + transcribe) */}
+      <div style={{ display: "flex", gap: 4, padding: 3, borderRadius: "var(--r-pill)", background: "var(--jv-void)", border: "1px solid var(--jv-border-soft)", alignSelf: "flex-start" }}>
+        {([["present", "presentation", "Present live demo"], ["record", "captions", "Just record"]] as const).map(([m, ic, label]) => {
+          const on = mode === m;
+          return (
+            <button key={m} onClick={() => setMode(m)} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 12px", borderRadius: "var(--r-pill)", cursor: "pointer", border: "none", background: on ? "var(--grad-cyan)" : "transparent", color: on ? "var(--accent-contrast)" : "var(--jv-text-muted)", font: `${on ? "var(--fw-semibold)" : "var(--fw-medium)"} 11px var(--font-hud)`, letterSpacing: "0.06em", textTransform: "uppercase" }}>
+              <Icon name={ic} size={12} /> {label}
+            </button>
+          );
+        })}
+      </div>
       <p style={{ margin: 0, font: "var(--fw-regular) 13px/1.6 var(--font-body)", color: "var(--jv-text-soft)" }}>
-        Send an AI bot into a live call to record, transcribe, and (soon) speak. Paste a Zoom / Google Meet / Teams link.
+        {mode === "present"
+          ? "The AI joins the call, shares the live product on screen, and narrates a demo in your voice. Paste a Zoom / Meet / Teams link."
+          : "Send an AI bot into a live call to record + transcribe it. Paste a Zoom / Meet / Teams link."}
       </p>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 220px", gap: 12 }}>
         <Input
@@ -85,16 +105,25 @@ function SendBotForm({ onSent }: { onSent: (m: Meeting) => void }) {
           onKeyDown={(e) => e.key === "Enter" && send()}
         />
       </div>
+      {mode === "present" && (
+        <Input
+          icon={<Icon name="sparkles" size={15} />}
+          placeholder="What to focus the demo on (optional) — e.g. 'outbound sourcing for a Head of Talent'"
+          value={topic}
+          onChange={(e) => setTopic(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && send()}
+        />
+      )}
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
         <div style={{ flex: 1 }} />
         <Button
           size="md"
           variant="primary"
-          icon={<Icon name={sending ? "loader" : "video"} size={14} />}
+          icon={<Icon name={sending ? "loader" : mode === "present" ? "presentation" : "video"} size={14} />}
           disabled={sending || meetingUrl.trim().length === 0}
           onClick={send}
         >
-          {sending ? "Sending…" : "Send bot"}
+          {sending ? (mode === "present" ? "Starting…" : "Sending…") : mode === "present" ? "Send AI presenter" : "Send bot"}
         </Button>
       </div>
       {error && (
