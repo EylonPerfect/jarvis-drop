@@ -161,6 +161,8 @@ export default function Readiness() {
   // either way. `mode === null` means "follow the default".
   const [mode, setMode] = useState<"building" | "live" | null>(null);
   const effMode: "building" | "live" = mode ?? (liveOrReady ? "live" : "building");
+  // agent switcher now lives in the agent header (not the global nav)
+  const [switchOpen, setSwitchOpen] = useState(false);
 
   // workspace deep-links — real app nav targets the shell already dispatches
   const workspaces: { view: string; nm: string; d: string; icon: ReactElement }[] = [
@@ -284,12 +286,6 @@ export default function Readiness() {
         active="readiness"
         theme={theme}
         onTheme={() => setTheme(theme === "dark" ? "light" : "dark")}
-        context={
-          <select value={agentId} onChange={(e) => setAgentId(e.target.value)} style={{ minWidth: 190, height: 36, borderRadius: 10, border: "1px solid var(--border)", background: "var(--sunk)", color: "var(--ink1)", fontFamily: "inherit", fontSize: 12.5, padding: "0 10px" }}>
-            {agents.length === 0 && <option value="">No clones yet</option>}
-            {agents.map((a) => <option key={a.id} value={a.id}>{a.name}{a.role ? ` — ${a.role}` : ""}</option>)}
-          </select>
-        }
       />
 
       <div className="app">
@@ -304,6 +300,27 @@ export default function Readiness() {
                 <h1>{data.name}</h1>
                 <p style={{ marginTop: 2 }}>{agent?.role ? `${agent.role} clone` : "Sales clone"}, mirrored from a top performer.</p>
               </div>
+              {agents.length > 1 && (
+                <div style={{ marginLeft: "auto", position: "relative" }}>
+                  <button onClick={() => setSwitchOpen((o) => !o)} title="Switch to another agent" style={{ display: "inline-flex", alignItems: "center", gap: 7, height: 38, padding: "0 15px", borderRadius: 9999, border: "1px solid var(--border)", background: "var(--card)", color: "var(--ink1)", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                    <span className="material-symbols-rounded" style={{ fontSize: 17 }}>swap_horiz</span>Switch agent
+                    <span className="material-symbols-rounded" style={{ fontSize: 16 }}>expand_more</span>
+                  </button>
+                  {switchOpen && (
+                    <>
+                      <div onClick={() => setSwitchOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 40 }} />
+                      <div style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 41, minWidth: 230, background: "var(--card)", border: "1px solid var(--border)", borderRadius: 12, boxShadow: "var(--shadow-lg)", padding: 5, maxHeight: 340, overflowY: "auto" }}>
+                        {agents.map((a) => (
+                          <button key={a.id} onClick={() => { setAgentId(a.id); setSwitchOpen(false); }} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 11px", borderRadius: 9, border: "none", background: a.id === agentId ? "var(--ghost)" : "transparent", color: "var(--ink1)", fontSize: 13, fontWeight: a.id === agentId ? 800 : 600, cursor: "pointer", fontFamily: "inherit", textAlign: "left" }}>
+                            {a.id === agentId ? <span className="material-symbols-rounded" style={{ fontSize: 15, color: "var(--success-ink)" }}>check</span> : <span style={{ width: 15 }} />}
+                            <span style={{ flex: 1, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{a.name}{a.role ? ` — ${a.role}` : ""}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* score dial + plain sentence — shared hero */}
