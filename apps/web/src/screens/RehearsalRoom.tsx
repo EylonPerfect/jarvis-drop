@@ -517,58 +517,6 @@ export default function RehearsalRoom() {
   }
 
 
-  // ---- reshape the whole beat sheet from one instruction (diff-previewed) ----
-  const [reshapeOpen, setReshapeOpen] = useState(false);
-  const [reshapeText, setReshapeText] = useState("");
-  const [reshapeBusy, setReshapeBusy] = useState(false);
-  const [reshapeErr, setReshapeErr] = useState("");
-  const [reshapeProp, setReshapeProp] = useState<Playbook | null>(null);
-  function reshapeDiff(cur: Stage[], prop: Stage[]): { name: string; label: string }[] {
-    const key = (st: Stage, i: number) => String((st as { id?: string }).id ?? `i${i}`);
-    const curBy = new Map(cur.map((st, i) => [key(st, i), { st, i }]));
-    const propIds = new Set(prop.map((st, i) => key(st, i)));
-    const rows = prop.map((st, i) => {
-      const k = key(st, i);
-      const old = curBy.get(k);
-      let label = "added";
-      if (old) label = JSON.stringify(old.st) === JSON.stringify(st) ? (old.i === i ? "unchanged" : "moved") : "changed";
-      return { name: String(st.name ?? `Beat ${i + 1}`), label };
-    });
-    for (const [k, v] of curBy) if (!propIds.has(k)) rows.push({ name: String(v.st.name ?? "beat"), label: "removed" });
-    return rows;
-  }
-  async function proposeReshape() {
-    const t = reshapeText.trim();
-    if (!t || reshapeBusy || !agentId) return;
-    setReshapeBusy(true); setReshapeErr(""); setReshapeProp(null);
-    try {
-      const res = await fetch(`${api.base}/api/clones/${agentId}/playbook/reshape`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(getAccessKey() ? { "X-API-Key": getAccessKey() } : {}) },
-        body: JSON.stringify({ instruction: t }),
-      });
-      const j = (await res.json().catch(() => ({}))) as { playbook?: Playbook; error?: string };
-      if (!res.ok || !j.playbook) throw new Error(j.error || `reshape → ${res.status}`);
-      setReshapeProp(j.playbook);
-    } catch (e) { setReshapeErr(e instanceof Error ? e.message : String(e)); }
-    setReshapeBusy(false);
-  }
-  async function applyReshape() {
-    if (!reshapeProp || reshapeBusy || !agentId) return;
-    setReshapeBusy(true); setReshapeErr("");
-    try {
-      const cur = await api.get<{ playbook: Playbook }>(`/api/clones/${agentId}/playbook`);
-      const gv = (Number((cur.playbook as Record<string, unknown>)?.graphVersion) || 1) + 1;
-      const next = { ...cur.playbook, ...reshapeProp, graphVersion: gv } as Playbook;
-      const r = await api.put<{ ok: boolean; playbook: Playbook }>(`/api/clones/${agentId}/playbook`, { playbook: next });
-      setPlaybook(r.playbook ?? next);
-      const gvs = ((r.playbook ?? next) as Record<string, unknown>).graphVersion;
-      setGraphVersion(typeof gvs === "number" ? gvs : gv);
-      setReshapeOpen(false); setReshapeProp(null); setReshapeText("");
-    } catch (e) { setReshapeErr(e instanceof Error ? e.message : String(e)); }
-    setReshapeBusy(false);
-  }
-
   // go live: reveal the hot gear; start the sandbox if pre-warm didn't
   async function goLive() {
     setLive(true);
@@ -1603,35 +1551,6 @@ export default function RehearsalRoom() {
         </div>
       )}
 
-      {/* ---------- reshape by instruction: propose -> diff preview -> confirm ---------- */}
-      {reshapeOpen && (
-        <div style={{ position: "fixed", inset: 0, zIndex: 70, background: "rgba(2,2,20,.6)", display: "grid", placeItems: "center" }} onClick={() => !reshapeBusy && setReshapeOpen(false)}>
-          <div onClick={(e) => e.stopPropagation()} style={{ width: 560, maxWidth: "94vw", maxHeight: "84vh", overflowY: "auto", background: "var(--card)", borderRadius: 18, boxShadow: "var(--shadow)", padding: "22px 24px" }}>
-            <div style={{ fontSize: 16, fontWeight: 800, marginBottom: 4 }}>Reshape the beat sheet</div>
-            <div style={{ fontSize: 12, color: "var(--ink2)", lineHeight: 1.5, marginBottom: 12 }}>One instruction reshapes the WHOLE flow — you get a per-beat diff before anything is applied.</div>
-            <div style={{ display: "flex", gap: 8 }}>
-              <input value={reshapeText} onChange={(e) => setReshapeText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") void proposeReshape(); }} placeholder={"e.g. move pricing before autopilot"} style={{ flex: 1, height: 40, borderRadius: 10, border: "1px solid var(--border)", background: "var(--sunk)", color: "var(--ink1)", fontFamily: "inherit", fontSize: 12.5, padding: "0 12px" }} />
-              <button onClick={() => void proposeReshape()} disabled={reshapeBusy || !reshapeText.trim()} style={{ height: 40, padding: "0 16px", borderRadius: 9999, border: "none", background: "var(--purple)", color: "#fff", fontSize: 12.5, fontWeight: 800, cursor: "pointer", opacity: reshapeBusy || !reshapeText.trim() ? 0.6 : 1, fontFamily: "inherit" }}>{reshapeBusy && !reshapeProp ? "Reshaping…" : "Preview"}</button>
-            </div>
-            {reshapeErr && <div style={{ fontSize: 12, fontWeight: 700, color: "var(--error-ink)", marginTop: 10 }}>{reshapeErr}</div>}
-            {reshapeProp && (
-              <div style={{ marginTop: 14 }}>
-                <div style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: ".07em", textTransform: "uppercase", color: "var(--ink3)", marginBottom: 8 }}>Proposed flow · per-beat diff</div>
-                {reshapeDiff(stages, (reshapeProp.stages ?? []) as Stage[]).map((r, i) => (
-                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", borderRadius: 9, background: i % 2 ? "transparent" : "var(--sunk)" }}>
-                    <span style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: ".05em", padding: "1px 8px", borderRadius: 9999, background: r.label === "added" ? "var(--success-soft)" : r.label === "removed" ? "var(--error-soft)" : r.label === "changed" ? "var(--purple-soft)" : r.label === "moved" ? "rgba(0,187,255,.15)" : "var(--ghost)", color: r.label === "added" ? "var(--success-ink)" : r.label === "removed" ? "var(--error-ink)" : r.label === "changed" ? "var(--purple-ink)" : r.label === "moved" ? "var(--decor)" : "var(--ink3)" }}>{r.label.toUpperCase()}</span>
-                    <span style={{ fontSize: 12, fontWeight: 600, textDecoration: r.label === "removed" ? "line-through" : "none", opacity: r.label === "removed" ? 0.6 : 1 }}>{r.name}</span>
-                  </div>
-                ))}
-                <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 14 }}>
-                  <button onClick={() => void applyReshape()} disabled={reshapeBusy} style={{ height: 42, padding: "0 20px", borderRadius: 9999, border: "none", background: "var(--accent)", color: "#fff", fontSize: 13, fontWeight: 800, cursor: "pointer", opacity: reshapeBusy ? 0.6 : 1, fontFamily: "inherit" }}>{reshapeBusy ? "Applying…" : "Confirm — apply this flow"}</button>
-                  <button onClick={() => { setReshapeProp(null); }} disabled={reshapeBusy} style={{ background: "none", border: "none", color: "var(--ink3)", fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Discard proposal</button>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
 
       {/* ---------- tuning drawer: the studio, absorbed (both gears) ---------- */}
       {tuneOpen && spec && (
@@ -2256,8 +2175,7 @@ export default function RehearsalRoom() {
                   {stages.length ? `${stages.length} beat${stages.length === 1 ? "" : "s"} · graph v${graphVersion}` : `graph v${graphVersion}`}
                 </span>
                 {dropNote && <span style={{ fontSize: 10.5, fontWeight: 700, color: dropNote.startsWith("Drop failed") ? "var(--error-ink)" : "var(--success-ink)" }}>{dropNote}</span>}
-                <button onClick={() => { setReshapeOpen(true); setReshapeProp(null); setReshapeErr(""); }} style={{ marginLeft: "auto", fontSize: 11, fontWeight: 700, color: "var(--purple-ink)", background: "none", border: "none", ...btnFont }}>Reshape by instruction</button>
-                <button onClick={() => nav("screenmap")} style={{ fontSize: 11, fontWeight: 700, color: "var(--decor)", background: "none", border: "none", ...btnFont }}>Edit storyboard</button>
+                <button onClick={() => nav("screenmap")} style={{ marginLeft: "auto", fontSize: 11, fontWeight: 700, color: "var(--decor)", background: "none", border: "none", ...btnFont }}>Edit storyboard</button>
               </div>
               {stages.length === 0 ? (
                 <div style={{ fontSize: 11.5, color: "var(--ink3)", padding: "6px 2px" }}>No call graph yet. Build one in the screen map and the beats show up here.</div>
@@ -2313,7 +2231,7 @@ export default function RehearsalRoom() {
                 Jump {firstName} to this beat
               </button>
             )}
-            <button onClick={() => { setBeatMenu(null); nav("screenmap"); }} style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 10px", borderRadius: 9, border: "none", background: "transparent", color: "var(--ink1)", fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", textAlign: "left" }}>
+            <button onClick={() => { const i = beatMenu.i; setBeatMenu(null); try { localStorage.setItem("sb_open_beat", String(i)); } catch {} nav("screenmap"); }} style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 10px", borderRadius: 9, border: "none", background: "transparent", color: "var(--ink1)", fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", textAlign: "left" }}>
               <span className="material-symbols-rounded" style={{ fontSize: 16 }}>edit_note</span>
               Edit in storyboard
             </button>
