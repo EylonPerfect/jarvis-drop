@@ -1524,9 +1524,10 @@ export default function RehearsalRoom() {
           {(agent?.name?.[0] ?? "?").toUpperCase()}
         </div>
         <div>
-          <h1 style={{ fontSize: 15.5, fontWeight: 800, letterSpacing: "-.02em", margin: 0 }}>{agent?.name ?? "Calibration room"}</h1>
+          <div style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--ink3)", marginBottom: 1 }}>Calibration Room</div>
+          <h1 style={{ fontSize: 15.5, fontWeight: 800, letterSpacing: "-.02em", margin: 0 }}>{agent?.name ?? "Pick a clone"}</h1>
           <div style={{ fontSize: 11, color: "var(--ink3)", fontWeight: 600 }}>
-            {agent ? `${agent.role ? `${agent.role} · ` : ""}rehearse with voice + the real screen, then run the call` : "pick a clone to calibrate"}
+            {agent ? (agent.role ?? "") : "pick a clone to calibrate"}
           </div>
         </div>
         <span style={{ display: "inline-flex", alignItems: "stretch", borderRadius: 9999, overflow: "hidden" }}>
@@ -1621,15 +1622,9 @@ export default function RehearsalRoom() {
         )}
       </header>
 
-      {/* ---------- page title (mode toggle now lives in the header row) ---------- */}
-      {statusLoaded && (
-        <div style={{ flexShrink: 0, padding: "14px 18px 0" }}>
-          <div className="page-h" style={{ padding: "0 0 10px" }}>
-            <h1 style={{ fontSize: 26, fontWeight: 800, letterSpacing: "-.02em" }}>Calibration Room</h1>
-            <p style={{ margin: "6px 0 0", fontSize: 14, color: "var(--ink2)" }}>Rehearse with voice and the real screen, then run the call.</p>
-          </div>
-        </div>
-      )}
+      {/* Screen identity (“Calibration Room”) now lives as an eyebrow in the
+          header above the clone name — the big title block was redundant with
+          the header and cost two rows before any content. */}
 
       {/* ---------- one-click teach: demonstrated steps → beat actions ---------- */}
       {teachSteps !== null && (
