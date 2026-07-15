@@ -11,6 +11,28 @@ export type ViewId =
   | "hire"
   | "approvals"
   | "meetings"
+  | "workstation"
+  | "livecall"
+  | "studio"
+  | "debrief"
+  | "rehearsal"
+  | "workspace"
+  | "modelsettings"
+  | "landing"
+  | "pricing"
+  | "agentshome"
+  | "echo"
+  | "clonerep"
+  | "pdsstudio"
+  | "drillmode"
+  | "momenttrainer"
+  | "certification"
+  | "readiness"
+  | "connections"
+  | "precall"
+  | "director"
+  | "democanvas"
+  | "screenmap"
   | "permissions"
   | "spend"
   | "ledger"
@@ -37,6 +59,25 @@ const HOME: Leaf = { id: "command", icon: "layout-grid", label: "Command Center"
 
 const SECTIONS: NavSection[] = [
   {
+    header: "Perfect",
+    items: [
+      { id: "agentshome", icon: "users", label: "Home" },
+      { id: "clonerep", icon: "user-plus", label: "Clone a Rep" },
+      { id: "rehearsal", icon: "clapperboard", label: "Calibration Room" },
+      { id: "momenttrainer", icon: "target", label: "Moment Trainer" },
+      { id: "drillmode", icon: "zap", label: "Drill Mode" },
+      { id: "screenmap", icon: "monitor", label: "Screen Map" },
+      { id: "certification", icon: "badge-check", label: "Quality checks" },
+      { id: "precall", icon: "list-checks", label: "Pre-call Check" },
+      { id: "debrief", icon: "inbox", label: "Debrief" },
+      { id: "echo", icon: "activity", label: "Echo Dashboard" },
+      { id: "landing", icon: "globe", label: "Landing Page" },
+      { id: "pricing", icon: "circle-dollar-sign", label: "Pricing Page" },
+      { id: "workspace", icon: "briefcase", label: "Agent Workspace" },
+      { id: "modelsettings", icon: "cpu", label: "Model Settings" },
+    ],
+  },
+  {
     header: "Agents",
     items: [
       {
@@ -48,6 +89,10 @@ const SECTIONS: NavSection[] = [
           { id: "agents", icon: "users", label: "Roster" },
           { id: "hire", icon: "user-plus", label: "Hire an Agent" },
           { id: "meetings", icon: "video", label: "Meetings" },
+          { id: "workstation", icon: "monitor", label: "Workstation" },
+          { id: "livecall", icon: "phone-call", label: "Live Call" },
+          { id: "pdsstudio", icon: "sliders-horizontal", label: "Calibration Room" },
+          { id: "debrief", icon: "badge-check", label: "Debrief" },
           { id: "approvals", icon: "inbox", label: "Approvals" },
           { id: "permissions", icon: "shield", label: "Permissions" },
         ],
