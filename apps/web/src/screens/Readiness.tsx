@@ -23,7 +23,7 @@ import { KpiStrip, TodayCard, EmailCard, SlackCard, GoalsCard, ConnectedCard } f
 // ============================================================
 
 type Agent = { id: string; name: string; role?: string; buildTrack?: string };
-type Approval = { id: string; kind: string; title: string; detail: string; evidence: string; action: string; ready: boolean; blocked?: string; mode?: "judgment" | "auto" };
+type Approval = { id: string; kind: string; title: string; detail: string; evidence: string; action: string; ready: boolean; blocked?: string };
 type ReadinessData = {
   agentId: string; name: string; score: number; stage: string; sentence: string;
   approvals: Approval[]; activity: string[]; promoteUnlocked: boolean;
@@ -46,15 +46,9 @@ const KIND_META: Record<string, { cls: string; label: string; btn: string }> = {
   coach: { cls: "coach", label: "Coaching", btn: "" },
   measure: { cls: "promote", label: "Measure", btn: "green" },
 };
-// path-to-live spine — friendly labels mapped 1:1 to the real stage values,
-// so the clone's current position and completed steps come straight off `stage`
-const SPINE: { key: string; label: string }[] = [
-  { key: "learning", label: "Learn" },
-  { key: "rehearsing", label: "Rehearse" },
-  { key: "ready-to-review", label: "Review" },
-  { key: "live", label: "Go live" },
-];
-const HERE: Record<string, number> = { "learning": 0, "rehearsing": 1, "ready-to-review": 2, "live": 3 };
+// lifecycle spine — mark done/here from the real stage
+const SPINE = ["Ingest", "Build", "Calibrate", "Certify", "Run", "Learn"];
+const HERE: Record<string, number> = { "learning": 1, "rehearsing": 2, "ready-to-review": 3, "live": 4 };
 
 const btnFont: CSSProperties = { fontFamily: "inherit", cursor: "pointer" };
 
@@ -151,7 +145,7 @@ export default function Readiness() {
   }, [data?.score]);
   const running = pipeline?.state === "running";
   const startedMin = pipeline?.startedAt ? Math.max(0, Math.round((Date.now() - new Date(pipeline.startedAt).getTime()) / 60000)) : null;
-  const hereIndex = HERE[stageKey] ?? 1;
+  const hereIndex = HERE[stageKey] ?? 2;
 
   const first: string = (data ? data.name.split(/\s+/)[0] : agent?.name?.split(/\s+/)[0]) ?? "the clone";
   const readyCount = data ? data.approvals.filter((a) => a.ready).length : 0;
@@ -159,6 +153,14 @@ export default function Readiness() {
   // the live/ready gate — the clone is running for real, OR promotion has been
   // unlocked; both signals come straight off the fetched readiness object.
   const liveOrReady = data?.stage === "live" || data?.promoteUnlocked === true;
+
+  // Building ⇄ Live: the agent screen splits into a "get it ready" view
+  // (approvals · scorecard · workspaces · history) and an operational "on the
+  // job" view (KPIs · today · email · goals · accounts · Slack). Default follows
+  // state — live/ready opens in Live — and the toggle lets the operator switch
+  // either way. `mode === null` means "follow the default".
+  const [mode, setMode] = useState<"building" | "live" | null>(null);
+  const effMode: "building" | "live" = mode ?? (liveOrReady ? "live" : "building");
 
   // workspace deep-links — real app nav targets the shell already dispatches
   const workspaces: { view: string; nm: string; d: string; icon: ReactElement }[] = [
@@ -175,16 +177,7 @@ export default function Readiness() {
   // "Needs your judgment" — approvals queue (mapping, sort, locked logic, handlers intact)
   const approvalsSection = (d: ReadinessData): ReactElement => (
     <>
-      {(() => {
-        // Header follows the ready items' mode so it never says "needs your
-        // judgment" over an automated next step (e.g. Score against the call).
-        const readyAps = d.approvals.filter((a) => a.ready);
-        const hdr = readyAps.length === 0 ? "Needs your judgment"
-          : readyAps.every((a) => a.mode === "auto") ? "Next step"
-          : readyAps.every((a) => a.mode === "judgment") ? "Needs your judgment"
-          : "What's next";
-        return <div className="sec-h">{hdr}{readyAps.length > 0 ? ` · ${readyAps.length}` : ""}</div>;
-      })()}
+      <div className="sec-h">Needs your judgment{readyCount > 0 ? ` · ${readyCount}` : ""}</div>
       {actNote && <div style={{ fontSize: 12.5, fontWeight: 700, color: actNote.ok ? "var(--success-ink)" : "var(--error-ink)", margin: "0 4px 12px" }}>{actNote.text}</div>}
 
       {d.approvals.length === 0 && (
@@ -193,41 +186,14 @@ export default function Readiness() {
         </div>
       )}
 
-      {[...d.approvals].sort((a, b) => Number(b.ready) - Number(a.ready)).map((a, idx) => {
+      {[...d.approvals].sort((a, b) => Number(b.ready) - Number(a.ready)).map((a) => {
         const km = KIND_META[a.kind] ?? KIND_META.coach;
         const busy = actBusy === a.id;
         const eviOpen = openEvidence === a.id;
+        const btnClass = `btn sm${km.btn ? ` ${km.btn}` : ""}`;
         const coachStyle: CSSProperties | undefined = a.kind === "coach" ? { borderColor: "var(--decor)", color: "var(--decor)" } : undefined;
-
-        // Only the TOP ready card is the primary CTA (ready items sort first, so
-        // idx 0 is it): accent ring + full-size button + bright eyebrow. Other
-        // ready cards stay plain with a muted eyebrow and a small button;
-        // blocked cards go greyed.
-        const isPrimary = a.ready && idx === 0;
-
-        // typed framing eyebrow — driven by mode + ready. `judgment` = a human
-        // decision (gold/accent); `auto` = the system's next step (neutral/blue).
-        // A blocked item is "IN PROGRESS" if its reason implies live work, else "LOCKED".
-        const inProgress = !a.ready && /rehearsing|now|updates/i.test(a.blocked || "");
-        const eyebrow = a.ready
-          ? (a.mode === "judgment"
-            ? { text: "NEEDS YOUR JUDGMENT", color: isPrimary ? "var(--warning)" : "var(--ink3)" }
-            : { text: "NEXT STEP", color: isPrimary ? "var(--decor)" : "var(--ink3)" })
-          : (inProgress
-            ? { text: "IN PROGRESS", color: "var(--decor)" }
-            : { text: "LOCKED", color: "var(--ink3)" });
-
-        const accentVar = a.mode === "judgment" ? "var(--warning)" : "var(--decor)";
-        const cardStyle: CSSProperties = isPrimary
-          ? { borderColor: accentVar, boxShadow: `inset 0 0 0 1px ${accentVar}` }
-          : a.ready ? {} : { opacity: 0.62 };
-        const readyBtnClass = isPrimary
-          ? `btn${km.btn ? ` ${km.btn}` : ""}`
-          : `btn sm${km.btn ? ` ${km.btn}` : ""}`;
-
         return (
-          <div key={a.id} className="card approval" style={cardStyle}>
-            <div style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: ".07em", color: eyebrow.color, marginBottom: 6 }}>{eyebrow.text}</div>
+          <div key={a.id} className="card approval" style={a.ready ? undefined : { opacity: 0.62 }}>
             <div className="top">
               <span className={`kind ${km.cls}`}>{km.label}</span>
               {a.ready && a.kind === "corrections" && (
@@ -249,7 +215,7 @@ export default function Readiness() {
                     <span className="evi" onClick={() => setOpenEvidence(eviOpen ? null : a.id)}>{eviOpen ? "Hide evidence" : "See the evidence"}</span>
                   )}
                   <span className="spacer" />
-                  <button className={readyBtnClass} style={{ ...btnFont, ...coachStyle, fontWeight: 800, opacity: actBusy && !busy ? 0.5 : 1 }} onClick={() => void act(a)} disabled={!!actBusy}>
+                  <button className={btnClass} style={{ ...btnFont, ...coachStyle, opacity: actBusy && !busy ? 0.5 : 1 }} onClick={() => void act(a)} disabled={!!actBusy}>
                     {busy ? (a.kind === "promote" ? "Running the checks…" : "Working…") : a.action}
                   </button>
                 </div>
@@ -263,8 +229,6 @@ export default function Readiness() {
                   <svg className="i sm" viewBox="0 0 24 24"><path d="M7 11V7a5 5 0 0 1 10 0v4" /><rect x="3" y="11" width="18" height="11" rx="2" /></svg>
                   {a.blocked || "Not available yet"}
                 </span>
-                <span className="spacer" />
-                <button className="btn sm" style={{ ...btnFont, cursor: "not-allowed", opacity: 0.5 }} disabled>{a.action}</button>
               </div>
             )}
           </div>
@@ -296,7 +260,7 @@ export default function Readiness() {
         <div className="stat"><span className="mut">Quality checks</span><b>{d.components.checks.done}/{d.components.checks.of}</b></div>
         {d.components.match !== null && <div className="stat"><span className="mut">Sounds like the real rep</span><b>{d.components.match}%</b></div>}
         {d.components.resilience !== null && <div className="stat"><span className="mut">Holds up under pressure</span><b>{d.components.resilience}%</b></div>}
-        {d.components.fidelity !== null && <div className="stat" style={{ borderBottom: 0 }}><span className="mut">Real-call match</span><b>{d.components.fidelity}%</b></div>}
+        {d.components.fidelity !== null && <div className="stat" style={{ borderBottom: 0 }}><span className="mut">Rehearsal match</span><b>{d.components.fidelity}%</b></div>}
       </div>
     </div>
   );
@@ -320,6 +284,12 @@ export default function Readiness() {
         active="readiness"
         theme={theme}
         onTheme={() => setTheme(theme === "dark" ? "light" : "dark")}
+        context={
+          <select value={agentId} onChange={(e) => setAgentId(e.target.value)} style={{ minWidth: 190, height: 36, borderRadius: 10, border: "1px solid var(--border)", background: "var(--sunk)", color: "var(--ink1)", fontFamily: "inherit", fontSize: 12.5, padding: "0 10px" }}>
+            {agents.length === 0 && <option value="">No clones yet</option>}
+            {agents.map((a) => <option key={a.id} value={a.id}>{a.name}{a.role ? ` — ${a.role}` : ""}</option>)}
+          </select>
+        }
       />
 
       <div className="app">
@@ -327,21 +297,13 @@ export default function Readiness() {
 
         {!loading && data && (
           <>
-            {/* header: who this clone is — shared by both views. The agent
-                switcher lives here in the body (not the nav header), right-aligned. */}
+            {/* header: who this clone is — shared by both views */}
             <div className="page-h" style={{ display: "flex", alignItems: "center", gap: 14 }}>
               <div style={{ width: 52, height: 52, borderRadius: 15, background: "linear-gradient(140deg,#A342FF,#FF0660)", color: "#fff", display: "grid", placeItems: "center", fontWeight: 800, fontSize: 19 }}>{initials(data.name)}</div>
               <div>
                 <h1>{data.name}</h1>
                 <p style={{ marginTop: 2 }}>{agent?.role ? `${agent.role} clone` : "Sales clone"}, mirrored from a top performer.</p>
               </div>
-              <label style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--ink3)" }}>
-                Viewing
-                <select value={agentId} onChange={(e) => setAgentId(e.target.value)} style={{ minWidth: 190, height: 38, borderRadius: 10, border: "1px solid var(--border)", background: "var(--sunk)", color: "var(--ink1)", fontFamily: "inherit", fontSize: 13, padding: "0 10px" }}>
-                  {agents.length === 0 && <option value="">No clones yet</option>}
-                  {agents.map((a) => <option key={a.id} value={a.id}>{a.name}{a.role ? ` — ${a.role}` : ""}</option>)}
-                </select>
-              </label>
             </div>
 
             {/* score dial + plain sentence — shared hero */}
@@ -371,18 +333,17 @@ export default function Readiness() {
                     <span className="material-symbols-rounded" style={{ fontSize: 18 }}>tune</span>Open the Calibration Room
                   </button>
                 )}
-                {/* path-to-live spine lives inside the hero so the card reads as one unit */}
-                <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: ".08em", textTransform: "uppercase", color: "var(--ink3)", marginTop: 22, marginBottom: 4 }}>Path to live</div>
-                <div className="spine-mini" style={{ marginTop: 6 }}>
-                  {SPINE.map((step, i) => {
+                {/* lifecycle spine lives inside the hero so the card reads as one unit */}
+                <div className="spine-mini" style={{ marginTop: 20 }}>
+                  {SPINE.map((label, i) => {
                     const done = i < hereIndex;
                     const here = i === hereIndex;
                     const nodeCls = `sm-node${done ? " done" : here ? " here" : ""}`;
                     return (
-                      <div key={step.key} style={{ display: "contents" }}>
+                      <div key={label} style={{ display: "contents" }}>
                         <div className={nodeCls}>
                           <div className="c">{done ? <Check /> : here ? "●" : i + 1}</div>
-                          <div className="t">{step.label}</div>
+                          <div className="t">{label}</div>
                         </div>
                         {i < SPINE.length - 1 && <div className={`sm-bar${i < hereIndex - 1 ? " done" : ""}`} />}
                       </div>
@@ -390,6 +351,16 @@ export default function Readiness() {
                   })}
                 </div>
               </div>
+            </div>
+
+            {/* Building ⇄ Live — split the "get it ready" blocks from the "on the job" blocks */}
+            <div className="modeseg" style={{ marginTop: 14 }}>
+              <button className={effMode === "building" ? "on" : undefined} onClick={() => setMode("building")}>
+                <span className="material-symbols-rounded" style={{ fontSize: 17 }}>construction</span>Building
+              </button>
+              <button className={effMode === "live" ? "on livemode" : undefined} onClick={() => setMode("live")}>
+                <span className="material-symbols-rounded" style={{ fontSize: 17 }}>rocket_launch</span>Live
+              </button>
             </div>
 
             {/* pipeline narrative while the machine works — shared */}
@@ -415,40 +386,36 @@ export default function Readiness() {
               </div>
             )}
 
-            {liveOrReady ? (
-              // ---- MERGED operational hub (live / ready-to-promote) ----
+            {effMode === "live" ? (
+              // ---- LIVE mode — the operational hub (the clone on the job) ----
               <>
                 {/* KPI strip — full width, above the split */}
                 <KpiStrip />
 
                 <div className="split" style={{ marginTop: 8 }}>
-                  {/* LEFT: what needs you + what it's doing today */}
+                  {/* LEFT: what it's doing today */}
                   <div>
-                    {approvalsSection(data)}
                     <TodayCard />
                     <EmailCard />
                   </div>
 
-                  {/* RIGHT: status + control rail (mockup order) */}
+                  {/* RIGHT: goals + connected accounts + Slack */}
                   <div>
-                    {scorecardSection(data)}
-                    {workspacesSection()}
                     <GoalsCard agentId={agentId} />
                     <ConnectedCard firstName={first} />
                     <SlackCard />
-                    {activitySection(data)}
                   </div>
                 </div>
               </>
             ) : (
-              // ---- PRE-READY view — unchanged original layout ----
+              // ---- BUILDING mode — get the clone ready ----
               <>
-                {/* split: approvals queue + workspaces */}
+                {/* split: what needs you + status/controls */}
                 <div className="split" style={{ marginTop: 8 }}>
                   <div>{approvalsSection(data)}</div>
                   <div>
-                    {workspacesSection()}
                     {scorecardSection(data)}
+                    {workspacesSection()}
                   </div>
                 </div>
 
