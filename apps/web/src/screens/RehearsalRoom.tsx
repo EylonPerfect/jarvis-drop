@@ -185,28 +185,16 @@ export default function RehearsalRoom() {
   const [joining, setJoining] = useState(false);
   const [joinErr, setJoinErr] = useState<string | null>(null);
   const [ending, setEnding] = useState(false);
-  // Demo account the sandbox logs in with (stored server-side for ALL sessions)
+  // Demo account the sandbox logs in with (stored server-side for ALL sessions).
+  // Read-only here — the credential is edited in Connections. We only load it to
+  // show which account the clone signs in with on every session.
   const [demoEmail, setDemoEmail] = useState("");
   const [demoHasPw, setDemoHasPw] = useState(false);
-  const [demoEdit, setDemoEdit] = useState(false);
-  const [demoFormEmail, setDemoFormEmail] = useState("");
-  const [demoFormPw, setDemoFormPw] = useState("");
-  const [demoSaving, setDemoSaving] = useState(false);
-  const [demoErr, setDemoErr] = useState("");
   useEffect(() => {
     void api.get<{ email: string; hasPassword: boolean }>("/api/demo-login")
-      .then((r) => { setDemoEmail(r.email); setDemoHasPw(r.hasPassword); setDemoFormEmail(r.email); })
+      .then((r) => { setDemoEmail(r.email); setDemoHasPw(r.hasPassword); })
       .catch(() => { /* leave empty */ });
   }, []);
-  async function saveDemoLogin() {
-    if (demoSaving) return;
-    setDemoSaving(true); setDemoErr("");
-    try {
-      const r = await api.put<{ email: string; hasPassword: boolean }>("/api/demo-login", { email: demoFormEmail.trim(), ...(demoFormPw ? { password: demoFormPw } : {}) });
-      setDemoEmail(r.email); setDemoHasPw(r.hasPassword); setDemoEdit(false); setDemoFormPw("");
-    } catch (e) { setDemoErr(e instanceof Error ? e.message : String(e)); }
-    setDemoSaving(false);
-  }
   // ---- gears: rehearsal (voice + screen) and live call ----
   const [live, setLive] = useState(false);
   const liveInit = useRef(false);
@@ -1887,33 +1875,18 @@ export default function RehearsalRoom() {
               </div>
             </div>
 
-            {/* Demo account — the login the sandbox uses on every session */}
+            {/* Demo account — read-only; edited in Connections */}
             <div style={{ padding: "12px 14px", borderRadius: 12, background: "var(--sunk)", border: "1px solid var(--border)" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <span className="material-symbols-rounded" style={{ fontSize: 16, color: "var(--purple)" }}>key</span>
                 <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: ".05em", textTransform: "uppercase", color: "var(--ink3)" }}>Demo account</span>
-                {!demoEdit && (
-                  <button onClick={() => { setDemoEdit(true); setDemoFormEmail(demoEmail); setDemoFormPw(""); }} style={{ marginLeft: "auto", background: "none", border: "none", color: "var(--purple-ink)", fontSize: 11.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>{demoEmail ? "Change" : "Set up"}</button>
-                )}
+                <button onClick={() => nav("connections")} style={{ marginLeft: "auto", background: "none", border: "none", color: "var(--purple-ink)", fontSize: 11.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>{demoEmail ? "Change" : "Set up"}</button>
               </div>
-              {!demoEdit ? (
-                <div style={{ fontSize: 12.5, color: demoEmail ? "var(--ink2)" : "var(--warning-ink)", marginTop: 6, lineHeight: 1.5 }}>
-                  {demoEmail
-                    ? <>{firstName} logs into the product as <b style={{ color: "var(--ink1)" }}>{demoEmail}</b> on every rehearsal and live call.</>
-                    : "No login saved — the screen will sit on the login page. Add the demo account once and every session uses it."}
-                </div>
-              ) : (
-                <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
-                  <input value={demoFormEmail} onChange={(e) => setDemoFormEmail(e.target.value)} placeholder="Demo account email" style={{ height: 36, borderRadius: 9, border: "1px solid var(--border)", background: "var(--card)", color: "var(--ink1)", fontFamily: "inherit", fontSize: 12.5, padding: "0 12px" }} />
-                  <input value={demoFormPw} onChange={(e) => setDemoFormPw(e.target.value)} type="password" placeholder={demoHasPw ? "Password (leave blank to keep current)" : "Password"} style={{ height: 36, borderRadius: 9, border: "1px solid var(--border)", background: "var(--card)", color: "var(--ink1)", fontFamily: "inherit", fontSize: 12.5, padding: "0 12px" }} />
-                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                    <button onClick={() => void saveDemoLogin()} disabled={demoSaving || !demoFormEmail.trim() || (!demoHasPw && !demoFormPw)} style={{ height: 34, padding: "0 16px", borderRadius: 9999, border: "none", background: "var(--purple)", color: "#fff", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", opacity: demoSaving || !demoFormEmail.trim() || (!demoHasPw && !demoFormPw) ? 0.6 : 1 }}>{demoSaving ? "Saving…" : "Save for all sessions"}</button>
-                    <button onClick={() => { setDemoEdit(false); setDemoErr(""); }} style={{ background: "none", border: "none", color: "var(--ink3)", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Cancel</button>
-                  </div>
-                  <div style={{ fontSize: 10.5, color: "var(--ink3)" }}>Stored on your server only, used by the sandbox to sign in. The password is never shown back.</div>
-                  {demoErr && <div style={{ fontSize: 11.5, color: "var(--error-ink)", fontWeight: 600 }}>{demoErr}</div>}
-                </div>
-              )}
+              <div style={{ fontSize: 12.5, color: demoEmail ? "var(--ink2)" : "var(--warning-ink)", marginTop: 6, lineHeight: 1.5 }}>
+                {demoEmail
+                  ? <>{firstName} logs into the product as <b style={{ color: "var(--ink1)" }}>{demoEmail}</b>{demoHasPw ? "" : " (no password set)"} on every rehearsal and live call. Manage it in Connections.</>
+                  : "No login saved — the screen will sit on the login page. Set the demo account in Connections and every session uses it."}
+              </div>
             </div>
           </section>
         </div>
