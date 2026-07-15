@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
-import { Conversation } from "@elevenlabs/client";
 import { api, getAccessKey } from "../api/client";
 import "../pds.css";
 
@@ -29,8 +28,9 @@ type LiveCallInfo = {
   persona_mode?: string;
 };
 
-// SSE reader for a calibration session message (same shape the studio uses)
-async function streamSession(sessionId: string, text: string, onDelta: (t: string) => void): Promise<void> {
+// SSE reader for a calibration session message (same shape the studio uses).
+// Exported + retained as a shared session-greet helper (see Decision 1 notes).
+export async function streamSession(sessionId: string, text: string, onDelta: (t: string) => void): Promise<void> {
   const res = await fetch(`${api.base}/api/sessions/${sessionId}/messages`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "text/event-stream", ...(getAccessKey() ? { "X-API-Key": getAccessKey() } : {}) },
@@ -48,27 +48,6 @@ async function streamSession(sessionId: string, text: string, onDelta: (t: strin
       try { const d = JSON.parse(p)?.choices?.[0]?.delta?.content; if (d) onDelta(d); } catch { /* ignore */ }
     }
   }
-}
-
-// Hover divider between two transcript bubbles → "+ add step here". Rendered
-// inside a display:contents wrapper with NEGATIVE margins so it occupies the
-// existing flex gap and never shifts message spacing (or the indices the
-// edit-reply/fix flows key on).
-function StepDivider({ onAdd }: { onAdd: () => void }) {
-  const [hov, setHov] = useState(false);
-  return (
-    <div
-      onMouseEnter={() => setHov(true)}
-      onMouseLeave={() => setHov(false)}
-      style={{ alignSelf: "stretch", height: 12, margin: "-11px 0", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 3, position: "relative", flexShrink: 0 }}
-    >
-      {hov && (
-        <button onClick={onAdd} title="Insert a prescriptive step into the beat sheet at this moment" style={{ display: "inline-flex", alignItems: "center", gap: 4, height: 20, padding: "0 10px", borderRadius: 9999, border: "1px dashed var(--purple)", background: "var(--card)", color: "var(--purple-ink)", fontSize: 10, fontWeight: 800, boxShadow: "var(--shadow)", ...btnFont }}>
-          <span className="material-symbols-rounded" style={{ fontSize: 12 }}>add</span>add step here
-        </button>
-      )}
-    </div>
-  );
 }
 
 const STYLE_META: { key: string; label: string }[] = [
@@ -228,19 +207,10 @@ export default function RehearsalRoom() {
     } catch (e) { setDemoErr(e instanceof Error ? e.message : String(e)); }
     setDemoSaving(false);
   }
-  // ---- gears: cold = instant text calibration, live = voice + screen ----
+  // ---- gears: rehearsal (voice + screen) and live call ----
   const [live, setLive] = useState(false);
   const liveInit = useRef(false);
   const prewarmed = useRef(false);
-  // cold-gear text chat (studio calibration sessions under the hood)
-  const [coldMsgs, setColdMsgs] = useState<{ role: "guest" | "clone" | "jump"; text: string }[]>([]);
-  const [coldInput, setColdInput] = useState("");
-  const [coldBusy, setColdBusy] = useState(false);
-  const coldSession = useRef<string | null>(null);
-  const coldRef = useRef<HTMLDivElement | null>(null);
-  // cold-gear real-time voice (ElevenLabs Conversational AI over a signed WS)
-  const [voiceState, setVoiceState] = useState<"off" | "connecting" | "live">("off");
-  const voiceConvRef = useRef<Conversation | null>(null);
   // tuning drawer (the studio, absorbed: style · lexicon · rules · knowledge · versions)
   const [tuneOpen, setTuneOpen] = useState(false);
   const [tuneTab, setTuneTab] = useState<"style" | "lexicon" | "rules" | "knowledge" | "versions">("style");
@@ -389,127 +359,9 @@ export default function RehearsalRoom() {
     void api.post("/api/live/join", { mode: "rehearsal", agentId }).then(() => refreshStatus()).catch(() => { /* Go live can retry */ });
   }, [statusLoaded, agentId, call]);
 
-  // ---- cold gear: instant text chat with the current draft persona ----
-  useEffect(() => { coldSession.current = null; setColdMsgs([]); void stopVoiceChat(); }, [agentId]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { coldRef.current?.scrollTo({ top: 1e9 }); }, [coldMsgs]);
-  // real-time voice: hang up cleanly on unmount too
-  useEffect(() => () => {
-    const c = voiceConvRef.current;
-    voiceConvRef.current = null;
-    if (c) void c.endSession().catch(() => { /* already closed */ });
-  }, []);
-  async function startVoiceChat() {
-    if (!agentId || voiceState !== "off") return;
-    setVoiceState("connecting");
-    try {
-      const r = await api.post<{ signedUrl: string | null; conversationToken?: string | null; overrides: { prompt: string; firstMessage: string; voiceId: string } }>(
-        "/api/voicechat/session", { agentId });
-      // WebRTC when possible: its audio path has echo cancellation, so he never
-      // hears himself through your speakers. Websocket stays as the fallback.
-      const connection = r.conversationToken
-        ? ({ conversationToken: r.conversationToken, connectionType: "webrtc" } as const)
-        : ({ signedUrl: r.signedUrl ?? "", connectionType: "websocket" } as const);
-      const conv = await Conversation.startSession({
-        ...connection,
-        overrides: {
-          agent: {
-            prompt: { prompt: r.overrides.prompt },
-            firstMessage: r.overrides.firstMessage,
-            language: "en",
-          },
-          ...(r.overrides.voiceId ? { tts: { voiceId: r.overrides.voiceId } } : {}),
-        },
-        onMessage: ({ message, role }) => {
-          setColdMsgs((m) => [...m, { role: role === "user" ? "guest" : "clone", text: message }]);
-        },
-        onDisconnect: () => {
-          voiceConvRef.current = null;
-          setVoiceState("off");
-        },
-      });
-      voiceConvRef.current = conv;
-      setVoiceState("live");
-      setColdMsgs((m) => [...m, { role: "jump", text: "Voice call started — just talk" }]);
-    } catch (e) {
-      setVoiceState("off");
-      setColdMsgs((m) => [...m, { role: "jump", text: `Voice failed — ${e instanceof Error ? e.message : String(e)}` }]);
-    }
-  }
-  async function stopVoiceChat() {
-    const c = voiceConvRef.current;
-    voiceConvRef.current = null;
-    setVoiceState("off");
-    if (c) { try { await c.endSession(); } catch { /* already closed */ } }
-  }
-  async function sendCold(text: string) {
-    const t = text.trim();
-    if (!t || coldBusy || !agentId || voiceState !== "off") return;
-    setColdInput("");
-    setColdMsgs((m) => [...m, { role: "guest", text: t }, { role: "clone", text: "" }]);
-    setColdBusy(true);
-    try {
-      if (!coldSession.current) {
-        const s = await api.post<{ sessionId: string }>("/api/sessions", { agentId, mode: "calibration" });
-        coldSession.current = s.sessionId;
-      }
-      await streamSession(coldSession.current, t, (d) => {
-        setColdMsgs((m) => { const c = [...m]; const last = c[c.length - 1]; c[c.length - 1] = { ...last, text: last.text + d }; return c; });
-      });
-    } catch {
-      setColdMsgs((m) => { const c = [...m]; if (!c[c.length - 1].text) c[c.length - 1] = { role: "clone", text: "(no reply — check the AI core provider)" }; return c; });
-    }
-    setColdBusy(false);
-  }
-
-  // The rep opens the text chat too — entering the room with a fresh clone
-  // produces his in-persona opener instead of an empty box waiting for you.
-  const coldGreetedRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (!statusLoaded || live || !agentId || coldMsgs.length > 0 || coldBusy) return;
-    if (coldGreetedRef.current === agentId) return;
-    coldGreetedRef.current = agentId;
-    void (async () => {
-      setColdMsgs([{ role: "clone", text: "" }]);
-      setColdBusy(true);
-      try {
-        const s = await api.post<{ sessionId: string }>("/api/sessions", { agentId, mode: "calibration" });
-        coldSession.current = s.sessionId;
-        await streamSession(s.sessionId, "[DIRECTOR — session start, not a guest line. Open the conversation: greet in ONE short sentence in your persona, then ask ONE question about what they're hiring for.]", (d) => {
-          setColdMsgs((m) => { const c = [...m]; const last = c[c.length - 1]; c[c.length - 1] = { ...last, text: last.text + d }; return c; });
-        });
-      } catch {
-        setColdMsgs([]); // fall back to the quiet empty state
-        coldSession.current = null;
-      }
-      setColdBusy(false);
-    })();
-  }, [statusLoaded, live, agentId, coldMsgs.length, coldBusy]); // eslint-disable-line react-hooks/exhaustive-deps
-
   // ---- beat jump: any script block is a chapter marker you can drop into ----
   const [beatMenu, setBeatMenu] = useState<{ i: number; x: number; y: number } | null>(null);
   const [jumpNote, setJumpNote] = useState("");
-  function beatRecap(upTo: number): string {
-    return stages.slice(0, upTo).map((b, j) => `${j + 1}. ${b.name ?? "beat"}: ${(b.voice?.objective ?? "").trim() || "(no line)"}`).join("\n");
-  }
-  async function jumpCold(i: number) {
-    const s = stages[i];
-    if (!s || !agentId || coldBusy) return;
-    coldSession.current = null; // fresh session, primed mid-call
-    const acts = (s.screen?.actions ?? []).slice(0, 4).join(" → ");
-    const primer = `[DIRECTOR — beat jump, not a guest line. This rehearsal starts MID-CALL at beat ${i + 1} of ${stages.length}: "${s.name ?? "beat"}". Everything before it already happened; what you already covered, oldest to newest:\n${beatRecap(i) || "(nothing — this is the first beat)"}\n\nDo NOT greet and do NOT re-introduce yourself. Continue the call by opening beat ${i + 1} now${acts ? ` (on screen you would be doing: ${acts})` : ""}: say its opening line to the guest and carry on from there.]`;
-    setColdMsgs((m) => [...m, { role: "jump", text: `Jumped to beat ${i + 1} — ${cleanBeat(s.name)}` }, { role: "clone", text: "" }]);
-    setColdBusy(true);
-    try {
-      const sess = await api.post<{ sessionId: string }>("/api/sessions", { agentId, mode: "calibration" });
-      coldSession.current = sess.sessionId;
-      await streamSession(coldSession.current, primer, (d) => {
-        setColdMsgs((m) => { const c = [...m]; const last = c[c.length - 1]; c[c.length - 1] = { ...last, text: last.text + d }; return c; });
-      });
-    } catch {
-      setColdMsgs((m) => { const c = [...m]; if (!c[c.length - 1].text) c[c.length - 1] = { role: "clone", text: "(no reply — check the AI core provider)" }; return c; });
-    }
-    setColdBusy(false);
-  }
   async function jumpLive(i: number) {
     const s = stages[i];
     if (!s) return;
@@ -540,7 +392,6 @@ export default function RehearsalRoom() {
       const r = await api.post<{ version: { number?: number } }>(`/api/clones/${agentId}/versions`, { spec: next, changeNote: note });
       if (typeof r.version.number === "number") { setPersonaVersion(r.version.number); num = r.version.number; }
       setAgents((list) => list.map((a) => (a.id === agentId ? { ...a, persona: next as Agent["persona"] } : a)));
-      coldSession.current = null; // next cold message uses the new version
       void loadVersions(agentId);
     } catch (e) {
       setResumeNote(`Saving failed: ${e instanceof Error ? e.message : String(e)} — nothing was applied.`);
@@ -573,7 +424,7 @@ export default function RehearsalRoom() {
   }
   // Edit a reply in place: the corrected text is taught as a few-shot — "in this
   // situation, THIS is the line" — and applies from the next reply on.
-  const [editTarget, setEditTarget] = useState<{ source: "cold" | "live"; i?: number; seq?: number; guest: string } | null>(null);
+  const [editTarget, setEditTarget] = useState<{ source: "live"; seq?: number; guest: string } | null>(null);
   const [editText, setEditText] = useState("");
   const [teaching, setTeaching] = useState(false);
   // live-gear bubbles: view-only removal (the call already heard them); the
@@ -585,27 +436,6 @@ export default function RehearsalRoom() {
     const id = call?.id ?? null;
     if (id !== hiddenCallRef.current) { hiddenCallRef.current = id; setHiddenSeqs({}); }
   }, [call?.id]);
-  // delete a bubble: gone from view AND forgotten by the model (the server
-  // rebuilds history from stored turns, so the turn is removed there too).
-  // Voice-chat bubbles have no stored turn — for those it's view-only.
-  function deleteColdMsg(i: number) {
-    const m = coldMsgs[i];
-    if (!m) return;
-    setColdMsgs((list) => list.filter((_, j) => j !== i));
-    if (m.role !== "jump" && coldSession.current && m.text.trim()) {
-      void api.post(`/api/sessions/${coldSession.current}/turns/delete`, { role: m.role === "guest" ? "user" : "clone", text: m.text })
-        .catch(() => { coldSession.current = null; }); // old server: reset so the ghost can't linger
-    }
-  }
-  const bubbleDelBtn = (onClick: () => void) => (
-    <button onClick={onClick} title="Delete this bubble — the model forgets it too" style={{ border: "none", background: "transparent", color: "var(--ink3)", cursor: "pointer", padding: 0, display: "inline-flex", alignItems: "center" }}>
-      <span className="material-symbols-rounded" style={{ fontSize: 13 }}>delete</span>
-    </button>
-  );
-  function openEditCold(i: number) {
-    const guest = [...coldMsgs.slice(0, i)].reverse().find((m) => m.role === "guest")?.text ?? "";
-    setEditTarget({ source: "cold", i, guest }); setEditText(coldMsgs[i].text);
-  }
   function openEditLive(seq: number, text: string) {
     setEditTarget({ source: "live", seq, guest: nearestBefore(seq, "guest") }); setEditText(text);
   }
@@ -616,26 +446,16 @@ export default function RehearsalRoom() {
     const next = { ...spec, few_shots: [...shots, { id: `f${shots.length + 1}`, situation: editTarget.guest || "(opening the conversation)", human_response: editText.trim(), source: "reply edited in calibration", active: true }] };
     const vNum = await commitSpec(next, `Edited reply: "${editText.trim().slice(0, 50)}"`);
     if (vNum === null) { setTeaching(false); return; } // commitSpec already showed the error
-    if (editTarget.source === "cold" && typeof editTarget.i === "number") {
-      const i = editTarget.i;
-      setColdMsgs((m) => m.map((x, j) => (j === i ? { ...x, text: editText.trim() } : x)));
-    } else if (typeof editTarget.seq === "number") {
+    if (typeof editTarget.seq === "number") {
       setFixedSeqs((s) => ({ ...s, [editTarget.seq as number]: true }));
       buildResume(editTarget.seq); // next session resumes just before this moment
       if (bound) {
         void api.post("/api/live/nudge", { kind: "guide", text: `CORRECTION — applies RIGHT NOW in this call: when the guest says something like "${(editTarget.guest || "").slice(0, 120)}", reply in the spirit of: "${editText.trim().slice(0, 220)}". Use this from here on.` }).catch(() => { /* next session still gets it */ });
       }
     }
-    setResumeNote(`Taught — persona v${vNum}${editTarget.source === "live" ? " · told him mid-call too" : ""} · applies from his next reply.`);
+    setResumeNote(`Taught — persona v${vNum} · told him mid-call too · applies from his next reply.`);
     setTimeout(() => setResumeNote(""), 9000);
     setTeaching(false); setEditTarget(null); setEditText("");
-  }
-
-  // Fix speech from a cold text bubble — same drawer, same persona-delta path
-  function openFixSpeechCold(i: number) {
-    const guest = [...coldMsgs.slice(0, i)].reverse().find((m) => m.role === "guest")?.text ?? "";
-    setFix({ seq: 900000 + i, kind: "speech", guest, maya: coldMsgs[i].text });
-    setRoute("speech"); setNote(""); setProposal(null); setFixErr(null);
   }
 
   // ---- add step: operator inserts a prescriptive step into the beat sheet ----
@@ -1456,16 +1276,6 @@ export default function RehearsalRoom() {
 
   const momentPayload = fix ? { guest: fix.guest, maya: fix.maya, action: fix.action, shot: fix.shot } : null;
 
-  async function proposeFix() {
-    if (!fix || !note.trim() || proposing) return;
-    setProposing(true); setFixErr(null);
-    try {
-      const r = await api.post<Record<string, unknown>>("/api/rehearsal/fix", { agentId, route, note: note.trim(), moment: momentPayload });
-      const p = (r.proposal ?? r) as FixProposal;
-      setProposal(p);
-    } catch (e) { setFixErr(e instanceof Error ? e.message : String(e)); }
-    setProposing(false);
-  }
   async function applyFix(pOverride?: FixProposal) {
     const prop = pOverride ?? proposal;
     if (!fix || !prop || applying) return;
@@ -1475,7 +1285,6 @@ export default function RehearsalRoom() {
       if (route === "speech") {
         const v = r.personaVersion ?? (r.version as Record<string, unknown> | undefined)?.number;
         setPersonaVersion(typeof v === "number" ? v : (personaVersion ?? 0) + 1);
-        coldSession.current = null; // cold chat picks up the fixed persona
         void loadVersions(agentId);
       } else {
         const v = r.graphVersion;
@@ -1706,7 +1515,7 @@ export default function RehearsalRoom() {
         <div>
           <h1 style={{ fontSize: 15.5, fontWeight: 800, letterSpacing: "-.02em", margin: 0 }}>{agent?.name ?? "Calibration room"}</h1>
           <div style={{ fontSize: 11, color: "var(--ink3)", fontWeight: 600 }}>
-            {agent ? `${agent.role ? `${agent.role} · ` : ""}tune by text, then go live — voice + real screen` : "pick a clone to calibrate"}
+            {agent ? `${agent.role ? `${agent.role} · ` : ""}rehearse with voice + the real screen, then run the call` : "pick a clone to calibrate"}
           </div>
         </div>
         <span style={{ display: "inline-flex", alignItems: "stretch", borderRadius: 9999, overflow: "hidden" }}>
@@ -1765,6 +1574,25 @@ export default function RehearsalRoom() {
             </>
           )}
         </span>
+        {/* mode toggle: Rehearsal | Live call (both flip the shared `live` gear; isZoom decides which is active) */}
+        {statusLoaded && (
+          <span style={{ display: "inline-flex", alignItems: "center", background: "var(--sunk)", borderRadius: 9999, padding: 4, gap: 3 }}>
+            <button
+              onClick={() => setLive(true)}
+              title="Rehearse with voice and the real screen"
+              style={{ display: "inline-flex", alignItems: "center", gap: 6, height: 30, padding: "0 14px", borderRadius: 9999, border: "none", fontSize: 12.5, fontWeight: 700, ...btnFont, ...(live && !isZoom ? { background: "var(--card)", color: "var(--ink1)", boxShadow: "var(--shadow)" } : { background: "transparent", color: "var(--ink2)" }) }}
+            >
+              <span className="material-symbols-rounded" style={{ fontSize: 16 }}>co_present</span>Rehearsal
+            </button>
+            <button
+              onClick={() => setLive(true)}
+              title="A real Zoom call — you are directing"
+              style={{ display: "inline-flex", alignItems: "center", gap: 6, height: 30, padding: "0 14px", borderRadius: 9999, border: "none", fontSize: 12.5, fontWeight: 700, ...btnFont, ...(live && isZoom ? { background: "var(--accent)", color: "#fff" } : { background: "transparent", color: "var(--ink2)" }) }}
+            >
+              <span className="material-symbols-rounded" style={{ fontSize: 16 }}>videocam</span>Live call
+            </button>
+          </span>
+        )}
         <div style={{ flex: 1 }} />
         <button onClick={() => setTheme(theme === "dark" ? "light" : "dark")} style={{ width: 36, height: 36, borderRadius: "50%", border: "none", background: "var(--ghost)", color: "var(--ink1)", display: "flex", alignItems: "center", justifyContent: "center", ...btnFont }}>
           <span className="material-symbols-rounded" style={{ fontSize: 20 }}>{themeIcon}</span>
@@ -1782,23 +1610,12 @@ export default function RehearsalRoom() {
         )}
       </header>
 
-      {/* ---------- mode toggle → .modeseg (presentational; toggles the existing `live` gear only) ---------- */}
+      {/* ---------- page title (mode toggle now lives in the header row) ---------- */}
       {statusLoaded && (
         <div style={{ flexShrink: 0, padding: "14px 18px 0" }}>
           <div className="page-h" style={{ padding: "0 0 10px" }}>
             <h1 style={{ fontSize: 26, fontWeight: 800, letterSpacing: "-.02em" }}>Calibration Room</h1>
-            <p style={{ margin: "6px 0 0", fontSize: 14, color: "var(--ink2)" }}>Tune by text, rehearse with voice and the real screen, then run the call. One room, three modes.</p>
-          </div>
-          <div className="modeseg">
-            <button className={!live ? "on" : undefined} onClick={() => setLive(false)} title="Instant text bench — shape how he talks">
-              <span className="material-symbols-rounded" style={{ fontSize: 17 }}>forum</span>Bench
-            </button>
-            <button className={live && !isZoom ? "on" : undefined} onClick={() => setLive(true)} title="Rehearse with voice and the real screen">
-              <span className="material-symbols-rounded" style={{ fontSize: 17 }}>co_present</span>Rehearsal
-            </button>
-            <button className={live && isZoom ? "on livemode" : undefined} onClick={() => setLive(true)} title="A real Zoom call — you are directing">
-              <span className="material-symbols-rounded" style={{ fontSize: 17 }}>videocam</span>Live call
-            </button>
+            <p style={{ margin: "6px 0 0", fontSize: 14, color: "var(--ink2)" }}>Rehearse with voice and the real screen, then run the call.</p>
           </div>
         </div>
       )}
@@ -2061,7 +1878,6 @@ export default function RehearsalRoom() {
                   <button onClick={() => void goLive()} disabled={!agentId || joining} style={{ height: 44, padding: "0 22px", borderRadius: 9999, border: "none", background: "var(--accent)", color: "#fff", fontSize: 13.5, fontWeight: 800, boxShadow: "0 8px 24px rgba(255,6,96,.3)", opacity: joining ? 0.6 : 1, ...btnFont }}>
                     {joining ? "Starting…" : "Rehearse again"}
                   </button>
-                  <button onClick={() => setLive(false)} title="Spar with the draft persona in the instant text chat — no sandbox" style={ghostBtn}>Keep tuning by text</button>
                   {pinned ? (
                     <button onClick={() => nav("certification")} style={{ ...ghostBtn, borderColor: "var(--purple)", color: "var(--purple-ink)", display: "inline-flex", alignItems: "center", gap: 6 }}>
                       <span className="material-symbols-rounded" style={{ fontSize: 16 }}>verified</span>Run certification
@@ -2079,108 +1895,10 @@ export default function RehearsalRoom() {
         </div>
       )}
 
-      {/* ---------- cold gear: instant text calibration + go-live stage ---------- */}
+      {/* ---------- idle / start: pick a clone, then go live (voice + real screen) ---------- */}
       {statusLoaded && !live && (
-        <div style={{ flex: 1, minHeight: 0, display: "grid", gridTemplateColumns: "440px 1fr" }}>
-          {/* text calibration rail */}
-          <section style={{ display: "flex", flexDirection: "column", borderRight: "1px solid var(--divider)", minHeight: 0 }}>
-            <div className="ctxbar rehearse" style={{ background: "var(--sunk)", color: "var(--ink2)", margin: "10px 12px 6px" }}>
-              <span className="material-symbols-rounded" style={{ fontSize: 18 }}>forum</span>
-              <div style={{ fontSize: 13, fontWeight: 600 }}>
-                Wordsmith bench — instant text, a lighter engine than live calls. Use it to shape how he talks.
-                {resumeNote && <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 700, color: resumeNote.includes("failed") ? "var(--error-ink)" : "var(--success-ink)" }}>{resumeNote}</span>}
-                {stepNote && <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 700, color: stepNote.includes("failed") ? "var(--error-ink)" : "var(--success-ink)" }}>{stepNote}</span>}
-              </div>
-            </div>
-            <div ref={coldRef} className="pds-scroll" style={{ flex: 1, overflowY: "auto", padding: "6px 16px 12px", display: "flex", flexDirection: "column", gap: 10 }}>
-              {coldMsgs.length === 0 && (
-                <div style={{ fontSize: 12, color: "var(--ink3)", padding: "18px 4px", lineHeight: 1.6 }}>
-                  Play a customer line and {firstName} answers with the current draft persona — instantly, no sandbox. Tune with the sliders, then hit go live when the words feel right.
-                </div>
-              )}
-              {coldMsgs.map((m, i) => (
-                <div key={i} style={{ display: "contents" }}>
-                  {i > 0 && <StepDivider onAdd={() => openStep(coldMsgs[i - 1]?.role === "guest" ? coldMsgs[i - 1].text : "")} />}
-                  {m.role === "jump" ? (
-                <div style={{ display: "flex", alignItems: "center", gap: 8, margin: "4px 0" }}>
-                  <div style={{ flex: 1, height: 1, background: "var(--divider)" }} />
-                  <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: ".06em", textTransform: "uppercase", color: "var(--purple-ink)", display: "inline-flex", alignItems: "center", gap: 4 }}>
-                    <span className="material-symbols-rounded" style={{ fontSize: 13 }}>skip_next</span>{m.text}
-                  </span>
-                  <div style={{ flex: 1, height: 1, background: "var(--divider)" }} />
-                </div>
-              ) : m.role === "guest" ? (
-                <div key={i} style={{ maxWidth: "88%", alignSelf: "flex-end" }}>
-                  <div style={{ ...whoStyle, textAlign: "right", display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 6 }}>
-                    {bubbleDelBtn(() => deleteColdMsg(i))}
-                    <span>You · guest</span>
-                  </div>
-                  <div className="bub guest">{m.text}</div>
-                </div>
-              ) : (
-                <div key={i} style={{ maxWidth: "88%", alignSelf: "flex-start", width: editTarget?.source === "cold" && editTarget.i === i ? "88%" : undefined }}>
-                  <div style={whoStyle}>{firstName}{personaVersion !== null ? ` · persona v${personaVersion}` : ""}</div>
-                  {editTarget?.source === "cold" && editTarget.i === i ? (
-                    <div>
-                      <textarea value={editText} onChange={(e) => setEditText(e.target.value)} rows={4} autoFocus style={{ width: "100%", borderRadius: 14, padding: "9px 13px", fontSize: 12.5, lineHeight: 1.5, background: "var(--purple-soft)", color: "var(--ink1)", border: "1.5px solid var(--purple)", fontFamily: "inherit", resize: "vertical" }} />
-                      <div style={{ display: "flex", gap: 8, marginTop: 5 }}>
-                        <button onClick={() => void teachReply()} disabled={teaching || !editText.trim()} style={{ height: 28, padding: "0 14px", borderRadius: 9999, border: "none", background: "var(--purple)", color: "#fff", fontSize: 11.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", opacity: teaching ? 0.6 : 1 }}>{teaching ? "Teaching…" : "Teach him this reply"}</button>
-                        <button onClick={() => { setEditTarget(null); setEditText(""); }} style={{ background: "none", border: "none", color: "var(--ink3)", fontSize: 11.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Cancel</button>
-                      </div>
-                    </div>
-                  ) : (
-                    <>
-                      <div className="bub eli" style={{ minHeight: 20 }}>
-                        {m.text || (coldBusy && i === coldMsgs.length - 1 ? "…" : m.text)}
-                      </div>
-                      {m.text && !(coldBusy && i === coldMsgs.length - 1) && (
-                        <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
-                          <button onClick={() => openEditCold(i)} style={fixLink}>Edit reply</button>
-                          <button onClick={() => openFixSpeechCold(i)} style={{ ...fixLink, ...(fixedSeqs[900000 + i] ? { borderColor: "var(--success)", color: "var(--success-ink)" } : {}) }}>
-                            {fixedSeqs[900000 + i] ? "Fixed ✓" : "Fix speech"}
-                          </button>
-                          {bubbleDelBtn(() => deleteColdMsg(i))}
-                        </div>
-                      )}
-                    </>
-                  )}
-                </div>
-              )}
-                </div>
-              ))}
-            </div>
-            <div className="scenariochips" style={{ padding: "0 16px 8px" }}>
-              {SCENARIOS.map((s) => (
-                <button key={s} onClick={() => void sendCold(s)} disabled={coldBusy || voiceState !== "off"} style={{ opacity: coldBusy || voiceState !== "off" ? 0.5 : 1 }}>{s}</button>
-              ))}
-            </div>
-            <div className="composer" style={{ padding: "0 16px 14px", alignItems: "center" }}>
-              <button onClick={() => openStep("")} title="Insert a prescriptive step into the beat sheet" style={{ height: 42, padding: "0 13px", borderRadius: 9999, border: "1px dashed var(--purple)", background: "transparent", color: "var(--purple-ink)", fontSize: 11.5, fontWeight: 800, display: "inline-flex", alignItems: "center", gap: 4, flexShrink: 0, ...btnFont }}>
-                <span className="material-symbols-rounded" style={{ fontSize: 15 }}>add</span>Step
-              </button>
-              <input value={coldInput} onChange={(e) => setColdInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") void sendCold(coldInput); }} disabled={voiceState !== "off"} placeholder={voiceState === "live" ? `Voice is live — you're talking to ${firstName}` : `Play a customer line to test ${firstName}…`} style={{ flex: 1, height: 42, borderRadius: 12, border: "1px solid var(--border)", background: "var(--sunk)", color: "var(--ink1)", fontFamily: "inherit", fontSize: 13, padding: "0 14px", opacity: voiceState !== "off" ? 0.55 : 1 }} />
-              <button onClick={() => void sendCold(coldInput)} disabled={coldBusy || !coldInput.trim() || voiceState !== "off"} style={{ width: 42, height: 42, borderRadius: "50%", border: "none", background: "var(--purple)", color: "#fff", display: "grid", placeItems: "center", cursor: "pointer", opacity: coldBusy || !coldInput.trim() || voiceState !== "off" ? 0.5 : 1 }}>
-                <span className="material-symbols-rounded" style={{ fontSize: 19 }}>send</span>
-              </button>
-              <button
-                onClick={() => { if (voiceState === "off") void startVoiceChat(); else if (voiceState === "live") void stopVoiceChat(); }}
-                disabled={!agentId || voiceState === "connecting"}
-                title={voiceState === "live" ? "Voice live · tap to hang up" : voiceState === "connecting" ? "Connecting…" : `Talk to ${firstName} — live voice`}
-                style={{ width: 42, height: 42, borderRadius: "50%", border: "none", background: voiceState === "live" ? "var(--error)" : "var(--accent)", color: "#fff", display: "grid", placeItems: "center", cursor: voiceState === "connecting" ? "wait" : "pointer", opacity: voiceState === "connecting" ? 0.6 : 1, animation: voiceState === "live" ? "rrPulse 1.8s ease infinite" : "none" }}
-              >
-                <span className="material-symbols-rounded" style={{ fontSize: 19 }}>{voiceState === "live" ? "call_end" : "call"}</span>
-              </button>
-            </div>
-            {voiceState !== "off" && (
-              <div style={{ display: "flex", alignItems: "center", gap: 7, padding: "0 16px 12px", fontSize: 11, fontWeight: 700, color: voiceState === "live" ? "var(--error-ink)" : "var(--ink3)" }}>
-                <span style={{ width: 7, height: 7, borderRadius: "50%", background: voiceState === "live" ? "var(--error)" : "var(--ink3)", animation: "rrBlink 1.4s ease infinite" }} />
-                {voiceState === "live" ? "voice live · tap to hang up" : "connecting voice…"}
-              </div>
-            )}
-          </section>
-
-          {/* go-live stage */}
-          <section className="pds-scroll" style={{ minHeight: 0, overflowY: "auto", padding: "18px 22px", display: "flex", flexDirection: "column", gap: 14 }}>
+        <div className="pds-scroll" style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "18px 22px", display: "flex", justifyContent: "center" }}>
+          <section style={{ width: "100%", maxWidth: 720, display: "flex", flexDirection: "column", gap: 14 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <select value={agentId} onChange={(e) => setAgentId(e.target.value)} style={{ minWidth: 200, height: 36, borderRadius: 10, border: "1px solid var(--border)", background: "var(--sunk)", color: "var(--ink1)", fontFamily: "inherit", fontSize: 12.5, padding: "0 10px" }}>
                 {agents.length === 0 && <option value="">No agents yet</option>}
@@ -2189,7 +1907,7 @@ export default function RehearsalRoom() {
               {stages.length > 0 && (
                 <div style={{ display: "flex", gap: 6, overflowX: "auto", flex: 1, minWidth: 0, alignItems: "center" }} className="pds-scroll">
                   {stages.slice(0, 8).map((s, i) => (
-                    <span key={s.id ?? i} onClick={(e) => setBeatMenu({ i, x: e.clientX, y: e.clientY })} title="Rehearse from here · edit · drop" style={{ flexShrink: 0, display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 8px 6px 11px", borderRadius: 9999, background: "var(--sunk)", border: "1px solid var(--border)", fontSize: 11, fontWeight: 700, color: "var(--ink2)", whiteSpace: "nowrap", cursor: "pointer" }}>
+                    <span key={s.id ?? i} onClick={(e) => setBeatMenu({ i, x: e.clientX, y: e.clientY })} title="Edit · drop" style={{ flexShrink: 0, display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 8px 6px 11px", borderRadius: 9999, background: "var(--sunk)", border: "1px solid var(--border)", fontSize: 11, fontWeight: 700, color: "var(--ink2)", whiteSpace: "nowrap", cursor: "pointer" }}>
                       {i + 1}. {cleanBeat(s.name).slice(0, 26)}
                       <button onClick={(e) => { e.stopPropagation(); void dropBeat(i); }} disabled={dropping} title="Drop this beat — he stops doing it" style={{ display: "inline-flex", alignItems: "center", border: "none", background: dropArm === i ? "var(--error-soft)" : "transparent", color: dropArm === i ? "var(--error-ink)" : "var(--ink3)", cursor: "pointer", fontFamily: "inherit", borderRadius: 9999, padding: dropArm === i ? "1px 6px" : 0, fontSize: 9.5, fontWeight: 800 }}>
                         {dropArm === i ? "Drop?" : <span className="material-symbols-rounded" style={{ fontSize: 13 }}>close</span>}
@@ -2208,7 +1926,7 @@ export default function RehearsalRoom() {
                   <>
                     <span className="material-symbols-rounded" style={{ fontSize: 40, color: "var(--purple)" }}>co_present</span>
                     <div style={{ fontSize: 16.5, fontWeight: 800, margin: "10px 0 4px" }}>Warming up {firstName}'s screen</div>
-                    <div style={{ fontSize: 12, color: "var(--ink3)", lineHeight: 1.6, marginBottom: 18 }}>Spinning up the sandbox and signing in to GoPerfect — usually 3 to 4 minutes. Keep tuning by text meanwhile.</div>
+                    <div style={{ fontSize: 12, color: "var(--ink3)", lineHeight: 1.6, marginBottom: 18 }}>Spinning up the sandbox and signing in to GoPerfect — usually 3 to 4 minutes.</div>
                     <div style={{ display: "flex", flexDirection: "column", gap: 9, textAlign: "left", maxWidth: 280, margin: "0 auto" }}>
                       {PHASES.map((p, i) => {
                         const done = donePhases.includes(p) || (phaseIdx >= 0 && i < phaseIdx);
@@ -2230,9 +1948,9 @@ export default function RehearsalRoom() {
                   /* COLD — nothing warming yet: explain + let them start */
                   <>
                     <span className="material-symbols-rounded" style={{ fontSize: 44, color: "var(--purple)" }}>co_present</span>
-                    <div style={{ fontSize: 16.5, fontWeight: 800, margin: "10px 0 6px" }}>{firstName}'s screen isn't live yet</div>
+                    <div style={{ fontSize: 16.5, fontWeight: 800, margin: "10px 0 6px" }}>Ready when you are</div>
                     <div style={{ fontSize: 12.5, color: "var(--ink2)", lineHeight: 1.6, marginBottom: 16 }}>
-                      Text is instant — the real thing needs a sandbox where {firstName} speaks, shares the screen and drives the product. It warms up in the background while you tune.
+                      Go live spins up a sandbox where {firstName} speaks, shares the screen and drives the product — voice and the real GoPerfect UI, just like a call.
                     </div>
                     {call && !call.ended_at && call.mode === "rehearsal" && call.agent_id && call.agent_id !== agentId ? (
                       <div style={{ fontSize: 12, color: "var(--warning-ink)", fontWeight: 600, marginBottom: 12 }}>
@@ -2505,13 +2223,7 @@ export default function RehearsalRoom() {
                   <div key={`${it.seq}-${idx}`} style={{ fontSize: 10.5, color: "var(--ink3)", padding: "0 4px" }}>{it.text}</div>
                 );
                 })();
-                const above = idx > 0 ? items[idx - 1] : null;
-                return (
-                  <div key={`w-${it.seq}-${idx}`} style={{ display: "contents" }}>
-                    {idx > 0 && <StepDivider onAdd={() => openStep(above && above.t === "guest" ? above.text : "")} />}
-                    {body}
-                  </div>
-                );
+                return body;
               })}
               {pending.length > 0 && (
                 <div style={{ maxWidth: "88%", alignSelf: "flex-start" }}>
@@ -2685,14 +2397,16 @@ export default function RehearsalRoom() {
             <div style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: ".07em", textTransform: "uppercase", color: "var(--ink3)", padding: "7px 10px 5px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               Beat {beatMenu.i + 1} · {cleanBeat(stages[beatMenu.i]?.name)}
             </div>
-            <button
-              onClick={() => { const i = beatMenu.i; setBeatMenu(null); if (bound && live) void jumpLive(i); else void jumpCold(i); }}
-              disabled={!agentId || (!(bound && live) && coldBusy)}
-              style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 10px", borderRadius: 9, border: "none", background: "transparent", color: "var(--purple-ink)", fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", textAlign: "left" }}
-            >
-              <span className="material-symbols-rounded" style={{ fontSize: 16 }}>skip_next</span>
-              {bound && live ? `Jump ${firstName} to this beat` : "Rehearse from this beat"}
-            </button>
+            {bound && live && (
+              <button
+                onClick={() => { const i = beatMenu.i; setBeatMenu(null); void jumpLive(i); }}
+                disabled={!agentId}
+                style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 10px", borderRadius: 9, border: "none", background: "transparent", color: "var(--purple-ink)", fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", textAlign: "left" }}
+              >
+                <span className="material-symbols-rounded" style={{ fontSize: 16 }}>skip_next</span>
+                Jump {firstName} to this beat
+              </button>
+            )}
             <button onClick={() => { setBeatMenu(null); nav("screenmap"); }} style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 10px", borderRadius: 9, border: "none", background: "transparent", color: "var(--ink1)", fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", textAlign: "left" }}>
               <span className="material-symbols-rounded" style={{ fontSize: 16 }}>edit_note</span>
               Edit in storyboard
