@@ -219,6 +219,9 @@ export default function RehearsalRoom() {
   const [versions, setVersions] = useState<VersionRow[]>([]);
   const [goldenId, setGoldenId] = useState<string | null>(null);
   const [pinningId, setPinningId] = useState<string | null>(null);
+  // readiness gate for promotion — score + whether promotion is unlocked, off
+  // the same /api/readiness the readiness screen uses (promoteUnlocked + score)
+  const [promoteInfo, setPromoteInfo] = useState<{ unlocked: boolean; score: number } | null>(null);
 
   const [events, setEvents] = useState<FeedEvent[]>([]);
   const [pending, setPending] = useState<string[]>([]);
@@ -254,6 +257,11 @@ export default function RehearsalRoom() {
   const [turnCoachOpen, setTurnCoachOpen] = useState<string | null>(null);
   const [turnCoachText, setTurnCoachText] = useState("");
   const stepmodeSessionRef = useRef<string | null>(null);
+  // turn pacing: Stepped (default — the clone pauses each turn for review) vs
+  // Play through (the clone flows without gating). Rehearsal only.
+  const [stepMode, setStepMode] = useState<"stepped" | "play">("stepped");
+  // "Redo this turn" in-flight key (the turn being re-run), for the inline note
+  const [redoBusy, setRedoBusy] = useState<string | null>(null);
 
   const feedRef = useRef<HTMLDivElement | null>(null);
   const spokenRef = useRef<number | null>(null);
@@ -313,6 +321,9 @@ export default function RehearsalRoom() {
       setGraphVersion(typeof gv === "number" ? gv : 1);
     }).catch(() => { setPlaybook(null); setGraphVersion(1); });
     void loadVersions(agentId);
+    void api.get<{ score?: number; promoteUnlocked?: boolean }>(`/api/readiness/${agentId}`)
+      .then((r) => setPromoteInfo({ unlocked: !!r.promoteUnlocked, score: Math.round(r.score ?? 0) }))
+      .catch(() => setPromoteInfo(null));
   }, [agentId]);
   async function loadVersions(id: string) {
     try {
@@ -567,7 +578,7 @@ export default function RehearsalRoom() {
       setPinned(false);
       setGoldenId(null);
       void loadVersions(agentId); // keep the header chip's golden gap current
-      setResumeNote("Unpinned — real calls use the live draft persona until you pin again.");
+      setResumeNote("Taken off live — real calls use the draft persona until you promote again.");
     } catch {
       setResumeNote("Unpin failed — try again.");
     }
@@ -584,10 +595,10 @@ export default function RehearsalRoom() {
       void loadVersions(agentId); // keep the header chip's golden gap current
       // golden pins the version — certification PROVES it: gates next, workspace after
       if (bound && live) {
-        setResumeNote("Pinned as golden ✓ — run certification when you finish the session.");
+        setResumeNote("Promoted to live ✓ — run certification when you finish the session.");
         setTimeout(() => setResumeNote(""), 9000);
       } else {
-        setResumeNote("Pinned as golden ✓ — opening certification to complete him…");
+        setResumeNote("Promoted to live ✓ — opening certification to complete him…");
         setTimeout(() => nav("certification"), 1400);
       }
     } catch (e) {
@@ -1340,6 +1351,11 @@ export default function RehearsalRoom() {
   const rehTotal = Math.max(stages.length, rehearsalTurns.length, 1);
   const rehCurrentIdx = rehearsalTurns.length - 1;
   const rehProg = `Reply ${Math.min(Math.max(rehearsalTurns.length, 1), rehTotal)} of ${rehTotal}`;
+  // Your-turn signal (rehearsal only): the current turn ended on a QUESTION to
+  // the guest — the clone's last say text, trimmed, ends with "?". Drives the
+  // composer's "reply as the guest" prompt and the turn card's Skip/Continue.
+  const currentTurn = rehearsalTurns[rehCurrentIdx] ?? null;
+  const awaitingGuestReply = bound && !isZoom && !!currentTurn?.speech && currentTurn.speech.text.trim().endsWith("?");
 
   // read the grades back for this call — on mount + after each write
   async function refreshGrades(callId: string) {
@@ -1382,15 +1398,35 @@ export default function RehearsalRoom() {
     void gradePart(t.turnSeq, "screen", "coach", `coach:screen:${t.turnSeq}:demo`);
     void takeControl();
   }
-  async function approveTurnBoth(t: RehearsalTurn) {
-    if (t.speech) await gradePart(t.turnSeq, "speech", "approve");
-    if (t.screen) await gradePart(t.turnSeq, "screen", "approve");
-  }
-  // Approve & continue: settle any ungraded parts, then release the turn gate.
+  // Continue: settle any ungraded parts (approve), then release the turn gate.
+  // The ONLY way a turn advances — nothing auto-advances.
   async function advanceTurn(t: RehearsalTurn) {
     if (t.speech && !grades[`${t.turnSeq}|speech`]) await gradePart(t.turnSeq, "speech", "approve");
     if (t.screen && !grades[`${t.turnSeq}|screen`]) await gradePart(t.turnSeq, "screen", "approve");
     try { await api.post("/api/live/nudge", { kind: "advance" }); } catch { /* next guest line still moves it on */ }
+  }
+  // Redo this turn: after coaching, re-run the moment so the operator hears the
+  // corrected version — release the gate, then replay THIS turn's opening guest
+  // line. Uses only existing nudge kinds; best-effort. Turns with no opening
+  // guest line (e.g. the greet) don't offer redo.
+  async function redoTurn(t: RehearsalTurn) {
+    const line = t.guest.trim();
+    if (!bound || !line || redoBusy) return;
+    setRedoBusy(t.key);
+    try {
+      await api.post("/api/live/nudge", { kind: "advance" });
+      await new Promise((r) => setTimeout(r, 400));
+      await api.post("/api/live/nudge", { kind: "guest", text: line });
+      setPending((p) => [...p, line]);
+    } catch { /* best-effort */ }
+    setTimeout(() => setRedoBusy(null), 2500);
+  }
+  // Play-through toggle: flip step-mode on the bridge. Stepped = "on" (gate each
+  // turn), Play through = "off" (flow freely). Reflected in the header control.
+  function toggleStepMode() {
+    const next = stepMode === "stepped" ? "play" : "stepped";
+    setStepMode(next);
+    void api.post("/api/live/nudge", { kind: "stepmode", text: next === "play" ? "off" : "on" }).catch(() => { /* best-effort */ });
   }
   // load grades when the rehearsal call binds / changes; clear outside rehearsal
   useEffect(() => {
@@ -1406,6 +1442,7 @@ export default function RehearsalRoom() {
     if (!callId) return;
     if (stepmodeSessionRef.current !== callId) {
       stepmodeSessionRef.current = callId;
+      setStepMode("stepped"); // a fresh session starts stepped — keep the control truthful
       void api.post("/api/live/nudge", { kind: "stepmode", text: "on" }).catch(() => { /* review still renders */ });
     }
     return () => { void api.post("/api/live/nudge", { kind: "stepmode", text: "off" }).catch(() => { /* teardown best-effort */ }); };
@@ -1459,7 +1496,7 @@ export default function RehearsalRoom() {
           )}
         </span>
         <span style={{ position: "relative" }}>
-          <button onClick={() => { setGoldenMenu((m) => !m); setUnpinArm(false); }} disabled={!agentId} title="Golden — pin, unpin, certification" style={{ ...ghostBtn, display: "inline-flex", alignItems: "center", gap: 6, ...(pinned ? { borderColor: "var(--gold)", color: "var(--gold)" } : { color: "var(--ink2)" }) }}>
+          <button onClick={() => { setGoldenMenu((m) => !m); setUnpinArm(false); }} disabled={!agentId} title="Live version — promote, take off live, certification" style={{ ...ghostBtn, display: "inline-flex", alignItems: "center", gap: 6, ...(pinned ? { borderColor: "var(--gold)", color: "var(--gold)" } : { color: "var(--ink2)" }) }}>
             <span className="material-symbols-rounded" style={{ fontSize: 16, ...(pinned ? { fontVariationSettings: "'FILL' 1" } : {}) }}>{pinned ? "star" : "star_outline"}</span>
             {pinning ? "Working…" : pinned ? (typeof goldenNumber === "number" ? `Live version · v${goldenNumber}` : "Live version") : "No live version"}
             <span className="material-symbols-rounded" style={{ fontSize: 15 }}>expand_more</span>
@@ -1657,11 +1694,11 @@ export default function RehearsalRoom() {
                     </div>
                     {v.id === goldenId ? (
                       <span style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 11, fontWeight: 700, color: "var(--gold)", height: "fit-content", flexShrink: 0 }}>
-                        <span className="material-symbols-rounded" style={{ fontSize: 13, fontVariationSettings: "'FILL' 1" }}>star</span>golden
+                        <span className="material-symbols-rounded" style={{ fontSize: 13, fontVariationSettings: "'FILL' 1" }}>star</span>live version
                       </span>
                     ) : (
                       <button onClick={() => void pinVersion(v.id)} disabled={!!pinningId} style={{ fontSize: 11, fontWeight: 700, color: "var(--ink2)", background: "transparent", border: "none", cursor: "pointer", height: "fit-content", fontFamily: "inherit", flexShrink: 0, opacity: pinningId === v.id ? 0.5 : 1 }}>
-                        {pinningId === v.id ? "Pinning…" : "Pin golden"}
+                        {pinningId === v.id ? "Promoting…" : "Make live"}
                       </button>
                     )}
                   </div>
@@ -1704,24 +1741,30 @@ export default function RehearsalRoom() {
               </>
             ) : (
               <>
-                <div style={{ fontSize: 17, fontWeight: 800, marginBottom: 8 }}>{pinned ? "Session ended" : "Session ended — nothing is golden yet"}</div>
+                <div style={{ fontSize: 17, fontWeight: 800, marginBottom: 8 }}>Rehearsal ended</div>
                 <div style={{ fontSize: 12.5, color: "var(--ink2)", lineHeight: 1.6, marginBottom: 18 }}>
                   {pinned
-                    ? <>A golden persona is pinned — that exact version drives {firstName}'s real calls. Fixes you applied in this session live in the draft; if they made {firstName} better, <b style={{ color: "var(--gold)" }}>pin again</b> to make them golden. Screen-flow edits reach real calls immediately either way.</>
-                    : <>Every fix you applied is saved, but none of it drives real calls until you pin. Keep rehearsing — go live, correct {firstName}, repeat — and when a run feels perfect, hit <b style={{ color: "var(--gold)" }}>Pin as golden</b>: that exact persona and flow becomes what {firstName} runs on a real call. Until then {firstName} stays in rehearsal.</>}
+                    ? <>Every fix you applied is saved to {firstName}'s draft. {firstName} already has a <b style={{ color: "var(--gold)" }}>live version</b> driving real calls — if this session made them better, promote to update the live version. Screen-flow edits reach real calls immediately either way.</>
+                    : <>Every fix you applied is saved to {firstName}'s draft. Nothing drives real calls yet — when a run feels right, promote to make it the <b style={{ color: "var(--gold)" }}>live version</b>. Until then {firstName} stays in rehearsal.</>}
                 </div>
                 <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                   <button onClick={() => void goLive()} disabled={!agentId || joining} style={{ height: 44, padding: "0 22px", borderRadius: 9999, border: "none", background: "var(--accent)", color: "#fff", fontSize: 13.5, fontWeight: 800, boxShadow: "0 8px 24px rgba(255,6,96,.3)", opacity: joining ? 0.6 : 1, ...btnFont }}>
                     {joining ? "Starting…" : "Rehearse again"}
                   </button>
-                  {pinned ? (
-                    <button onClick={() => nav("certification")} style={{ ...ghostBtn, borderColor: "var(--purple)", color: "var(--purple-ink)", display: "inline-flex", alignItems: "center", gap: 6 }}>
-                      <span className="material-symbols-rounded" style={{ fontSize: 16 }}>verified</span>Run certification
+                  {promoteInfo?.unlocked ? (
+                    <button onClick={pinGolden} disabled={pinning || !agentId} style={{ ...ghostBtn, borderColor: "var(--gold)", color: "var(--gold)", display: "inline-flex", alignItems: "center", gap: 6, opacity: pinning ? 0.6 : 1 }}>
+                      <span className="material-symbols-rounded" style={{ fontSize: 16, fontVariationSettings: "'FILL' 1" }}>star</span>
+                      {pinning ? "Promoting…" : pinned ? "Update the live version" : "Make this the live version"}
                     </button>
                   ) : (
-                    <button onClick={pinGolden} disabled={pinning || !agentId} style={{ ...ghostBtn, borderColor: "var(--gold)", color: "var(--gold)", opacity: pinning ? 0.6 : 1 }}>
-                      {pinning ? "Pinning…" : "It was perfect — Pin as golden"}
-                    </button>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                      <button onClick={() => nav("readiness")} disabled={!agentId} style={{ ...ghostBtn, borderColor: "var(--purple)", color: "var(--purple-ink)", display: "inline-flex", alignItems: "center", gap: 6 }}>
+                        <span className="material-symbols-rounded" style={{ fontSize: 16 }}>fact_check</span>Run quality checks
+                      </button>
+                      <span style={{ fontSize: 11, color: "var(--ink3)", fontWeight: 600 }}>
+                        {promoteInfo ? <>Promotion unlocks at 70% — {firstName} is at {promoteInfo.score}%</> : "Promotion unlocks once quality checks pass."}
+                      </span>
+                    </div>
                   )}
                 </div>
               </>
@@ -1856,6 +1899,13 @@ export default function RehearsalRoom() {
                               <div className="l">{t.beatName ?? `Reply ${t.turnSeq}`}</div>
                               <div className="s">{t.speech?.text ?? t.screen?.text ?? t.guest ?? ""}</div>
                             </div>
+                            {coached && bound && !isZoom && !!t.guest.trim() && (
+                              redoBusy === t.key
+                                ? <span style={{ fontSize: 11, fontWeight: 700, color: "var(--purple-ink)", flexShrink: 0 }}>re-running…</span>
+                                : <button onClick={() => void redoTurn(t)} title={`Re-run this moment so you hear ${firstName}'s corrected version`} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 700, color: "var(--purple-ink)", background: "transparent", border: "1px solid var(--purple)", borderRadius: 9999, padding: "3px 9px", cursor: "pointer", fontFamily: "inherit", flexShrink: 0 }}>
+                                    <span className="material-symbols-rounded" style={{ fontSize: 13 }}>replay</span>Redo
+                                  </button>
+                            )}
                             <span className={`badge ${coached ? "coached" : "ok"}`}>
                               <span className="material-symbols-rounded" style={{ fontSize: 13 }}>{coached ? "edit" : "check"}</span>
                               {coached ? "coached" : "approved"}
@@ -1866,7 +1916,9 @@ export default function RehearsalRoom() {
                     }
                     const speechKey = `${t.turnSeq}|speech`;
                     const screenKey = `${t.turnSeq}|screen`;
-                    const stStatus = (g?: { verdict: string }) => (g?.verdict === "coach" ? "coached" : g?.verdict === "approve" ? "approved" : "waiting");
+                    const coachedThisTurn = sp?.verdict === "coach" || sc?.verdict === "coach";
+                    const awaitingReply = awaitingGuestReply; // this is the current turn
+                    const canRedo = bound && !isZoom && !!t.guest.trim();
                     const teachBtn: CSSProperties = { height: 34, padding: "0 14px", borderRadius: 10, border: "none", background: "var(--purple)", color: "#fff", fontSize: 12, fontWeight: 700, flexShrink: 0, ...btnFont };
                     return (
                       <div key={t.key} className="turn current">
@@ -1882,11 +1934,8 @@ export default function RehearsalRoom() {
                                 <span className="lbl">What he says</span>
                                 <span className="spacer" />
                                 <div className="acts">
-                                  <button className={`mini-btn approve${sp?.verdict === "approve" ? " done" : ""}`} onClick={() => void gradePart(t.turnSeq, "speech", "approve")}>
-                                    <span className="material-symbols-rounded" style={{ fontSize: 15 }}>check</span>{sp?.verdict === "approve" ? "Approved" : "Approve"}
-                                  </button>
                                   <button className={`mini-btn coach${sp?.verdict === "coach" ? " done" : ""}`} onClick={() => toggleTurnCoach(speechKey)}>
-                                    <span className="material-symbols-rounded" style={{ fontSize: 15 }}>edit</span>Coach
+                                    <span className="material-symbols-rounded" style={{ fontSize: 15 }}>edit</span>{sp?.verdict === "coach" ? "Coached" : "Coach"}
                                   </button>
                                 </div>
                               </div>
@@ -1906,11 +1955,8 @@ export default function RehearsalRoom() {
                                 <span className="lbl">What he shows</span>
                                 <span className="spacer" />
                                 <div className="acts">
-                                  <button className={`mini-btn approve${sc?.verdict === "approve" ? " done" : ""}`} onClick={() => void gradePart(t.turnSeq, "screen", "approve")}>
-                                    <span className="material-symbols-rounded" style={{ fontSize: 15 }}>check</span>{sc?.verdict === "approve" ? "Approved" : "Approve"}
-                                  </button>
                                   <button className={`mini-btn coach${sc?.verdict === "coach" ? " done" : ""}`} onClick={() => toggleTurnCoach(screenKey)}>
-                                    <span className="material-symbols-rounded" style={{ fontSize: 15 }}>edit</span>Coach
+                                    <span className="material-symbols-rounded" style={{ fontSize: 15 }}>edit</span>{sc?.verdict === "coach" ? "Coached" : "Coach"}
                                   </button>
                                 </div>
                               </div>
@@ -1937,13 +1983,20 @@ export default function RehearsalRoom() {
                         </div>
                         <div className="tfoot">
                           <div className="status">
-                            {t.speech && <span>Speech <b style={{ color: sp ? "var(--success-ink)" : "var(--ink3)" }}>{stStatus(sp)}</b></span>}
-                            {t.screen && <span>Screen <b style={{ color: sc ? "var(--success-ink)" : "var(--ink3)" }}>{stStatus(sc)}</b></span>}
+                            {redoBusy === t.key
+                              ? <span style={{ color: "var(--purple-ink)", fontWeight: 700 }}>re-running this moment…</span>
+                              : awaitingReply
+                                ? <span style={{ color: "var(--accent)", fontWeight: 700 }}>{firstName} asked you something — reply as the guest below.</span>
+                                : <span>Review — coach {firstName}, or continue.</span>}
                           </div>
                           <div className="spacer" />
-                          <button onClick={() => void approveTurnBoth(t)} style={{ ...ghostBtn, height: 34, padding: "0 14px", fontSize: 12.5 }}>Approve both</button>
-                          <button onClick={() => void advanceTurn(t)} style={{ height: 34, padding: "0 16px", borderRadius: 9999, border: "none", background: "var(--success)", color: "#04231a", fontSize: 12.5, display: "inline-flex", alignItems: "center", gap: 6, ...btnFont, fontWeight: 700 }}>
-                            Continue<span className="material-symbols-rounded" style={{ fontSize: 15 }}>arrow_forward</span>
+                          {coachedThisTurn && canRedo && redoBusy !== t.key && (
+                            <button onClick={() => void redoTurn(t)} title={`Re-run this moment so you hear ${firstName}'s corrected version`} style={{ ...ghostBtn, height: 34, padding: "0 13px", fontSize: 12.5, borderColor: "var(--purple)", color: "var(--purple-ink)", display: "inline-flex", alignItems: "center", gap: 6 }}>
+                              <span className="material-symbols-rounded" style={{ fontSize: 15 }}>replay</span>Redo this turn
+                            </button>
+                          )}
+                          <button onClick={() => void advanceTurn(t)} style={{ height: 34, padding: "0 16px", borderRadius: 9999, fontSize: 12.5, display: "inline-flex", alignItems: "center", gap: 6, ...btnFont, fontWeight: 700, ...(awaitingReply ? { border: "1px solid var(--border)", background: "var(--sunk)", color: "var(--ink2)" } : { border: "none", background: "var(--success)", color: "#04231a" }) }}>
+                            {awaitingReply ? "Skip — no reply" : "Continue"}<span className="material-symbols-rounded" style={{ fontSize: 15 }}>arrow_forward</span>
                           </button>
                         </div>
                       </div>
@@ -2061,13 +2114,20 @@ export default function RehearsalRoom() {
                   On a real call you direct, not speak — whatever you send, the prospect hears {firstName}.
                 </div>
               )}
+              {awaitingGuestReply && inputMode === "guest" && (
+                <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "8px 12px", marginBottom: 9, borderRadius: 10, background: "rgba(255,6,96,.10)", border: "1px solid var(--accent)" }}>
+                  <span className="rr-dot" style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--accent)", animation: "rrPulse 1.4s ease-in-out infinite", flexShrink: 0 }} />
+                  <span style={{ fontSize: 12, fontWeight: 700, color: "var(--accent)" }}>{firstName} asked you something — reply as the guest</span>
+                  <span style={{ fontSize: 11, fontWeight: 600, color: "var(--ink3)", animation: "rrBlink 2s ease infinite" }}>waiting for your reply…</span>
+                </div>
+              )}
               <div style={{ display: "flex", gap: 8 }}>
                 <input
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={(e) => { if (e.key === "Enter") void (inputMode === "direct" ? sendDirect(input) : sendGuest(input)); }}
-                  placeholder={inputMode === "direct" ? `Tell ${firstName} what to do — "go to the outreach section of the position"…` : "Say something as the guest…"}
-                  style={{ flex: 1, height: 42, borderRadius: 9999, border: inputMode === "direct" ? "1px solid var(--purple)" : "1px solid var(--border)", background: "var(--sunk)", color: "var(--ink1)", fontFamily: "inherit", fontSize: 12.5, padding: "0 16px", outline: "none" }}
+                  placeholder={inputMode === "direct" ? `Tell ${firstName} what to do — "go to the outreach section of the position"…` : awaitingGuestReply ? `Reply as the guest — ${firstName} is waiting…` : "Say something as the guest…"}
+                  style={{ flex: 1, height: 42, borderRadius: 9999, border: awaitingGuestReply && inputMode === "guest" ? "1.5px solid var(--accent)" : inputMode === "direct" ? "1px solid var(--purple)" : "1px solid var(--border)", background: "var(--sunk)", color: "var(--ink1)", fontFamily: "inherit", fontSize: 12.5, padding: "0 16px", outline: "none", boxShadow: awaitingGuestReply && inputMode === "guest" ? "0 0 0 3px rgba(255,6,96,.15)" : "none" }}
                 />
                 <button onClick={toggleMic} title={micOn ? "Mic is live — click to mute" : isZoom ? "Mic muted — click to talk as the guest (solo tests)" : "Mic muted — click to talk"} style={{ width: 42, height: 42, borderRadius: "50%", border: micOn ? "1.5px solid var(--accent)" : "1.5px solid var(--border)", background: micOn ? "rgba(255,6,96,.12)" : "transparent", color: micOn ? "var(--accent)" : "var(--ink2)", display: "grid", placeItems: "center", ...btnFont }}>
                   <span className="material-symbols-rounded" style={{ fontSize: 18, animation: micOn && listening ? "rrBlink 2.4s ease infinite" : "none" }}>{micOn ? "mic" : "mic_off"}</span>
@@ -2090,6 +2150,12 @@ export default function RehearsalRoom() {
               <button onClick={() => void (controlling ? handBack() : takeControl())} title={controlling ? "Give the screen back and turn what you showed into a fix" : isZoom ? "Freeze him and drive the screen yourself — the prospect SEES everything you do" : "Freeze him and drive the screen yourself — click inside the stream"} style={{ ...ghostBtn, height: 30, display: "inline-flex", alignItems: "center", gap: 6, borderColor: controlling ? "var(--decor)" : "var(--border)", color: controlling ? "var(--decor)" : "var(--ink1)" }}>
                 <span className="material-symbols-rounded" style={{ fontSize: 15 }}>{controlling ? "keyboard_return" : "back_hand"}</span>
                 {controlling ? "Hand back + teach" : "Take control"}
+              </button>
+              )}
+              {bound && !isZoom && (
+              <button onClick={toggleStepMode} title={stepMode === "stepped" ? `Stepped — ${firstName} pauses each turn for your review. Click to let him play through.` : `Play through — ${firstName} flows without stopping. Click to step turn by turn.`} style={{ ...ghostBtn, height: 30, display: "inline-flex", alignItems: "center", gap: 6, borderColor: stepMode === "play" ? "var(--decor)" : "var(--border)", color: stepMode === "play" ? "var(--decor)" : "var(--ink1)" }}>
+                <span className="material-symbols-rounded" style={{ fontSize: 15 }}>{stepMode === "stepped" ? "pause_circle" : "play_circle"}</span>
+                {stepMode === "stepped" ? "Stepped" : "Play through"}
               </button>
               )}
               {stages.length > 0 && (currentBeat !== null || coverage.length > 0) && (
