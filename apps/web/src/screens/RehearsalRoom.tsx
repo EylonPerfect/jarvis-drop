@@ -210,6 +210,8 @@ export default function RehearsalRoom() {
   // ---- gears: rehearsal (voice + screen) and live call ----
   const [live, setLive] = useState(false);
   const liveInit = useRef(false);
+  // one-shot guard for the mount auto-start (auto-warm + auto-enter on open)
+  const autoStarted = useRef(false);
   // tuning drawer (the studio, absorbed: style · lexicon · rules · knowledge · versions)
   const [tuneOpen, setTuneOpen] = useState(false);
   const [tuneTab, setTuneTab] = useState<"style" | "lexicon" | "rules" | "knowledge" | "versions">("style");
@@ -300,6 +302,14 @@ export default function RehearsalRoom() {
   const rehearsalWarming =
     live && !bound && !isZoom && rehearsalStarting &&
     !(call && call.agent_id && call.agent_id !== agentId);
+  // The live environment (rail + stage) is up whenever we are live and either
+  // bound (READY) or still warming the selected clone.
+  const liveEnv = live && (bound || rehearsalWarming);
+  // A rehearsal owned by a DIFFERENT clone than the one selected — we never
+  // auto-warm over it; the cold card shows the "belongs to another clone" note.
+  const otherCloneActive =
+    !!call && !ended && call.mode === "rehearsal" &&
+    !!call.agent_id && call.agent_id !== agentId;
 
   // ---- agents ----
   useEffect(() => {
@@ -371,15 +381,32 @@ export default function RehearsalRoom() {
   // Auto-enter: once a rehearsal for the SELECTED clone is running — whether it
   // is still warming or already ready — drop straight into the live environment.
   // The old "Go live — ready" gate was pure friction: the session is already up.
-  // We no longer pre-warm on mount (that spun up a sandbox on every visit); the
-  // "Go live" click in the cold card is the intent that starts warming, and this
-  // effect keeps the room live from warming through ready. A rehearsal for a
+  // This effect keeps the room live from warming through ready; the mount
+  // auto-start below is what kicks a fresh session off on open. A rehearsal for a
   // DIFFERENT clone never auto-enters (cold card handles it); Zoom is untouched.
   useEffect(() => {
     if (!statusLoaded || !call || call.ended_at) return;
     if (call.mode !== "rehearsal") return;
     if (call.agent_id && call.agent_id === agentId) setLive(true);
   }, [statusLoaded, call, agentId]);
+
+  // Auto-start on open: land the operator straight in the rehearsal environment
+  // instead of a cold "Go live" gate. Fires ONCE per mount (autoStarted guard).
+  // Reuses goLive() — which setLive(true)s and only join()s when there is no
+  // active call — so an already-running rehearsal for this clone is picked up by
+  // the auto-enter effect above without a double-join. We also setLive(true)
+  // here optimistically so the cold card never flashes before join() returns.
+  // GUARDS: never on Zoom; never over a DIFFERENT clone's active rehearsal
+  // (that stays on the cold card so the operator can switch or end it).
+  useEffect(() => {
+    if (autoStarted.current) return;
+    if (!statusLoaded || !agentId || isZoom) return;
+    if (otherCloneActive) return; // don't auto-warm over another clone's screen
+    autoStarted.current = true;
+    setLive(true);       // optimistic — no cold-card flash before join() returns
+    void goLive();       // join()s only when no active call; else just enters
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [statusLoaded, agentId, isZoom, call]);
 
   // ---- beat jump: any script block is a chapter marker you can drop into ----
   const [beatMenu, setBeatMenu] = useState<{ i: number; x: number; y: number } | null>(null);
@@ -1533,6 +1560,19 @@ export default function RehearsalRoom() {
                   <span className="material-symbols-rounded" style={{ fontSize: 16 }}>verified</span>
                   Run certification
                 </button>
+                {/* golden-vs-draft choice — moved here from the old cold card.
+                    Applies to the NEXT session's persona mode (the current one
+                    already started). Only meaningful when a live version exists. */}
+                {pinned && (
+                  <>
+                    <div style={{ height: 1, background: "var(--border)", margin: "5px 8px" }} />
+                    <label title="Rehearse the LIVE version — exactly what real calls run — on your next session" style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 10px", fontSize: 12.5, fontWeight: 700, color: rehearseGolden ? "var(--gold)" : "var(--ink1)", cursor: "pointer" }}>
+                      <input type="checkbox" checked={rehearseGolden} onChange={(e) => setRehearseGolden(e.target.checked)} style={{ accentColor: "var(--gold)" }} />
+                      Rehearse the live version
+                    </label>
+                    <div style={{ fontSize: 10.5, color: "var(--ink3)", fontWeight: 600, padding: "0 10px 8px" }}>Applies to your next session.</div>
+                  </>
+                )}
               </div>
             </>
           )}
@@ -1784,8 +1824,13 @@ export default function RehearsalRoom() {
         </div>
       )}
 
-      {/* ---------- idle / start: pick a clone, then go live (voice + real screen) ---------- */}
-      {statusLoaded && !live && (
+      {/* ---------- fallback card: NOT the default landing ---------- */}
+      {/* Opening the room auto-warms + auto-enters straight into the live
+          environment (see the mount auto-start effect). This card is now only a
+          FALLBACK: no clone selected, a warm/join error (with retry), another
+          clone owns the warm screen, or a session that was ended in-room (the
+          one-shot auto-start already fired, so we don't silently re-warm). */}
+      {statusLoaded && !liveEnv && (!agentId || joinErr || otherCloneActive || autoStarted.current) && (
         <div className="pds-scroll" style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "18px 22px", display: "flex", justifyContent: "center" }}>
           <section style={{ width: "100%", maxWidth: 720, display: "flex", flexDirection: "column", gap: 14 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -1797,30 +1842,48 @@ export default function RehearsalRoom() {
 
             <div style={{ flex: 1, minHeight: 260, borderRadius: 16, border: "1px dashed var(--border)", background: "var(--card)", display: "grid", placeItems: "center", padding: 24 }}>
               <div style={{ textAlign: "center", maxWidth: 440 }}>
-                {/* COLD only — an active rehearsal for THIS clone auto-enters the
-                    live environment (rail + stage) above, and its warming checklist
-                    shows there, never here. This card is the true cold start. */}
-                <>
+                {/* Fallback states only — a live/warming rehearsal for THIS clone
+                    renders the environment (rail + stage) above, never here. */}
+                {joinErr ? (
+                  /* (b) warming / join errored → message + retry (reuses goLive) */
+                  <>
+                    <span className="material-symbols-rounded" style={{ fontSize: 44, color: "var(--error-ink)" }}>error</span>
+                    <div style={{ fontSize: 16.5, fontWeight: 800, margin: "10px 0 6px" }}>Couldn't start the session</div>
+                    <div style={{ fontSize: 12.5, color: "var(--error-ink)", fontWeight: 600, lineHeight: 1.6, marginBottom: 16 }}>{joinErr}</div>
+                    <button onClick={() => void goLive()} disabled={!agentId || joining} style={{ height: 46, padding: "0 26px", borderRadius: 9999, border: "none", background: "var(--accent)", color: "#fff", fontSize: 14, fontWeight: 800, boxShadow: "0 8px 24px rgba(255,6,96,.3)", cursor: "pointer", opacity: joining ? 0.6 : 1, ...btnFont }}>
+                      {joining ? "Starting…" : "Try again"}
+                    </button>
+                    <div style={{ fontSize: 11, color: "var(--ink3)", fontWeight: 600, marginTop: 10 }}>Spins up a fresh sandbox — about 3–4 minutes.</div>
+                  </>
+                ) : !agentId ? (
+                  /* (a) no clone selected → point them at the picker above */
+                  <>
+                    <span className="material-symbols-rounded" style={{ fontSize: 44, color: "var(--purple)" }}>co_present</span>
+                    <div style={{ fontSize: 16.5, fontWeight: 800, margin: "10px 0 6px" }}>Pick a clone to calibrate</div>
+                    <div style={{ fontSize: 12.5, color: "var(--ink2)", lineHeight: 1.6 }}>
+                      Choose a clone above and the room drops you straight into its rehearsal environment — voice and the real GoPerfect UI, just like a call.
+                    </div>
+                  </>
+                ) : (
+                  /* another clone owns the warm screen, or a session was ended
+                     in-room — offer a manual re-entry (auto-start already fired) */
+                  <>
                     <span className="material-symbols-rounded" style={{ fontSize: 44, color: "var(--purple)" }}>co_present</span>
                     <div style={{ fontSize: 16.5, fontWeight: 800, margin: "10px 0 6px" }}>Ready when you are</div>
                     <div style={{ fontSize: 12.5, color: "var(--ink2)", lineHeight: 1.6, marginBottom: 16 }}>
                       Go live spins up a sandbox where {firstName} speaks, shares the screen and drives the product — voice and the real GoPerfect UI, just like a call.
                     </div>
-                    {call && !call.ended_at && call.mode === "rehearsal" && call.agent_id && call.agent_id !== agentId ? (
+                    {otherCloneActive ? (
                       <div style={{ fontSize: 12, color: "var(--warning-ink)", fontWeight: 600, marginBottom: 12 }}>
                         The warm screen belongs to another clone — end it from the director console or switch back to rehearse live.
                       </div>
                     ) : null}
-                    <label title={pinned ? "Rehearse the LIVE version — exactly what real calls run" : "Nothing live yet — promote a version first"} style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 7, fontSize: 11.5, fontWeight: 700, color: rehearseGolden ? "var(--gold)" : "var(--ink3)", marginBottom: 10, cursor: pinned ? "pointer" : "default", opacity: pinned ? 1 : 0.55 }}>
-                      <input type="checkbox" checked={rehearseGolden} disabled={!pinned} onChange={(e) => setRehearseGolden(e.target.checked)} style={{ accentColor: "var(--gold)" }} />
-                      Rehearse the live version (next session)
-                    </label>
                     <button onClick={() => void goLive()} disabled={!agentId || joining} style={{ height: 46, padding: "0 26px", borderRadius: 9999, border: "none", background: "var(--accent)", color: "#fff", fontSize: 14, fontWeight: 800, boxShadow: "0 8px 24px rgba(255,6,96,.3)", cursor: "pointer", opacity: joining ? 0.6 : 1, ...btnFont }}>
                       {joining ? "Starting…" : "Go live — voice + screen"}
                     </button>
                     <div style={{ fontSize: 11, color: "var(--ink3)", fontWeight: 600, marginTop: 10 }}>Spins up a fresh sandbox — about 3–4 minutes.</div>
-                    {joinErr && <div style={{ marginTop: 10, fontSize: 12, fontWeight: 600, color: "var(--error-ink)" }}>{joinErr}</div>}
-                </>
+                  </>
+                )}
               </div>
             </div>
 
