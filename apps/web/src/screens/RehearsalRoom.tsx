@@ -210,7 +210,6 @@ export default function RehearsalRoom() {
   // ---- gears: rehearsal (voice + screen) and live call ----
   const [live, setLive] = useState(false);
   const liveInit = useRef(false);
-  const prewarmed = useRef(false);
   // tuning drawer (the studio, absorbed: style · lexicon · rules · knowledge · versions)
   const [tuneOpen, setTuneOpen] = useState(false);
   const [tuneTab, setTuneTab] = useState<"style" | "lexicon" | "rules" | "knowledge" | "versions">("style");
@@ -285,6 +284,14 @@ export default function RehearsalRoom() {
   const isZoom = !!call && !ended && call.mode !== "rehearsal";
   const bound = !!call && !ended && phaseIs(call.phase, "READY");
   const rehearsalStarting = (!!call && !ended && !phaseIs(call.phase, "READY")) || joining;
+  // A rehearsal for the SELECTED clone that is still booting (not yet READY).
+  // When true the operator is already inside the live environment and the boot
+  // checklist shows IN the stage. Scoped to rehearsal (never Zoom) and to the
+  // selected clone — a warm screen for a DIFFERENT clone is handled by the cold
+  // card's "belongs to another clone" note, not here.
+  const rehearsalWarming =
+    live && !bound && !isZoom && rehearsalStarting &&
+    !(call && call.agent_id && call.agent_id !== agentId);
 
   // ---- agents ----
   useEffect(() => {
@@ -350,14 +357,18 @@ export default function RehearsalRoom() {
     setHear(false);
   }, [isZoom]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Pre-warm: the sandbox starts booting the moment you land, so "Go live" is
-  // ready by the time the first text passes are done. Fire-and-forget.
+  // Auto-enter: once a rehearsal for the SELECTED clone is running — whether it
+  // is still warming or already ready — drop straight into the live environment.
+  // The old "Go live — ready" gate was pure friction: the session is already up.
+  // We no longer pre-warm on mount (that spun up a sandbox on every visit); the
+  // "Go live" click in the cold card is the intent that starts warming, and this
+  // effect keeps the room live from warming through ready. A rehearsal for a
+  // DIFFERENT clone never auto-enters (cold card handles it); Zoom is untouched.
   useEffect(() => {
-    if (!statusLoaded || !agentId || prewarmed.current) return;
-    if (call && !call.ended_at) { prewarmed.current = true; return; } // something already running
-    prewarmed.current = true;
-    void api.post("/api/live/join", { mode: "rehearsal", agentId }).then(() => refreshStatus()).catch(() => { /* Go live can retry */ });
-  }, [statusLoaded, agentId, call]);
+    if (!statusLoaded || !call || call.ended_at) return;
+    if (call.mode !== "rehearsal") return;
+    if (call.agent_id && call.agent_id === agentId) setLive(true);
+  }, [statusLoaded, call, agentId]);
 
   // ---- beat jump: any script block is a chapter marker you can drop into ----
   const [beatMenu, setBeatMenu] = useState<{ i: number; x: number; y: number } | null>(null);
@@ -1841,7 +1852,10 @@ export default function RehearsalRoom() {
       )}
 
       {/* ---------- pre-session states (live gear only) ---------- */}
-      {!bound && (live || !statusLoaded) && (
+      {/* Rehearsal warming now lives IN the stage (see the bound/warming block
+          below), so it is excluded here; this card still owns the initial
+          status check, the post-session "ended" screen, and Zoom warming. */}
+      {!bound && !rehearsalWarming && (live || !statusLoaded) && (
         <div style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "grid", placeItems: "center", padding: 24 }} className="pds-scroll">
           <div style={{ background: "var(--card)", borderRadius: 18, boxShadow: "var(--shadow)", padding: "32px 36px", maxWidth: 560, width: "100%" }}>
             {!statusLoaded ? (
@@ -1921,32 +1935,10 @@ export default function RehearsalRoom() {
 
             <div style={{ flex: 1, minHeight: 260, borderRadius: 16, border: "1px dashed var(--border)", background: "var(--card)", display: "grid", placeItems: "center", padding: 24 }}>
               <div style={{ textAlign: "center", maxWidth: 440 }}>
-                {rehearsalStarting && !(call && call.agent_id && call.agent_id !== agentId) ? (
-                  /* WARMING — show the boot checklist instead of the cold intro */
-                  <>
-                    <span className="material-symbols-rounded" style={{ fontSize: 40, color: "var(--purple)" }}>co_present</span>
-                    <div style={{ fontSize: 16.5, fontWeight: 800, margin: "10px 0 4px" }}>Warming up {firstName}'s screen</div>
-                    <div style={{ fontSize: 12, color: "var(--ink3)", lineHeight: 1.6, marginBottom: 18 }}>Spinning up the sandbox and signing in to GoPerfect — usually 3 to 4 minutes.</div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 9, textAlign: "left", maxWidth: 280, margin: "0 auto" }}>
-                      {PHASES.map((p, i) => {
-                        const done = donePhases.includes(p) || (phaseIdx >= 0 && i < phaseIdx);
-                        const current = phaseIdx === i || (phaseIdx < 0 && i === 0 && !done);
-                        return (
-                          <div key={p} style={{ display: "flex", alignItems: "center", gap: 10, opacity: done || current ? 1 : 0.45 }}>
-                            <span className="material-symbols-rounded" style={{ fontSize: 17, color: done ? "var(--success-ink)" : current ? "var(--purple)" : "var(--ink3)" }}>
-                              {done ? "check_circle" : current ? "progress_activity" : "radio_button_unchecked"}
-                            </span>
-                            <span style={{ fontSize: 12.5, fontWeight: 600, color: done || current ? "var(--ink1)" : "var(--ink3)" }}>{PHASE_LABELS[p]}</span>
-                            {current && !done && <span style={{ fontSize: 10.5, fontWeight: 700, color: "var(--ink3)" }}>working…</span>}
-                          </div>
-                        );
-                      })}
-                    </div>
-                    {joinErr && <div style={{ marginTop: 14, fontSize: 12, fontWeight: 600, color: "var(--error-ink)" }}>{joinErr}</div>}
-                  </>
-                ) : (
-                  /* COLD — nothing warming yet: explain + let them start */
-                  <>
+                {/* COLD only — an active rehearsal for THIS clone auto-enters the
+                    live environment (rail + stage) above, and its warming checklist
+                    shows there, never here. This card is the true cold start. */}
+                <>
                     <span className="material-symbols-rounded" style={{ fontSize: 44, color: "var(--purple)" }}>co_present</span>
                     <div style={{ fontSize: 16.5, fontWeight: 800, margin: "10px 0 6px" }}>Ready when you are</div>
                     <div style={{ fontSize: 12.5, color: "var(--ink2)", lineHeight: 1.6, marginBottom: 16 }}>
@@ -1962,12 +1954,11 @@ export default function RehearsalRoom() {
                       Rehearse the live version (next session)
                     </label>
                     <button onClick={() => void goLive()} disabled={!agentId || joining} style={{ height: 46, padding: "0 26px", borderRadius: 9999, border: "none", background: "var(--accent)", color: "#fff", fontSize: 14, fontWeight: 800, boxShadow: "0 8px 24px rgba(255,6,96,.3)", cursor: "pointer", opacity: joining ? 0.6 : 1, ...btnFont }}>
-                      {bound ? "Go live — ready" : "Go live — voice + screen"}
+                      {joining ? "Starting…" : "Go live — voice + screen"}
                     </button>
-                    <div style={{ fontSize: 11, color: "var(--ink3)", fontWeight: 600, marginTop: 10 }}>Starts a fresh sandbox (3–4 min).</div>
+                    <div style={{ fontSize: 11, color: "var(--ink3)", fontWeight: 600, marginTop: 10 }}>Spins up a fresh sandbox — about 3–4 minutes.</div>
                     {joinErr && <div style={{ marginTop: 10, fontSize: 12, fontWeight: 600, color: "var(--error-ink)" }}>{joinErr}</div>}
-                  </>
-                )}
+                </>
               </div>
             </div>
 
@@ -2003,8 +1994,10 @@ export default function RehearsalRoom() {
         </div>
       )}
 
-      {/* ---------- bound: rail + stage ---------- */}
-      {bound && live && (
+      {/* ---------- live environment: rail + stage (ready OR rehearsal warming) ---------- */}
+      {/* Warming a rehearsal for the selected clone renders the environment too,
+          with the stage showing the boot checklist until `bound` (READY). */}
+      {live && (bound || rehearsalWarming) && (
         <div style={{ flex: 1, minHeight: 0, display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,0.82fr)" }}>
           {/* conversation rail */}
           <section style={{ display: "flex", flexDirection: "column", borderRight: "1px solid var(--divider)", minHeight: 0 }}>
@@ -2285,14 +2278,16 @@ export default function RehearsalRoom() {
           {/* stage */}
           <section className="pds-scroll" style={{ display: "flex", flexDirection: "column", minWidth: 0, padding: "16px 18px 14px", gap: 12, overflowY: "auto" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10, position: "sticky", top: -16, zIndex: 10, background: "var(--bg)", paddingTop: 16, marginTop: -16, paddingBottom: 8, marginBottom: -8 }}>
-              <span style={{ display: "inline-flex", alignItems: "center", gap: 8, height: 30, padding: "0 14px", borderRadius: 9999, background: controlling ? "rgba(0,187,255,.15)" : "rgba(255,6,96,.14)", color: controlling ? "var(--decor)" : "var(--accent)", fontSize: 11.5, fontWeight: 800 }}>
-                <span className="rr-dot" style={{ width: 8, height: 8, borderRadius: "50%", background: controlling ? "var(--decor)" : "var(--accent)", animation: "rrPulse 1.6s ease-in-out infinite" }} />
-                {controlling ? "YOU are driving — show him how it's done" : `${firstName} is driving`}
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 8, height: 30, padding: "0 14px", borderRadius: 9999, background: !bound ? "var(--purple-soft)" : controlling ? "rgba(0,187,255,.15)" : "rgba(255,6,96,.14)", color: !bound ? "var(--purple-ink)" : controlling ? "var(--decor)" : "var(--accent)", fontSize: 11.5, fontWeight: 800 }}>
+                <span className="rr-dot" style={{ width: 8, height: 8, borderRadius: "50%", background: !bound ? "var(--purple)" : controlling ? "var(--decor)" : "var(--accent)", animation: "rrPulse 1.6s ease-in-out infinite" }} />
+                {!bound ? `Booting ${firstName}'s screen` : controlling ? "YOU are driving — show him how it's done" : `${firstName} is driving`}
               </span>
+              {bound && (
               <button onClick={() => void (controlling ? handBack() : takeControl())} title={controlling ? "Give the screen back and turn what you showed into a fix" : isZoom ? "Freeze him and drive the screen yourself — the prospect SEES everything you do" : "Freeze him and drive the screen yourself — click inside the stream"} style={{ ...ghostBtn, height: 30, display: "inline-flex", alignItems: "center", gap: 6, borderColor: controlling ? "var(--decor)" : "var(--border)", color: controlling ? "var(--decor)" : "var(--ink1)" }}>
                 <span className="material-symbols-rounded" style={{ fontSize: 15 }}>{controlling ? "keyboard_return" : "back_hand"}</span>
                 {controlling ? "Hand back + teach" : "Take control"}
               </button>
+              )}
               {stages.length > 0 && (currentBeat !== null || coverage.length > 0) && (
                 <span style={{ display: "inline-flex", alignItems: "center", gap: 6, height: 30, padding: "0 12px", borderRadius: 9999, background: "var(--purple-soft)", color: "var(--purple-ink)", fontSize: 11.5, fontWeight: 800 }}>
                   {currentBeat !== null ? `beat ${Math.min(currentBeat, stages.length)}/${stages.length} · ${(stages[Math.min(currentBeat, stages.length) - 1]?.name ?? "").replace(/^[\d:—\-.\s]+/, "").slice(0, 22)}` : `flow`}
@@ -2315,8 +2310,32 @@ export default function RehearsalRoom() {
                 {[0, 1, 2].map((i) => <span key={i} className="d" />)}
                 <span className="url">{streamHost || "sandbox screen"}</span>
               </div>
-              <div style={{ position: "relative", width: "100%", aspectRatio: "4 / 3", background: "#05070d" }} title={controlling ? "You are driving — click and type inside the screen" : "Watching — the wheel scrolls this panel; hit Take control to interact"}>
-                {streamUrl ? (
+              <div style={{ position: "relative", width: "100%", aspectRatio: "4 / 3", background: "#05070d" }} title={!bound ? "The sandbox is booting — the screen opens here when it's ready" : controlling ? "You are driving — click and type inside the screen" : "Watching — the wheel scrolls this panel; hit Take control to interact"}>
+                {!bound ? (
+                  // Warming: the boot checklist lives IN the stage, so the operator
+                  // watches progress right where the screen will appear.
+                  <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", gap: 14, padding: 24 }}>
+                    <span className="material-symbols-rounded" style={{ fontSize: 34, color: "var(--purple)" }}>co_present</span>
+                    <div style={{ fontSize: 14.5, fontWeight: 800, color: "#e7ecf5" }}>Warming up {firstName}'s screen</div>
+                    <div style={{ fontSize: 11.5, color: "#9fb0c8", lineHeight: 1.5, textAlign: "center", maxWidth: 340 }}>Spinning up the sandbox and signing in to GoPerfect — usually 3 to 4 minutes. You're in the room; the screen opens here the moment it's ready.</div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8, textAlign: "left", width: 260 }}>
+                      {PHASES.map((p, i) => {
+                        const done = donePhases.includes(p) || (phaseIdx >= 0 && i < phaseIdx);
+                        const current = phaseIdx === i || (phaseIdx < 0 && i === 0 && !done);
+                        return (
+                          <div key={p} style={{ display: "flex", alignItems: "center", gap: 10, opacity: done || current ? 1 : 0.45 }}>
+                            <span className="material-symbols-rounded" style={{ fontSize: 16, color: done ? "var(--success-ink)" : current ? "var(--purple)" : "#7d8ca3" }}>
+                              {done ? "check_circle" : current ? "progress_activity" : "radio_button_unchecked"}
+                            </span>
+                            <span style={{ fontSize: 12, fontWeight: 600, color: done || current ? "#e7ecf5" : "#7d8ca3" }}>{PHASE_LABELS[p]}</span>
+                            {current && !done && <span style={{ fontSize: 10, fontWeight: 700, color: "#7d8ca3" }}>working…</span>}
+                          </div>
+                        );
+                      })}
+                    </div>
+                    {joinErr && <div style={{ fontSize: 11.5, fontWeight: 600, color: "var(--error-ink)" }}>{joinErr}</div>}
+                  </div>
+                ) : streamUrl ? (
                   // While watching, the stream ignores the mouse so the wheel scrolls
                   // the panel (otherwise the iframe eats it and the top/bottom of the
                   // screen are unreachable). Take control makes it interactive.
@@ -2329,6 +2348,7 @@ export default function RehearsalRoom() {
               </div>
             </div>
 
+            {bound && (
             <div className="voicebar" style={{ flexShrink: 0 }}>
               <span className="live-dot" />
               {liveAudioOn ? "Live audio from the sandbox" : hear ? `Voice on — you hear ${firstName}` : `${firstName} is muted`}
@@ -2341,6 +2361,7 @@ export default function RehearsalRoom() {
               </div>
               <span className="mut" style={{ marginLeft: "auto", fontSize: 12 }}>{firstName}, real voice</span>
             </div>
+            )}
 
             {/* script beat strip */}
             <div style={{ background: "var(--card)", borderRadius: 18, boxShadow: "var(--shadow)", padding: "14px 16px" }}>
