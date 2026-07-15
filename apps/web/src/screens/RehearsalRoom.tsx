@@ -795,7 +795,17 @@ export default function RehearsalRoom() {
     if (!clean || !bound) return;
     setInput("");
     setPending((p) => [...p, clean]);
-    try { await api.post("/api/live/nudge", { kind: "guest", text: clean }); } catch { /* shows on next poll if it landed */ }
+    try {
+      await api.post("/api/live/nudge", { kind: "guest", text: clean });
+      // STEPPED rehearsal only: a guest reply otherwise queues behind the turn
+      // gate and Elie stays silent until an explicit advance, so replying feels
+      // dead. Release the gate right after the guest line so he answers the
+      // reply immediately. Play mode already flows; Zoom is a real call (never
+      // inject or advance there). `bound` is already guaranteed above.
+      if (stepMode === "stepped" && !isZoom) {
+        await api.post("/api/live/nudge", { kind: "advance" });
+      }
+    } catch { /* shows on next poll if it landed */ }
   }
   // ---- open mic: listening is the default in a live session; mute is the
   // exception. The browser stops recognition after silence, so it auto-restarts
