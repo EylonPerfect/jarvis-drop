@@ -1557,7 +1557,7 @@ export default function RehearsalRoom() {
         <span style={{ position: "relative" }}>
           <button onClick={() => { setGoldenMenu((m) => !m); setUnpinArm(false); }} disabled={!agentId} title="Golden — pin, unpin, certification" style={{ ...ghostBtn, display: "inline-flex", alignItems: "center", gap: 6, ...(pinned ? { borderColor: "var(--gold)", color: "var(--gold)" } : { color: "var(--ink2)" }) }}>
             <span className="material-symbols-rounded" style={{ fontSize: 16, ...(pinned ? { fontVariationSettings: "'FILL' 1" } : {}) }}>{pinned ? "star" : "star_outline"}</span>
-            {pinning ? "Working…" : pinned ? "Live version" : "Not live"}
+            {pinning ? "Working…" : pinned ? (typeof goldenNumber === "number" ? `Live version · v${goldenNumber}` : "Live version") : "No live version"}
             <span className="material-symbols-rounded" style={{ fontSize: 15 }}>expand_more</span>
           </button>
           {goldenMenu && (
@@ -1913,19 +1913,6 @@ export default function RehearsalRoom() {
                 {agents.length === 0 && <option value="">No agents yet</option>}
                 {agents.map((a) => <option key={a.id} value={a.id}>{a.name}{a.role ? ` — ${a.role}` : ""}</option>)}
               </select>
-              {stages.length > 0 && (
-                <div style={{ display: "flex", gap: 6, overflowX: "auto", flex: 1, minWidth: 0, alignItems: "center" }} className="pds-scroll">
-                  {stages.slice(0, 8).map((s, i) => (
-                    <span key={s.id ?? i} onClick={(e) => setBeatMenu({ i, x: e.clientX, y: e.clientY })} title="Edit · drop" style={{ flexShrink: 0, display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 8px 6px 11px", borderRadius: 9999, background: "var(--sunk)", border: "1px solid var(--border)", fontSize: 11, fontWeight: 700, color: "var(--ink2)", whiteSpace: "nowrap", cursor: "pointer" }}>
-                      {i + 1}. {cleanBeat(s.name).slice(0, 26)}
-                      <button onClick={(e) => { e.stopPropagation(); void dropBeat(i); }} disabled={dropping} title="Drop this beat — he stops doing it" style={{ display: "inline-flex", alignItems: "center", border: "none", background: dropArm === i ? "var(--error-soft)" : "transparent", color: dropArm === i ? "var(--error-ink)" : "var(--ink3)", cursor: "pointer", fontFamily: "inherit", borderRadius: 9999, padding: dropArm === i ? "1px 6px" : 0, fontSize: 9.5, fontWeight: 800 }}>
-                        {dropArm === i ? "Drop?" : <span className="material-symbols-rounded" style={{ fontSize: 13 }}>close</span>}
-                      </button>
-                    </span>
-                  ))}
-                  {dropNote && <span style={{ flexShrink: 0, fontSize: 10.5, fontWeight: 700, color: dropNote.startsWith("Drop failed") ? "var(--error-ink)" : "var(--success-ink)" }}>{dropNote}</span>}
-                </div>
-              )}
             </div>
 
             <div style={{ flex: 1, minHeight: 260, borderRadius: 16, border: "1px dashed var(--border)", background: "var(--card)", display: "grid", placeItems: "center", padding: 24 }}>
