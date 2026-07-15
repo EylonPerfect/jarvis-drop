@@ -223,7 +223,7 @@ export default function RehearsalRoom() {
   const [events, setEvents] = useState<FeedEvent[]>([]);
   const [pending, setPending] = useState<string[]>([]);
   const [input, setInput] = useState("");
-  const [inputMode, setInputMode] = useState<"guest" | "direct" | "coach">("guest");
+  const [inputMode, setInputMode] = useState<"guest" | "direct">("guest");
   const [coachNote, setCoachNote] = useState<{ ok: boolean; text: string } | null>(null);
   const [coachBusy, setCoachBusy] = useState(false);
   const [listening, setListening] = useState(false);
@@ -469,81 +469,13 @@ export default function RehearsalRoom() {
     setTeaching(false); setEditTarget(null); setEditText("");
   }
 
-  // ---- add step: operator inserts a prescriptive step into the beat sheet ----
-  const [stepOpen, setStepOpen] = useState(false);
-  const [stepMode, setStepMode] = useState<"say" | "show">("say");
-  const [stepBeat, setStepBeat] = useState(1);
-  const [stepText, setStepText] = useState("");
-  const [stepGuest, setStepGuest] = useState(""); // guest line directly above the anchor (few-shot teach)
+  // ---- step editing lives in the storyboard now; the composer no longer adds
+  // steps. `stepBusy`/`stepNote` are still driven by removeStep below (the
+  // in-stage script-strip erase control) and its status line. ----
   const [stepBusy, setStepBusy] = useState(false);
   const [stepNote, setStepNote] = useState("");
-  const SHOW_CHIPS = ["Show the ranked matches", "Go to the outreach tab", "Back to the positions board"];
-  function openStep(anchorGuest: string) {
-    setStepMode("say");
-    setStepText("");
-    setStepGuest(anchorGuest);
-    setStepBeat(Math.min(Math.max(currentBeat ?? 1, 1), Math.max(stages.length, 1)));
-    setStepOpen(true);
-  }
-  async function addStep() {
-    const text = stepText.trim();
-    if (!text || stepBusy || !agentId) return;
-    setStepBusy(true);
-    try {
-      const r = await api.get<{ playbook: Playbook }>(`/api/clones/${agentId}/playbook`);
-      const pb = r.playbook ?? {};
-      const stagesNow = Array.isArray(pb.stages) ? pb.stages : [];
-      if (!stagesNow.length) throw new Error("no beat sheet yet — build beats in the storyboard first");
-      const beat = Math.min(Math.max(stepBeat, 1), stagesNow.length);
-      const gvNow = typeof (pb as Record<string, unknown>).graphVersion === "number" ? (pb as Record<string, unknown>).graphVersion as number : 1;
-      const next = {
-        ...pb,
-        graphVersion: gvNow + 1,
-        stages: stagesNow.map((s, i) => {
-          if (i !== beat - 1) return s;
-          if (stepMode === "say") {
-            const lines = Array.isArray(s.voice?.exampleLines) ? s.voice.exampleLines as string[] : [];
-            return { ...s, voice: { ...(s.voice ?? {}), exampleLines: [...lines, text] } };
-          }
-          const acts = Array.isArray(s.screen?.actions) ? s.screen.actions : [];
-          return { ...s, screen: { ...(s.screen ?? {}), actions: [...acts, text] } };
-        }),
-      } as Playbook;
-      const put = await api.put<{ ok: boolean; playbook: Playbook; goldenRecompiled?: boolean }>(`/api/clones/${agentId}/playbook`, { playbook: next });
-      const saved = put.playbook ?? next;
-      setPlaybook(saved);
-      const gvSaved = (saved as Record<string, unknown>).graphVersion;
-      const gvFinal = typeof gvSaved === "number" ? gvSaved : gvNow + 1;
-      setGraphVersion(gvFinal);
-      // Anchored under a guest line: a Say step is ALSO the ideal reply to that
-      // moment — teach it as a few-shot via the same path as "Edit reply".
-      if (stepMode === "say" && stepGuest.trim() && spec) {
-        const shots = spec.few_shots ?? [];
-        await commitSpec(
-          { ...spec, few_shots: [...shots, { id: `f${shots.length + 1}`, situation: stepGuest.trim(), human_response: text, source: "step added in calibration", active: true }] },
-          `Step added: "${text.slice(0, 50)}"`,
-        );
-      }
-      // Session live: he takes the new step RIGHT NOW, not just next session.
-      let told = false;
-      if (bound && live) {
-        const beatName = (stagesNow[beat - 1]?.name ?? "").trim();
-        try {
-          await api.post("/api/live/nudge", { kind: "direct", text: `NEW STEP just added to beat ${beat}${beatName ? ` (${beatName})` : ""}: ${stepMode === "say" ? "say this line now" : "do this on screen now"}: '${text}'. Execute it now, then continue the call.` });
-          told = true;
-        } catch { /* graph is saved — next session picks it up */ }
-      }
-      setStepNote(`Step added to beat ${beat} — graph v${gvFinal}${told ? " · told him mid-call too" : ""}`);
-      setTimeout(() => setStepNote(""), 9000);
-      setStepOpen(false); setStepText(""); setStepGuest("");
-    } catch (e) {
-      setStepNote(`Add step failed: ${e instanceof Error ? e.message : String(e)} — nothing was applied.`);
-      setTimeout(() => setStepNote(""), 8000);
-    }
-    setStepBusy(false);
-  }
 
-  // erase a step from a beat — the mirror of addStep, same PUT + hot-reload rails
+  // erase a step from a beat — same PUT + hot-reload rails
   const [stepRmArm, setStepRmArm] = useState<string | null>(null);
   async function removeStep(beatIdx: number, kind: "say" | "show", index: number) {
     const key = `${beatIdx}:${kind}:${index}`;
@@ -1334,6 +1266,30 @@ export default function RehearsalRoom() {
 
   // ---- derived bits ----
   const stages = playbook?.stages ?? [];
+  // Scenario chips derive from THIS clone's loaded playbook (client-side, no
+  // backend call) so the guest lines match the call being rehearsed: the
+  // guest's own objections read as guest lines, then per-stage listen-for cues
+  // (things the guest might say), then beat names as topic prompts. Falls back
+  // to the generic recruiting list when the playbook yields nothing usable.
+  const scenarioChips = useMemo<string[]>(() => {
+    const pb = (playbook ?? {}) as Record<string, unknown>;
+    const out: string[] = [];
+    const push = (v: unknown) => {
+      const s = typeof v === "string" ? v.trim() : "";
+      if (s && s.length <= 52 && !out.some((o) => o.toLowerCase() === s.toLowerCase())) out.push(s);
+    };
+    // 1) objections — a guest raising one is a natural guest line
+    const objs = Array.isArray(pb.objections) ? pb.objections : [];
+    for (const o of objs) push((o as { objection?: unknown })?.objection);
+    // 2) per-stage listen-for cues (things the guest might say)
+    for (const s of stages) {
+      const lf = Array.isArray(s.voice?.listenFor) ? (s.voice?.listenFor as unknown[]) : [];
+      for (const c of lf) push(c);
+    }
+    // 3) beat names as topic prompts
+    for (const s of stages) if (s.name) push(cleanBeat(s.name));
+    return out.length ? out.slice(0, 4) : SCENARIOS;
+  }, [playbook, stages]);
   // where she is on the flow: the bridge emits BEAT n when she moves stages
   const noteBeat = useMemo(() => {
     for (let i = events.length - 1; i >= 0; i--) {
@@ -1586,23 +1542,22 @@ export default function RehearsalRoom() {
             </>
           )}
         </span>
-        {/* mode toggle: Rehearsal | Live call (both flip the shared `live` gear; isZoom decides which is active) */}
+        {/* mode indicator (read-only): reflects the CURRENT session mode —
+            Rehearsal when !isZoom, Live call when isZoom. This is a status
+            readout, not a switch: starting a real Zoom call is out of scope
+            here, so it no longer pretends to toggle anything. */}
         {statusLoaded && (
-          <span style={{ display: "inline-flex", alignItems: "center", background: "var(--sunk)", borderRadius: 9999, padding: 4, gap: 3 }}>
-            <button
-              onClick={() => setLive(true)}
-              title="Rehearse with voice and the real screen"
-              style={{ display: "inline-flex", alignItems: "center", gap: 6, height: 30, padding: "0 14px", borderRadius: 9999, border: "none", fontSize: 12.5, fontWeight: 700, ...btnFont, ...(live && !isZoom ? { background: "var(--card)", color: "var(--ink1)", boxShadow: "var(--shadow)" } : { background: "transparent", color: "var(--ink2)" }) }}
+          <span role="status" aria-label={isZoom ? "Live call" : "Rehearsal"} title={isZoom ? "On a real Zoom call — you are directing" : "Rehearsing with voice and the real screen"} style={{ display: "inline-flex", alignItems: "center", background: "var(--sunk)", borderRadius: 9999, padding: 4, gap: 3 }}>
+            <span
+              style={{ display: "inline-flex", alignItems: "center", gap: 6, height: 30, padding: "0 14px", borderRadius: 9999, fontSize: 12.5, fontWeight: 700, fontFamily: "inherit", ...(!isZoom ? { background: "var(--card)", color: "var(--ink1)", boxShadow: "var(--shadow)" } : { background: "transparent", color: "var(--ink2)" }) }}
             >
               <span className="material-symbols-rounded" style={{ fontSize: 16 }}>co_present</span>Rehearsal
-            </button>
-            <button
-              onClick={() => setLive(true)}
-              title="A real Zoom call — you are directing"
-              style={{ display: "inline-flex", alignItems: "center", gap: 6, height: 30, padding: "0 14px", borderRadius: 9999, border: "none", fontSize: 12.5, fontWeight: 700, ...btnFont, ...(live && isZoom ? { background: "var(--accent)", color: "#fff" } : { background: "transparent", color: "var(--ink2)" }) }}
+            </span>
+            <span
+              style={{ display: "inline-flex", alignItems: "center", gap: 6, height: 30, padding: "0 14px", borderRadius: 9999, fontSize: 12.5, fontWeight: 700, fontFamily: "inherit", ...(isZoom ? { background: "var(--accent)", color: "#fff" } : { background: "transparent", color: "var(--ink2)" }) }}
             >
               <span className="material-symbols-rounded" style={{ fontSize: 16 }}>videocam</span>Live call
-            </button>
+            </span>
           </span>
         )}
         <div style={{ flex: 1 }} />
@@ -1647,53 +1602,6 @@ export default function RehearsalRoom() {
           </div>
         </div>
       )}
-
-      {/* ---------- add step: prescriptive Say/Show step straight into the beat sheet ---------- */}
-      {stepOpen && (
-        <div style={{ position: "fixed", inset: 0, zIndex: 60, background: "rgba(2,2,20,.6)", display: "grid", placeItems: "center" }} onClick={() => !stepBusy && setStepOpen(false)}>
-          <div onClick={(e) => e.stopPropagation()} style={{ width: 460, maxWidth: "92vw", background: "var(--card)", borderRadius: 18, boxShadow: "var(--shadow)", padding: "22px 24px" }}>
-            <div style={{ fontSize: 16, fontWeight: 800, marginBottom: 4 }}>Add a step</div>
-            <div style={{ fontSize: 12, color: "var(--ink2)", lineHeight: 1.5, marginBottom: 12 }}>
-              A prescriptive step goes straight into {firstName}'s beat sheet — a line he says, or a move he makes on screen, at that beat.
-            </div>
-            <div style={{ display: "flex", borderRadius: 9999, border: "1px solid var(--border)", overflow: "hidden", width: "fit-content", marginBottom: 10 }}>
-              <button onClick={() => setStepMode("say")} title="A line he should say at this moment" style={{ height: 30, padding: "0 16px", border: "none", background: stepMode === "say" ? "var(--purple-soft)" : "transparent", color: stepMode === "say" ? "var(--purple-ink)" : "var(--ink3)", fontSize: 11.5, fontWeight: 800, ...btnFont }}>Say</button>
-              <button onClick={() => setStepMode("show")} title="Something he should do on the screen at this moment" style={{ height: 30, padding: "0 16px", border: "none", background: stepMode === "show" ? "var(--purple-soft)" : "transparent", color: stepMode === "show" ? "var(--purple-ink)" : "var(--ink3)", fontSize: 11.5, fontWeight: 800, ...btnFont }}>Show</button>
-            </div>
-            <select value={stepBeat} onChange={(e) => setStepBeat(Number(e.target.value))} style={{ width: "100%", height: 38, borderRadius: 10, border: "1px solid var(--border)", background: "var(--sunk)", color: "var(--ink1)", fontFamily: "inherit", fontSize: 12.5, padding: "0 10px", marginBottom: 10 }}>
-              {stages.length === 0 && <option value={1}>No beats yet — build the storyboard first</option>}
-              {stages.map((s, i) => <option key={s.id ?? i} value={i + 1}>{i + 1}. {cleanBeat(s.name).slice(0, 60)}</option>)}
-            </select>
-            <textarea
-              value={stepText}
-              onChange={(e) => setStepText(e.target.value)}
-              rows={3}
-              autoFocus
-              placeholder={stepMode === "say" ? "The line he should say at this moment…" : "What he should do on screen, in plain words…"}
-              style={{ width: "100%", borderRadius: 12, border: "1px solid var(--border)", background: "var(--sunk)", color: "var(--ink1)", fontFamily: "inherit", fontSize: 12.5, lineHeight: 1.6, padding: "10px 12px", resize: "vertical" }}
-            />
-            {stepMode === "show" && (
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
-                {SHOW_CHIPS.map((c) => (
-                  <button key={c} onClick={() => setStepText(c)} style={{ height: 26, padding: "0 11px", borderRadius: 9999, border: "1px dashed var(--purple)", background: "transparent", color: "var(--purple-ink)", fontSize: 10.5, fontWeight: 700, ...btnFont }}>{c}</button>
-                ))}
-              </div>
-            )}
-            {stepMode === "say" && stepGuest.trim() && (
-              <div style={{ fontSize: 10.5, color: "var(--ink3)", lineHeight: 1.5, marginTop: 8 }}>
-                Anchored under a guest line — he also learns it as the ideal reply to “{stepGuest.trim().slice(0, 90)}”.
-              </div>
-            )}
-            <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 14 }}>
-              <button onClick={() => void addStep()} disabled={stepBusy || !stepText.trim() || !stages.length} style={{ height: 42, padding: "0 20px", borderRadius: 9999, border: "none", background: "var(--purple)", color: "#fff", fontSize: 13, fontWeight: 800, cursor: "pointer", opacity: stepBusy || !stepText.trim() || !stages.length ? 0.6 : 1, ...btnFont }}>
-                {stepBusy ? "Adding…" : "Add step"}
-              </button>
-              <button onClick={() => setStepOpen(false)} disabled={stepBusy} style={{ background: "none", border: "none", color: "var(--ink3)", fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Cancel</button>
-            </div>
-          </div>
-        </div>
-      )}
-
 
       {/* ---------- reshape by instruction: propose -> diff preview -> confirm ---------- */}
       {reshapeOpen && (
@@ -2215,15 +2123,13 @@ export default function RehearsalRoom() {
                 <div className="tri">
                   <button className={inputMode === "guest" ? "on" : (isZoom ? "disabled" : undefined)} onClick={() => setInputMode("guest")} title={isZoom ? "Speak as the guest — only for solo tests; a real prospect is also talking" : undefined}>As guest</button>
                   <button className={inputMode === "direct" ? "on" : undefined} onClick={() => setInputMode("direct")} title={`Silent instruction — the guest never hears it, ${firstName} acts on it immediately`}>Direct {firstName}</button>
-                  <button className={inputMode === "coach" ? "on" : undefined} onClick={() => setInputMode("coach")} title="Coach — the instruction STICKS: routed to persona rules, sliders, beats or situational directives (and lands mid-call too)">Coach</button>
                 </div>
-                {inputMode === "guest" && SCENARIOS.map((s) => (
+                {inputMode === "guest" && scenarioChips.map((s) => (
                   <button key={s} onClick={() => void sendGuest(s)} disabled={chipDisabled} style={{ height: 28, padding: "0 12px", borderRadius: 9999, border: "1px solid var(--border)", background: "transparent", color: "var(--ink2)", fontSize: 11, fontWeight: 700, ...btnFont }}>
                     {s}
                   </button>
                 ))}
                 {coachNote && <span style={{ fontSize: 10.5, fontWeight: 700, color: coachNote.ok ? "var(--success-ink)" : "var(--error-ink)" }}>{coachBusy ? "Coaching…" : coachNote.text}</span>}
-                {inputMode === "coach" && !coachNote && <span style={{ fontSize: 10.5, fontWeight: 600, color: "var(--ink3)" }}>{coachBusy ? "Routing the instruction…" : "Coaching sticks — it becomes rules, sliders, beat edits or directives."}</span>}
                 {inputMode === "direct" && ["Go to the outreach tab", "Back to the positions board", "Show the matches now"].map((s) => (
                   <button key={s} onClick={() => void sendDirect(s)} disabled={chipDisabled} style={{ height: 28, padding: "0 12px", borderRadius: 9999, border: "1px dashed var(--purple)", background: "transparent", color: "var(--purple-ink)", fontSize: 11, fontWeight: 700, ...btnFont }}>
                     {s}
@@ -2237,20 +2143,17 @@ export default function RehearsalRoom() {
                 </div>
               )}
               <div style={{ display: "flex", gap: 8 }}>
-                <button onClick={() => openStep("")} title="Insert a prescriptive step into the beat sheet" style={{ height: 42, padding: "0 13px", borderRadius: 9999, border: "1px dashed var(--purple)", background: "transparent", color: "var(--purple-ink)", fontSize: 11.5, fontWeight: 800, display: "inline-flex", alignItems: "center", gap: 4, flexShrink: 0, ...btnFont }}>
-                  <span className="material-symbols-rounded" style={{ fontSize: 15 }}>add</span>Step
-                </button>
                 <input
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter") void (inputMode === "coach" ? sendCoach(input) : inputMode === "direct" ? sendDirect(input) : sendGuest(input)); }}
-                  placeholder={inputMode === "coach" ? `Coach ${firstName} — "when they ask about outreach performance, show the analytics screen"…` : inputMode === "direct" ? `Tell ${firstName} what to do — "go to the outreach section of the position"…` : "Say something as the guest…"}
+                  onKeyDown={(e) => { if (e.key === "Enter") void (inputMode === "direct" ? sendDirect(input) : sendGuest(input)); }}
+                  placeholder={inputMode === "direct" ? `Tell ${firstName} what to do — "go to the outreach section of the position"…` : "Say something as the guest…"}
                   style={{ flex: 1, height: 42, borderRadius: 9999, border: inputMode === "direct" ? "1px solid var(--purple)" : "1px solid var(--border)", background: "var(--sunk)", color: "var(--ink1)", fontFamily: "inherit", fontSize: 12.5, padding: "0 16px", outline: "none" }}
                 />
                 <button onClick={toggleMic} title={micOn ? "Mic is live — click to mute" : isZoom ? "Mic muted — click to talk as the guest (solo tests)" : "Mic muted — click to talk"} style={{ width: 42, height: 42, borderRadius: "50%", border: micOn ? "1.5px solid var(--accent)" : "1.5px solid var(--border)", background: micOn ? "rgba(255,6,96,.12)" : "transparent", color: micOn ? "var(--accent)" : "var(--ink2)", display: "grid", placeItems: "center", ...btnFont }}>
                   <span className="material-symbols-rounded" style={{ fontSize: 18, animation: micOn && listening ? "rrBlink 2.4s ease infinite" : "none" }}>{micOn ? "mic" : "mic_off"}</span>
                 </button>
-                <button onClick={() => void (inputMode === "coach" ? sendCoach(input) : inputMode === "direct" ? sendDirect(input) : sendGuest(input))} title="Send" style={{ width: 42, height: 42, borderRadius: "50%", border: "none", background: "var(--purple)", color: "#fff", display: "grid", placeItems: "center", ...btnFont }}>
+                <button onClick={() => void (inputMode === "direct" ? sendDirect(input) : sendGuest(input))} title="Send" style={{ width: 42, height: 42, borderRadius: "50%", border: "none", background: "var(--purple)", color: "#fff", display: "grid", placeItems: "center", ...btnFont }}>
                   <span className="material-symbols-rounded" style={{ fontSize: 18 }}>{inputMode === "direct" ? "podium" : "send"}</span>
                 </button>
               </div>
