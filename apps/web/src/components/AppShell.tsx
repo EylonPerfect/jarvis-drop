@@ -91,7 +91,6 @@ const SECTIONS: NavSection[] = [
           { id: "meetings", icon: "video", label: "Meetings" },
           { id: "workstation", icon: "monitor", label: "Workstation" },
           { id: "livecall", icon: "phone-call", label: "Live Call" },
-          { id: "pdsstudio", icon: "sliders-horizontal", label: "Calibration Room" },
           { id: "debrief", icon: "badge-check", label: "Debrief" },
           { id: "approvals", icon: "inbox", label: "Approvals" },
           { id: "permissions", icon: "shield", label: "Permissions" },
