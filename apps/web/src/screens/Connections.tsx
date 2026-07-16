@@ -254,79 +254,6 @@ function ProviderSection() {
   );
 }
 
-// ---- Demo environment (shared GoPerfect product login) ---------------------
-// The ONE GoPerfect account every clone signs into the product with — on every
-// rehearsal and every live call. Stored server-side and shared across all
-// clones (not per-agent). The password is write-only: GET returns only whether
-// one is set (hasPassword), never the value, so we send `password` in the PUT
-// ONLY when the operator types a new one. An email-only edit leaves the stored
-// password untouched (the backend keeps the current one when none is sent).
-function DemoEnvironmentCard() {
-  const { data, reload } = useApi<{ email: string; hasPassword: boolean }>("/api/demo-login");
-  const loaded = data != null;
-  const email = data?.email ?? "";
-  const hasPassword = !!data?.hasPassword;
-
-  const [editing, setEditing] = useState(false);
-  const [formEmail, setFormEmail] = useState("");
-  const [formPw, setFormPw] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
-
-  const open = () => { setFormEmail(email); setFormPw(""); setErr(""); setEditing(true); };
-
-  const save = async () => {
-    const e = formEmail.trim();
-    if (!e || !e.includes("@")) { setErr("Enter a valid email."); return; }
-    if (!hasPassword && !formPw) { setErr("Set a password — none is stored yet."); return; }
-    setBusy(true); setErr("");
-    try {
-      // Send `password` only when a new one was typed, so an email-only edit
-      // never wipes the stored password (the backend keeps the current one).
-      await api.put("/api/demo-login", { email: e, ...(formPw ? { password: formPw } : {}) });
-      setFormPw(""); setEditing(false);
-      reload();
-    } catch (ex) { setErr(ex instanceof Error ? ex.message : String(ex)); } finally { setBusy(false); }
-  };
-
-  return (
-    <Card
-      icon="key"
-      title="Demo environment"
-      subtitle="The GoPerfect login every clone uses to sign in — one shared account, used on every rehearsal and live call."
-      right={<StatusPill connected={!!email && hasPassword} />}
-    >
-      {editing ? (
-        <div style={{ display: "flex", flexDirection: "column", gap: 12, padding: 16, borderRadius: 14, background: "var(--sunk)", border: "1px solid var(--border)" }}>
-          <Field label="Account email">
-            <input style={fieldStyle} type="email" placeholder="demo@goperfectmatch.com" value={formEmail} onChange={(e) => setFormEmail(e.target.value)} />
-          </Field>
-          <Field label={hasPassword ? "Password (leave blank to keep current)" : "Password"}>
-            <input style={fieldStyle} type="password" placeholder={hasPassword ? "•••••••• — a password is set" : "Set a password"} value={formPw} onChange={(e) => setFormPw(e.target.value)} />
-          </Field>
-          <div style={{ fontSize: 11.5, color: "var(--ink3)", lineHeight: 1.5 }}>Stored on your server only and used by the sandbox to sign in. The password is never shown back.</div>
-          {err && <div style={{ fontSize: 12, fontWeight: 700, color: "var(--error-ink)" }}>{err}</div>}
-          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
-            <PillButton tone="ghost" onClick={() => { setEditing(false); setErr(""); }}>Cancel</PillButton>
-            <PillButton tone="primary" disabled={busy} onClick={save}>{busy ? "Saving…" : "Save credentials"}</PillButton>
-          </div>
-        </div>
-      ) : (
-        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10 }}>
-          <span style={{ fontSize: 12.5, color: email ? "var(--ink2)" : "var(--ink3)" }}>
-            {loaded
-              ? (email
-                  ? <>Signed in as <b style={{ color: "var(--ink1)" }}>{email}</b> · {hasPassword ? "Password set" : "Password not set"}</>
-                  : "No account saved yet.")
-              : "Loading…"}
-          </span>
-          <PillButton tone={email && hasPassword ? "ghost" : "primary"} onClick={open}>{email ? "Edit credentials" : "Set up"}</PillButton>
-        </div>
-      )}
-    </Card>
-  );
-}
-
 export default function Connections() {
   const [theme, setTheme] = useState<"light" | "dark">("dark");
   const { data: integrations, reload } = useApi<Integration[]>("/api/integrations");
@@ -357,8 +284,6 @@ export default function Connections() {
         {e2b
           ? <ServiceCard svc={e2b} reload={reload} />
           : <Card icon="dns" title="E2B (sandbox)" subtitle={integrations == null ? "Loading…" : "Unavailable right now."} right={<StatusPill connected={false} />} />}
-
-        <DemoEnvironmentCard />
       </div>
     </div>
   );
