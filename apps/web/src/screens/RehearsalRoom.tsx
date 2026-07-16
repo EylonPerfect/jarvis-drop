@@ -185,25 +185,33 @@ export default function RehearsalRoom() {
   const [joining, setJoining] = useState(false);
   const [joinErr, setJoinErr] = useState<string | null>(null);
   const [ending, setEnding] = useState(false);
-  // Demo account the sandbox logs in with (stored server-side for ALL sessions)
+  // Demo account THIS clone signs into — per-agent, with a shared-default
+  // fallback. inherited=true means it's still falling back to the shared/global
+  // default because this clone has no own login yet. Edited inline below via
+  // PUT /api/clones/:agentId/demo-login (password write-only; omit to keep it).
   const [demoEmail, setDemoEmail] = useState("");
   const [demoHasPw, setDemoHasPw] = useState(false);
+  const [demoInherited, setDemoInherited] = useState(false);
   const [demoEdit, setDemoEdit] = useState(false);
   const [demoFormEmail, setDemoFormEmail] = useState("");
   const [demoFormPw, setDemoFormPw] = useState("");
   const [demoSaving, setDemoSaving] = useState(false);
   const [demoErr, setDemoErr] = useState("");
   useEffect(() => {
-    void api.get<{ email: string; hasPassword: boolean }>("/api/demo-login")
-      .then((r) => { setDemoEmail(r.email); setDemoHasPw(r.hasPassword); setDemoFormEmail(r.email); })
+    if (!agentId) return;
+    setDemoEdit(false); setDemoErr("");
+    void api.get<{ email: string; hasPassword: boolean; inherited: boolean }>(`/api/clones/${agentId}/demo-login`)
+      .then((r) => { setDemoEmail(r.email || ""); setDemoHasPw(!!r.hasPassword); setDemoInherited(!!r.inherited); setDemoFormEmail(r.email || ""); })
       .catch(() => { /* leave empty */ });
-  }, []);
+  }, [agentId]);
   async function saveDemoLogin() {
-    if (demoSaving) return;
+    if (!agentId || demoSaving) return;
     setDemoSaving(true); setDemoErr("");
     try {
-      const r = await api.put<{ email: string; hasPassword: boolean }>("/api/demo-login", { email: demoFormEmail.trim(), ...(demoFormPw ? { password: demoFormPw } : {}) });
-      setDemoEmail(r.email); setDemoHasPw(r.hasPassword); setDemoEdit(false); setDemoFormPw("");
+      await api.put(`/api/clones/${agentId}/demo-login`, { email: demoFormEmail.trim(), ...(demoFormPw ? { password: demoFormPw } : {}) });
+      const r = await api.get<{ email: string; hasPassword: boolean; inherited: boolean }>(`/api/clones/${agentId}/demo-login`).catch(() => null);
+      if (r) { setDemoEmail(r.email || ""); setDemoHasPw(!!r.hasPassword); setDemoInherited(!!r.inherited); }
+      setDemoEdit(false); setDemoFormPw("");
     } catch (e) { setDemoErr(e instanceof Error ? e.message : String(e)); }
     setDemoSaving(false);
   }
@@ -285,16 +293,6 @@ export default function RehearsalRoom() {
   const isZoom = !!call && !ended && call.mode !== "rehearsal";
   const bound = !!call && !ended && phaseIs(call.phase, "READY");
   const rehearsalStarting = (!!call && !ended && !phaseIs(call.phase, "READY")) || joining;
-  // WARMING: the operator is already LIVE in a rehearsal for the SELECTED clone
-  // whose sandbox has NOT reached READY yet. This lands them in the full room
-  // (rail + stage) with a quiet stage-loading state — not a centered gate. Zoom
-  // is never "warming" here (its own pre-session card handles boot), and an
-  // active call that belongs to a DIFFERENT clone must not be read as this
-  // one's warmup (preserves the existing "belongs to another clone" handling).
-  const rehearsalWarming =
-    live && !bound && !isZoom &&
-    !!call && !ended && call.mode === "rehearsal" &&
-    !(call.agent_id && call.agent_id !== agentId);
 
   // ---- agents ----
   useEffect(() => {
@@ -1377,10 +1375,6 @@ export default function RehearsalRoom() {
   const streamHost = useMemo(() => { try { return streamUrl ? new URL(streamUrl).host : ""; } catch { return ""; } }, [streamUrl]);
   const phaseIdx = PHASES.findIndex((p) => phaseIs(call?.phase, p));
   const donePhases = (call?.phases ?? []).map((p) => (typeof p === "string" ? p : (p as { phase?: string }).phase ?? "").toUpperCase());
-  // one-line current-phase caption for the quiet warming stage (reuses the same
-  // phase state the old boot checklist rendered; falls back to the first phase)
-  const warmingPhaseLabel = PHASE_LABELS[PHASES[phaseIdx >= 0 ? phaseIdx : 0]] ?? "starting the sandbox";
-  const warmingPct = phaseIdx >= 0 ? Math.round(((phaseIdx + 1) / PHASES.length) * 100) : 8;
   const themeIcon = theme === "dark" ? "light_mode" : "dark_mode";
   const firstName = agent?.name?.split(" ")[0] ?? "the clone";
 
@@ -1446,6 +1440,11 @@ export default function RehearsalRoom() {
   const rehTotal = Math.max(stages.length, rehearsalTurns.length, 1);
   const rehCurrentIdx = rehearsalTurns.length - 1;
   const rehProg = `Reply ${Math.min(Math.max(rehearsalTurns.length, 1), rehTotal)} of ${rehTotal}`;
+  // lean rehearsal debrief — computed from the grades we already hold
+  const rehReviewed = rehearsalTurns.filter((t) => grades[`${t.turnSeq}|speech`] || grades[`${t.turnSeq}|screen`]).length;
+  const rehCoached = rehearsalTurns.filter((t) => grades[`${t.turnSeq}|speech`]?.verdict === "coach" || grades[`${t.turnSeq}|screen`]?.verdict === "coach").length;
+  const rehApproved = Math.max(0, rehReviewed - rehCoached);
+  const hasUnpinnedFixes = personaVersion != null && (goldenNumber == null || personaVersion > goldenNumber);
 
   // read the grades back for this call — on mount + after each write
   async function refreshGrades(callId: string) {
@@ -1522,8 +1521,7 @@ export default function RehearsalRoom() {
       <style>{`
         @keyframes rrPulse { 0%,100%{opacity:1; transform:scale(1)} 50%{opacity:.45; transform:scale(.8)} }
         @keyframes rrBlink { 0%,100%{opacity:.25} 50%{opacity:1} }
-        @keyframes rrSpin { to { transform: rotate(360deg) } }
-        @media (prefers-reduced-motion: reduce){ .rr-dot{animation:none} .rr-typing span{animation:none} .rr-spin{animation:none} }
+        @media (prefers-reduced-motion: reduce){ .rr-dot{animation:none} .rr-typing span{animation:none} }
       `}</style>
 
       {/* ---------- top bar ---------- */}
@@ -1619,7 +1617,7 @@ export default function RehearsalRoom() {
         <button onClick={() => setTheme(theme === "dark" ? "light" : "dark")} style={{ width: 36, height: 36, borderRadius: "50%", border: "none", background: "var(--ghost)", color: "var(--ink1)", display: "flex", alignItems: "center", justifyContent: "center", ...btnFont }}>
           <span className="material-symbols-rounded" style={{ fontSize: 20 }}>{themeIcon}</span>
         </button>
-        <button onClick={() => setTuneOpen((o) => !o)} disabled={!agentStyle} title={agentStyle ? "Style sliders — every move compiles a new persona version" : "No persona to tune yet"} style={{ ...ghostBtn, display: "inline-flex", alignItems: "center", gap: 7, borderColor: tuneOpen ? "var(--purple)" : "var(--border)", color: tuneOpen ? "var(--purple-ink)" : "var(--ink1)", opacity: agentStyle ? 1 : 0.5 }}>
+        <button onClick={() => setTuneOpen((o) => !o)} disabled={!agentStyle} aria-label={agentStyle ? "Tune style sliders" : "No persona to tune yet"} style={{ ...ghostBtn, display: "inline-flex", alignItems: "center", gap: 7, borderColor: tuneOpen ? "var(--purple)" : "var(--border)", color: tuneOpen ? "var(--purple-ink)" : "var(--ink1)", opacity: agentStyle ? 1 : 0.5 }}>
           <span className="material-symbols-rounded" style={{ fontSize: 17 }}>tune</span>Tune
         </button>
         <button onClick={() => setHear((h) => { if (h) stopVoice(); return !h; })} title={hear ? `Hearing ${firstName} out loud — click to silence` : `${firstName} is silent — click to hear the lines out loud`} style={{ width: 36, height: 36, borderRadius: "50%", border: hear ? "1.5px solid var(--purple)" : "1px solid var(--border)", background: "transparent", color: hear ? "var(--purple-ink)" : "var(--ink2)", display: "grid", placeItems: "center", ...btnFont }}>
@@ -1863,10 +1861,7 @@ export default function RehearsalRoom() {
       )}
 
       {/* ---------- pre-session states (live gear only) ---------- */}
-      {/* Not during rehearsalWarming: warming now lands in the room (below), so
-          this centered card is left to the true COLD/checking states, the
-          "session ended" recap, and errors — never the warmup gate. */}
-      {!bound && (live || !statusLoaded) && !rehearsalWarming && (
+      {!bound && (live || !statusLoaded) && (
         <div style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "grid", placeItems: "center", padding: 24 }} className="pds-scroll">
           <div style={{ background: "var(--card)", borderRadius: 18, boxShadow: "var(--shadow)", padding: "32px 36px", maxWidth: 560, width: "100%" }}>
             {!statusLoaded ? (
@@ -1893,25 +1888,34 @@ export default function RehearsalRoom() {
               </>
             ) : (
               <>
-                <div style={{ fontSize: 17, fontWeight: 800, marginBottom: 8 }}>{pinned ? "Session ended" : "Session ended — nothing is golden yet"}</div>
+                <div style={{ fontSize: 17, fontWeight: 800, marginBottom: 6 }}>
+                  {rehReviewed > 0 ? "Rehearsal debrief" : "Session ended"}
+                </div>
+                {rehReviewed > 0 && (
+                  <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
+                    Reviewed {rehReviewed} of {rehearsalTurns.length} repl{rehearsalTurns.length === 1 ? "y" : "ies"} — <span style={{ color: "var(--success-ink)" }}>{rehApproved} approved</span>{rehCoached > 0 ? <>, <span style={{ color: "var(--purple-ink)" }}>{rehCoached} coached</span></> : null}.
+                  </div>
+                )}
                 <div style={{ fontSize: 12.5, color: "var(--ink2)", lineHeight: 1.6, marginBottom: 18 }}>
-                  {pinned
-                    ? <>A golden persona is pinned — that exact version drives {firstName}'s real calls. Fixes you applied in this session live in the draft; if they made {firstName} better, <b style={{ color: "var(--gold)" }}>pin again</b> to make them golden. Screen-flow edits reach real calls immediately either way.</>
-                    : <>Every fix you applied is saved, but none of it drives real calls until you pin. Keep rehearsing — go live, correct {firstName}, repeat — and when a run feels perfect, hit <b style={{ color: "var(--gold)" }}>Pin as golden</b>: that exact persona and flow becomes what {firstName} runs on a real call. Until then {firstName} stays in rehearsal.</>}
+                  {hasUnpinnedFixes
+                    ? <>Your fixes are saved to the draft{personaVersion != null ? <> (<b style={{ color: "var(--ink1)" }}>style v{personaVersion}</b>)</> : null}. Real calls still run {pinned ? <>the pinned <b style={{ color: "var(--ink1)" }}>v{goldenNumber}</b></> : "nothing yet"} — <b style={{ color: "var(--gold)" }}>pin it live</b> to ship them.</>
+                    : pinned
+                      ? <>Real calls run the pinned <b style={{ color: "var(--ink1)" }}>v{goldenNumber}</b>. Nothing new to pin — rehearse more, or run the quality checks.</>
+                      : <>Nothing changed this run. Rehearse and coach {firstName}, then pin the version that feels right to make it live.</>}
                 </div>
                 <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                  <button onClick={() => void goLive()} disabled={!agentId || joining} style={{ height: 44, padding: "0 22px", borderRadius: 9999, border: "none", background: "var(--accent)", color: "#fff", fontSize: 13.5, fontWeight: 800, boxShadow: "0 8px 24px rgba(255,6,96,.3)", opacity: joining ? 0.6 : 1, ...btnFont }}>
-                    {joining ? "Starting…" : "Rehearse again"}
-                  </button>
-                  {pinned ? (
-                    <button onClick={() => nav("certification")} style={{ ...ghostBtn, borderColor: "var(--purple)", color: "var(--purple-ink)", display: "inline-flex", alignItems: "center", gap: 6 }}>
-                      <span className="material-symbols-rounded" style={{ fontSize: 16 }}>verified</span>Run certification
-                    </button>
-                  ) : (
-                    <button onClick={pinGolden} disabled={pinning || !agentId} style={{ ...ghostBtn, borderColor: "var(--gold)", color: "var(--gold)", opacity: pinning ? 0.6 : 1 }}>
-                      {pinning ? "Pinning…" : "It was perfect — Pin as golden"}
+                  {hasUnpinnedFixes && (
+                    <button onClick={pinGolden} disabled={pinning || !agentId} style={{ height: 44, padding: "0 20px", borderRadius: 9999, border: "none", background: "var(--gold)", color: "#04231a", fontSize: 13.5, fontWeight: 800, display: "inline-flex", alignItems: "center", gap: 7, boxShadow: "0 8px 24px rgba(231,167,0,.28)", opacity: pinning ? 0.6 : 1, ...btnFont }}>
+                      <span className="material-symbols-rounded" style={{ fontSize: 18 }}>star</span>{pinning ? "Pinning…" : "Pin as Live version"}
                     </button>
                   )}
+                  <button onClick={() => void goLive()} disabled={!agentId || joining} style={{ height: 44, padding: "0 20px", borderRadius: 9999, border: hasUnpinnedFixes ? "1px solid var(--border)" : "none", background: hasUnpinnedFixes ? "transparent" : "var(--accent)", color: hasUnpinnedFixes ? "var(--ink1)" : "#fff", fontSize: 13.5, fontWeight: 800, boxShadow: hasUnpinnedFixes ? "none" : "0 8px 24px rgba(255,6,96,.3)", opacity: joining ? 0.6 : 1, ...btnFont }}>
+                    {joining ? "Starting…" : "Rehearse again"}
+                  </button>
+                  <button onClick={() => nav("certification")} style={{ ...ghostBtn, display: "inline-flex", alignItems: "center", gap: 6 }}>
+                    <span className="material-symbols-rounded" style={{ fontSize: 16 }}>verified</span>Run certification
+                  </button>
+                  <button onClick={() => nav("debrief")} style={{ background: "none", border: "none", color: "var(--ink3)", fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>See full debrief</button>
                 </div>
               </>
             )}
@@ -1996,30 +2000,31 @@ export default function RehearsalRoom() {
               </div>
             </div>
 
-            {/* Demo account — the login the sandbox uses on every session */}
+            {/* Demo account — per-agent, with a shared-default fallback. Inline editor. */}
             <div style={{ padding: "12px 14px", borderRadius: 12, background: "var(--sunk)", border: "1px solid var(--border)" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <span className="material-symbols-rounded" style={{ fontSize: 16, color: "var(--purple)" }}>key</span>
                 <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: ".05em", textTransform: "uppercase", color: "var(--ink3)" }}>Demo account</span>
+                {demoEmail && demoInherited && <span style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: ".05em", textTransform: "uppercase", color: "var(--ink3)", background: "var(--card)", border: "1px solid var(--border)", borderRadius: 9999, padding: "2px 8px" }}>shared default</span>}
                 {!demoEdit && (
-                  <button onClick={() => { setDemoEdit(true); setDemoFormEmail(demoEmail); setDemoFormPw(""); }} style={{ marginLeft: "auto", background: "none", border: "none", color: "var(--purple-ink)", fontSize: 11.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>{demoEmail ? "Change" : "Set up"}</button>
+                  <button onClick={() => { setDemoEdit(true); setDemoFormEmail(demoEmail); setDemoFormPw(""); setDemoErr(""); }} disabled={!agentId} style={{ marginLeft: "auto", background: "none", border: "none", color: "var(--purple-ink)", fontSize: 11.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", opacity: agentId ? 1 : 0.5 }}>{demoInherited || !demoEmail ? "Set up" : "Change"}</button>
                 )}
               </div>
               {!demoEdit ? (
                 <div style={{ fontSize: 12.5, color: demoEmail ? "var(--ink2)" : "var(--warning-ink)", marginTop: 6, lineHeight: 1.5 }}>
                   {demoEmail
-                    ? <>{firstName} logs into the product as <b style={{ color: "var(--ink1)" }}>{demoEmail}</b> on every rehearsal and live call.</>
-                    : "No login saved — the screen will sit on the login page. Add the demo account once and every session uses it."}
+                    ? <>{firstName} logs into the product as <b style={{ color: "var(--ink1)" }}>{demoEmail}</b>{demoHasPw ? "" : " (no password set)"} on every rehearsal and live call.{demoInherited ? " Using the shared default — set one to override for this clone." : ""}</>
+                    : "No login saved — the screen will sit on the login page. Set the demo account and every session for this clone uses it."}
                 </div>
               ) : (
                 <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
                   <input value={demoFormEmail} onChange={(e) => setDemoFormEmail(e.target.value)} placeholder="Demo account email" style={{ height: 36, borderRadius: 9, border: "1px solid var(--border)", background: "var(--card)", color: "var(--ink1)", fontFamily: "inherit", fontSize: 12.5, padding: "0 12px" }} />
-                  <input value={demoFormPw} onChange={(e) => setDemoFormPw(e.target.value)} type="password" placeholder={demoHasPw ? "Password (leave blank to keep current)" : "Password"} style={{ height: 36, borderRadius: 9, border: "1px solid var(--border)", background: "var(--card)", color: "var(--ink1)", fontFamily: "inherit", fontSize: 12.5, padding: "0 12px" }} />
+                  <input value={demoFormPw} onChange={(e) => setDemoFormPw(e.target.value)} type="password" placeholder={demoHasPw && !demoInherited ? "Password (leave blank to keep current)" : "Password"} style={{ height: 36, borderRadius: 9, border: "1px solid var(--border)", background: "var(--card)", color: "var(--ink1)", fontFamily: "inherit", fontSize: 12.5, padding: "0 12px" }} />
                   <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                    <button onClick={() => void saveDemoLogin()} disabled={demoSaving || !demoFormEmail.trim() || (!demoHasPw && !demoFormPw)} style={{ height: 34, padding: "0 16px", borderRadius: 9999, border: "none", background: "var(--purple)", color: "#fff", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", opacity: demoSaving || !demoFormEmail.trim() || (!demoHasPw && !demoFormPw) ? 0.6 : 1 }}>{demoSaving ? "Saving…" : "Save for all sessions"}</button>
+                    <button onClick={() => void saveDemoLogin()} disabled={demoSaving || !demoFormEmail.trim() || (!(demoHasPw && !demoInherited) && !demoFormPw)} style={{ height: 34, padding: "0 16px", borderRadius: 9999, border: "none", background: "var(--purple)", color: "#fff", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", opacity: demoSaving || !demoFormEmail.trim() || (!(demoHasPw && !demoInherited) && !demoFormPw) ? 0.6 : 1 }}>{demoSaving ? "Saving…" : "Save for this clone"}</button>
                     <button onClick={() => { setDemoEdit(false); setDemoErr(""); }} style={{ background: "none", border: "none", color: "var(--ink3)", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Cancel</button>
                   </div>
-                  <div style={{ fontSize: 10.5, color: "var(--ink3)" }}>Stored on your server only, used by the sandbox to sign in. The password is never shown back.</div>
+                  <div style={{ fontSize: 10.5, color: "var(--ink3)" }}>Stored on your server only, used by the sandbox to sign in as this clone. The password is never shown back.</div>
                   {demoErr && <div style={{ fontSize: 11.5, color: "var(--error-ink)", fontWeight: 600 }}>{demoErr}</div>}
                 </div>
               )}
@@ -2028,11 +2033,8 @@ export default function RehearsalRoom() {
         </div>
       )}
 
-      {/* ---------- bound OR warming: rail + stage (two-pane) ---------- */}
-      {/* rehearsalWarming renders the SAME two-pane while the sandbox boots; the
-          stage shows a quiet loading state (below) and the composer is inert
-          until `bound`, so it reads as "I'm in the room, the screen's coming up". */}
-      {((bound && live) || rehearsalWarming) && (
+      {/* ---------- bound: rail + stage ---------- */}
+      {bound && live && (
         <div style={{ flex: 1, minHeight: 0, display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,0.82fr)" }}>
           {/* conversation rail */}
           <section style={{ display: "flex", flexDirection: "column", borderRight: "1px solid var(--divider)", minHeight: 0 }}>
@@ -2075,9 +2077,7 @@ export default function RehearsalRoom() {
               {!isZoom && (
                 rehearsalTurns.length === 0 ? (
                   <div style={{ fontSize: 12, color: "var(--ink3)", padding: "18px 4px", lineHeight: 1.6 }}>
-                    {rehearsalWarming
-                      ? <>The call starts once {firstName}'s screen is up — hang tight. Line up your opening while the sandbox boots.</>
-                      : <>The room is live. Say something as the guest to kick the call off, or tap a scenario chip below — {firstName}'s replies land here as turns to approve or coach.</>}
+                    The room is live. Say something as the guest to kick the call off, or tap a scenario chip below — {firstName}'s replies land here as turns to approve or coach.
                   </div>
                 ) : (
                   rehearsalTurns.map((t, i) => {
@@ -2308,14 +2308,13 @@ export default function RehearsalRoom() {
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={(e) => { if (e.key === "Enter") void (inputMode === "coach" ? sendCoach(input) : inputMode === "direct" ? sendDirect(input) : sendGuest(input)); }}
-                  disabled={!bound}
-                  placeholder={!bound ? `Waiting for ${firstName}'s screen…` : inputMode === "coach" ? `Coach ${firstName} — "when they ask about outreach performance, show the analytics screen"…` : inputMode === "direct" ? `Tell ${firstName} what to do — "go to the outreach section of the position"…` : "Say something as the guest…"}
-                  style={{ flex: 1, height: 42, borderRadius: 9999, border: inputMode === "direct" ? "1px solid var(--purple)" : "1px solid var(--border)", background: "var(--sunk)", color: "var(--ink1)", fontFamily: "inherit", fontSize: 12.5, padding: "0 16px", outline: "none", opacity: bound ? 1 : 0.55, cursor: bound ? "text" : "not-allowed" }}
+                  placeholder={inputMode === "coach" ? `Coach ${firstName} — "when they ask about outreach performance, show the analytics screen"…` : inputMode === "direct" ? `Tell ${firstName} what to do — "go to the outreach section of the position"…` : "Say something as the guest…"}
+                  style={{ flex: 1, height: 42, borderRadius: 9999, border: inputMode === "direct" ? "1px solid var(--purple)" : "1px solid var(--border)", background: "var(--sunk)", color: "var(--ink1)", fontFamily: "inherit", fontSize: 12.5, padding: "0 16px", outline: "none" }}
                 />
-                <button onClick={toggleMic} disabled={!bound} title={!bound ? "Available once the screen's up" : micOn ? "Mic is live — click to mute" : isZoom ? "Mic muted — click to talk as the guest (solo tests)" : "Mic muted — click to talk"} style={{ width: 42, height: 42, borderRadius: "50%", border: micOn ? "1.5px solid var(--accent)" : "1.5px solid var(--border)", background: micOn ? "rgba(255,6,96,.12)" : "transparent", color: micOn ? "var(--accent)" : "var(--ink2)", display: "grid", placeItems: "center", opacity: bound ? 1 : 0.5, cursor: bound ? "pointer" : "not-allowed", ...btnFont }}>
+                <button onClick={toggleMic} title={micOn ? "Mic is live — click to mute" : isZoom ? "Mic muted — click to talk as the guest (solo tests)" : "Mic muted — click to talk"} style={{ width: 42, height: 42, borderRadius: "50%", border: micOn ? "1.5px solid var(--accent)" : "1.5px solid var(--border)", background: micOn ? "rgba(255,6,96,.12)" : "transparent", color: micOn ? "var(--accent)" : "var(--ink2)", display: "grid", placeItems: "center", ...btnFont }}>
                   <span className="material-symbols-rounded" style={{ fontSize: 18, animation: micOn && listening ? "rrBlink 2.4s ease infinite" : "none" }}>{micOn ? "mic" : "mic_off"}</span>
                 </button>
-                <button onClick={() => void (inputMode === "coach" ? sendCoach(input) : inputMode === "direct" ? sendDirect(input) : sendGuest(input))} disabled={!bound} title={!bound ? "Available once the screen's up" : "Send"} style={{ width: 42, height: 42, borderRadius: "50%", border: "none", background: "var(--purple)", color: "#fff", display: "grid", placeItems: "center", opacity: bound ? 1 : 0.5, cursor: bound ? "pointer" : "not-allowed", ...btnFont }}>
+                <button onClick={() => void (inputMode === "coach" ? sendCoach(input) : inputMode === "direct" ? sendDirect(input) : sendGuest(input))} title="Send" style={{ width: 42, height: 42, borderRadius: "50%", border: "none", background: "var(--purple)", color: "#fff", display: "grid", placeItems: "center", ...btnFont }}>
                   <span className="material-symbols-rounded" style={{ fontSize: 18 }}>{inputMode === "direct" ? "podium" : "send"}</span>
                 </button>
               </div>
@@ -2325,30 +2324,21 @@ export default function RehearsalRoom() {
           {/* stage */}
           <section className="pds-scroll" style={{ display: "flex", flexDirection: "column", minWidth: 0, padding: "16px 18px 14px", gap: 12, overflowY: "auto" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10, position: "sticky", top: -16, zIndex: 10, background: "var(--bg)", paddingTop: 16, marginTop: -16, paddingBottom: 8, marginBottom: -8 }}>
-              {bound ? (
-                <>
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 8, height: 30, padding: "0 14px", borderRadius: 9999, background: controlling ? "rgba(0,187,255,.15)" : "rgba(255,6,96,.14)", color: controlling ? "var(--decor)" : "var(--accent)", fontSize: 11.5, fontWeight: 800 }}>
-                    <span className="rr-dot" style={{ width: 8, height: 8, borderRadius: "50%", background: controlling ? "var(--decor)" : "var(--accent)", animation: "rrPulse 1.6s ease-in-out infinite" }} />
-                    {controlling ? "YOU are driving — show him how it's done" : `${firstName} is driving`}
-                  </span>
-                  <button onClick={() => void (controlling ? handBack() : takeControl())} title={controlling ? "Give the screen back and turn what you showed into a fix" : isZoom ? "Freeze him and drive the screen yourself — the prospect SEES everything you do" : "Freeze him and drive the screen yourself — click inside the stream"} style={{ ...ghostBtn, height: 30, display: "inline-flex", alignItems: "center", gap: 6, borderColor: controlling ? "var(--decor)" : "var(--border)", color: controlling ? "var(--decor)" : "var(--ink1)" }}>
-                    <span className="material-symbols-rounded" style={{ fontSize: 15 }}>{controlling ? "keyboard_return" : "back_hand"}</span>
-                    {controlling ? "Hand back + teach" : "Take control"}
-                  </button>
-                  {stages.length > 0 && (currentBeat !== null || coverage.length > 0) && (
-                    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, height: 30, padding: "0 12px", borderRadius: 9999, background: "var(--purple-soft)", color: "var(--purple-ink)", fontSize: 11.5, fontWeight: 800 }}>
-                      {currentBeat !== null ? `beat ${Math.min(currentBeat, stages.length)}/${stages.length} · ${(stages[Math.min(currentBeat, stages.length) - 1]?.name ?? "").replace(/^[\d:—\-.\s]+/, "").slice(0, 22)}` : `flow`}
-                      {coverage.length > 0 && <span style={{ opacity: 0.75 }}>· {coverage.filter((b) => b.state === "covered").length} covered</span>}
-                    </span>
-                  )}
-                  <span style={{ fontSize: 12, color: "var(--ink2)", fontWeight: 600 }}>{lastTool ?? "waiting for the first move"}</span>
-                </>
-              ) : (
-                <span style={{ display: "inline-flex", alignItems: "center", gap: 8, height: 30, padding: "0 14px", borderRadius: 9999, background: "var(--purple-soft)", color: "var(--purple-ink)", fontSize: 11.5, fontWeight: 800 }}>
-                  <span className="material-symbols-rounded rr-spin" style={{ fontSize: 15, display: "inline-block", animation: "rrSpin 1s linear infinite" }}>progress_activity</span>
-                  Getting {firstName}'s screen ready
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 8, height: 30, padding: "0 14px", borderRadius: 9999, background: controlling ? "rgba(0,187,255,.15)" : "rgba(255,6,96,.14)", color: controlling ? "var(--decor)" : "var(--accent)", fontSize: 11.5, fontWeight: 800 }}>
+                <span className="rr-dot" style={{ width: 8, height: 8, borderRadius: "50%", background: controlling ? "var(--decor)" : "var(--accent)", animation: "rrPulse 1.6s ease-in-out infinite" }} />
+                {controlling ? "YOU are driving — show him how it's done" : `${firstName} is driving`}
+              </span>
+              <button onClick={() => void (controlling ? handBack() : takeControl())} title={controlling ? "Give the screen back and turn what you showed into a fix" : isZoom ? "Freeze him and drive the screen yourself — the prospect SEES everything you do" : "Freeze him and drive the screen yourself — click inside the stream"} style={{ ...ghostBtn, height: 30, display: "inline-flex", alignItems: "center", gap: 6, borderColor: controlling ? "var(--decor)" : "var(--border)", color: controlling ? "var(--decor)" : "var(--ink1)" }}>
+                <span className="material-symbols-rounded" style={{ fontSize: 15 }}>{controlling ? "keyboard_return" : "back_hand"}</span>
+                {controlling ? "Hand back + teach" : "Take control"}
+              </button>
+              {stages.length > 0 && (currentBeat !== null || coverage.length > 0) && (
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 6, height: 30, padding: "0 12px", borderRadius: 9999, background: "var(--purple-soft)", color: "var(--purple-ink)", fontSize: 11.5, fontWeight: 800 }}>
+                  {currentBeat !== null ? `beat ${Math.min(currentBeat, stages.length)}/${stages.length} · ${(stages[Math.min(currentBeat, stages.length) - 1]?.name ?? "").replace(/^[\d:—\-.\s]+/, "").slice(0, 22)}` : `flow`}
+                  {coverage.length > 0 && <span style={{ opacity: 0.75 }}>· {coverage.filter((b) => b.state === "covered").length} covered</span>}
                 </span>
               )}
+              <span style={{ fontSize: 12, color: "var(--ink2)", fontWeight: 600 }}>{lastTool ?? "waiting for the first move"}</span>
               {streamUrl && (
                 <a href={streamUrl} target="_blank" rel="noreferrer" style={{ marginLeft: "auto", fontSize: 11.5, fontWeight: 700, color: "var(--decor)", textDecoration: "none" }}>Open full screen</a>
               )}
@@ -2364,21 +2354,8 @@ export default function RehearsalRoom() {
                 {[0, 1, 2].map((i) => <span key={i} className="d" />)}
                 <span className="url">{streamHost || "sandbox screen"}</span>
               </div>
-              <div style={{ position: "relative", width: "100%", aspectRatio: "4 / 3", background: "#05070d" }} title={!bound ? `${firstName}'s screen is coming up` : controlling ? "You are driving — click and type inside the screen" : "Watching — the wheel scrolls this panel; hit Take control to interact"}>
-                {!bound ? (
-                  // WARMING: quiet loading in the stage instead of a stream/iframe —
-                  // a spinner, one reassuring line, a slim phase-driven progress bar
-                  // and a subtle current-phase caption. No multi-item checklist.
-                  <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 14, padding: 24, textAlign: "center" }}>
-                    <span className="material-symbols-rounded rr-spin" style={{ fontSize: 30, color: "var(--purple)", display: "inline-block", animation: "rrSpin 1s linear infinite" }}>progress_activity</span>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: "rgba(255,255,255,.82)" }}>{firstName}'s screen is coming up — about 3 minutes</div>
-                    <div style={{ width: "min(280px, 72%)", height: 3, borderRadius: 9999, background: "rgba(255,255,255,.12)", overflow: "hidden" }}>
-                      <div style={{ height: "100%", width: `${warmingPct}%`, background: "var(--purple)", borderRadius: 9999, transition: "width .6s ease" }} />
-                    </div>
-                    <div style={{ fontSize: 11, fontWeight: 600, color: "rgba(255,255,255,.5)" }}>{warmingPhaseLabel}</div>
-                    {joinErr && <div style={{ fontSize: 11.5, fontWeight: 600, color: "var(--error-ink)" }}>{joinErr}</div>}
-                  </div>
-                ) : streamUrl ? (
+              <div style={{ position: "relative", width: "100%", aspectRatio: "4 / 3", background: "#05070d" }} title={controlling ? "You are driving — click and type inside the screen" : "Watching — the wheel scrolls this panel; hit Take control to interact"}>
+                {streamUrl ? (
                   // While watching, the stream ignores the mouse so the wheel scrolls
                   // the panel (otherwise the iframe eats it and the top/bottom of the
                   // screen are unreachable). Take control makes it interactive.
@@ -2391,9 +2368,9 @@ export default function RehearsalRoom() {
               </div>
             </div>
 
-            <div className="voicebar" style={{ flexShrink: 0, opacity: bound ? 1 : 0.7 }}>
+            <div className="voicebar" style={{ flexShrink: 0 }}>
               <span className="live-dot" />
-              {!bound ? `Audio connects once ${firstName}'s screen is up` : liveAudioOn ? "Live audio from the sandbox" : hear ? `Voice on — you hear ${firstName}` : `${firstName} is muted`}
+              {liveAudioOn ? "Live audio from the sandbox" : hear ? `Voice on — you hear ${firstName}` : `${firstName} is muted`}
               <div className="wave">
                 <span style={{ animationDelay: "0s" }} />
                 <span style={{ animationDelay: ".15s" }} />
