@@ -285,6 +285,16 @@ export default function RehearsalRoom() {
   const isZoom = !!call && !ended && call.mode !== "rehearsal";
   const bound = !!call && !ended && phaseIs(call.phase, "READY");
   const rehearsalStarting = (!!call && !ended && !phaseIs(call.phase, "READY")) || joining;
+  // WARMING: the operator is already LIVE in a rehearsal for the SELECTED clone
+  // whose sandbox has NOT reached READY yet. This lands them in the full room
+  // (rail + stage) with a quiet stage-loading state — not a centered gate. Zoom
+  // is never "warming" here (its own pre-session card handles boot), and an
+  // active call that belongs to a DIFFERENT clone must not be read as this
+  // one's warmup (preserves the existing "belongs to another clone" handling).
+  const rehearsalWarming =
+    live && !bound && !isZoom &&
+    !!call && !ended && call.mode === "rehearsal" &&
+    !(call.agent_id && call.agent_id !== agentId);
 
   // ---- agents ----
   useEffect(() => {
@@ -1367,6 +1377,10 @@ export default function RehearsalRoom() {
   const streamHost = useMemo(() => { try { return streamUrl ? new URL(streamUrl).host : ""; } catch { return ""; } }, [streamUrl]);
   const phaseIdx = PHASES.findIndex((p) => phaseIs(call?.phase, p));
   const donePhases = (call?.phases ?? []).map((p) => (typeof p === "string" ? p : (p as { phase?: string }).phase ?? "").toUpperCase());
+  // one-line current-phase caption for the quiet warming stage (reuses the same
+  // phase state the old boot checklist rendered; falls back to the first phase)
+  const warmingPhaseLabel = PHASE_LABELS[PHASES[phaseIdx >= 0 ? phaseIdx : 0]] ?? "starting the sandbox";
+  const warmingPct = phaseIdx >= 0 ? Math.round(((phaseIdx + 1) / PHASES.length) * 100) : 8;
   const themeIcon = theme === "dark" ? "light_mode" : "dark_mode";
   const firstName = agent?.name?.split(" ")[0] ?? "the clone";
 
@@ -1508,7 +1522,8 @@ export default function RehearsalRoom() {
       <style>{`
         @keyframes rrPulse { 0%,100%{opacity:1; transform:scale(1)} 50%{opacity:.45; transform:scale(.8)} }
         @keyframes rrBlink { 0%,100%{opacity:.25} 50%{opacity:1} }
-        @media (prefers-reduced-motion: reduce){ .rr-dot{animation:none} .rr-typing span{animation:none} }
+        @keyframes rrSpin { to { transform: rotate(360deg) } }
+        @media (prefers-reduced-motion: reduce){ .rr-dot{animation:none} .rr-typing span{animation:none} .rr-spin{animation:none} }
       `}</style>
 
       {/* ---------- top bar ---------- */}
@@ -1848,7 +1863,10 @@ export default function RehearsalRoom() {
       )}
 
       {/* ---------- pre-session states (live gear only) ---------- */}
-      {!bound && (live || !statusLoaded) && (
+      {/* Not during rehearsalWarming: warming now lands in the room (below), so
+          this centered card is left to the true COLD/checking states, the
+          "session ended" recap, and errors — never the warmup gate. */}
+      {!bound && (live || !statusLoaded) && !rehearsalWarming && (
         <div style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "grid", placeItems: "center", padding: 24 }} className="pds-scroll">
           <div style={{ background: "var(--card)", borderRadius: 18, boxShadow: "var(--shadow)", padding: "32px 36px", maxWidth: 560, width: "100%" }}>
             {!statusLoaded ? (
@@ -2010,8 +2028,11 @@ export default function RehearsalRoom() {
         </div>
       )}
 
-      {/* ---------- bound: rail + stage ---------- */}
-      {bound && live && (
+      {/* ---------- bound OR warming: rail + stage (two-pane) ---------- */}
+      {/* rehearsalWarming renders the SAME two-pane while the sandbox boots; the
+          stage shows a quiet loading state (below) and the composer is inert
+          until `bound`, so it reads as "I'm in the room, the screen's coming up". */}
+      {((bound && live) || rehearsalWarming) && (
         <div style={{ flex: 1, minHeight: 0, display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,0.82fr)" }}>
           {/* conversation rail */}
           <section style={{ display: "flex", flexDirection: "column", borderRight: "1px solid var(--divider)", minHeight: 0 }}>
@@ -2054,7 +2075,9 @@ export default function RehearsalRoom() {
               {!isZoom && (
                 rehearsalTurns.length === 0 ? (
                   <div style={{ fontSize: 12, color: "var(--ink3)", padding: "18px 4px", lineHeight: 1.6 }}>
-                    The room is live. Say something as the guest to kick the call off, or tap a scenario chip below — {firstName}'s replies land here as turns to approve or coach.
+                    {rehearsalWarming
+                      ? <>The call starts once {firstName}'s screen is up — hang tight. Line up your opening while the sandbox boots.</>
+                      : <>The room is live. Say something as the guest to kick the call off, or tap a scenario chip below — {firstName}'s replies land here as turns to approve or coach.</>}
                   </div>
                 ) : (
                   rehearsalTurns.map((t, i) => {
@@ -2285,13 +2308,14 @@ export default function RehearsalRoom() {
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={(e) => { if (e.key === "Enter") void (inputMode === "coach" ? sendCoach(input) : inputMode === "direct" ? sendDirect(input) : sendGuest(input)); }}
-                  placeholder={inputMode === "coach" ? `Coach ${firstName} — "when they ask about outreach performance, show the analytics screen"…` : inputMode === "direct" ? `Tell ${firstName} what to do — "go to the outreach section of the position"…` : "Say something as the guest…"}
-                  style={{ flex: 1, height: 42, borderRadius: 9999, border: inputMode === "direct" ? "1px solid var(--purple)" : "1px solid var(--border)", background: "var(--sunk)", color: "var(--ink1)", fontFamily: "inherit", fontSize: 12.5, padding: "0 16px", outline: "none" }}
+                  disabled={!bound}
+                  placeholder={!bound ? `Waiting for ${firstName}'s screen…` : inputMode === "coach" ? `Coach ${firstName} — "when they ask about outreach performance, show the analytics screen"…` : inputMode === "direct" ? `Tell ${firstName} what to do — "go to the outreach section of the position"…` : "Say something as the guest…"}
+                  style={{ flex: 1, height: 42, borderRadius: 9999, border: inputMode === "direct" ? "1px solid var(--purple)" : "1px solid var(--border)", background: "var(--sunk)", color: "var(--ink1)", fontFamily: "inherit", fontSize: 12.5, padding: "0 16px", outline: "none", opacity: bound ? 1 : 0.55, cursor: bound ? "text" : "not-allowed" }}
                 />
-                <button onClick={toggleMic} title={micOn ? "Mic is live — click to mute" : isZoom ? "Mic muted — click to talk as the guest (solo tests)" : "Mic muted — click to talk"} style={{ width: 42, height: 42, borderRadius: "50%", border: micOn ? "1.5px solid var(--accent)" : "1.5px solid var(--border)", background: micOn ? "rgba(255,6,96,.12)" : "transparent", color: micOn ? "var(--accent)" : "var(--ink2)", display: "grid", placeItems: "center", ...btnFont }}>
+                <button onClick={toggleMic} disabled={!bound} title={!bound ? "Available once the screen's up" : micOn ? "Mic is live — click to mute" : isZoom ? "Mic muted — click to talk as the guest (solo tests)" : "Mic muted — click to talk"} style={{ width: 42, height: 42, borderRadius: "50%", border: micOn ? "1.5px solid var(--accent)" : "1.5px solid var(--border)", background: micOn ? "rgba(255,6,96,.12)" : "transparent", color: micOn ? "var(--accent)" : "var(--ink2)", display: "grid", placeItems: "center", opacity: bound ? 1 : 0.5, cursor: bound ? "pointer" : "not-allowed", ...btnFont }}>
                   <span className="material-symbols-rounded" style={{ fontSize: 18, animation: micOn && listening ? "rrBlink 2.4s ease infinite" : "none" }}>{micOn ? "mic" : "mic_off"}</span>
                 </button>
-                <button onClick={() => void (inputMode === "coach" ? sendCoach(input) : inputMode === "direct" ? sendDirect(input) : sendGuest(input))} title="Send" style={{ width: 42, height: 42, borderRadius: "50%", border: "none", background: "var(--purple)", color: "#fff", display: "grid", placeItems: "center", ...btnFont }}>
+                <button onClick={() => void (inputMode === "coach" ? sendCoach(input) : inputMode === "direct" ? sendDirect(input) : sendGuest(input))} disabled={!bound} title={!bound ? "Available once the screen's up" : "Send"} style={{ width: 42, height: 42, borderRadius: "50%", border: "none", background: "var(--purple)", color: "#fff", display: "grid", placeItems: "center", opacity: bound ? 1 : 0.5, cursor: bound ? "pointer" : "not-allowed", ...btnFont }}>
                   <span className="material-symbols-rounded" style={{ fontSize: 18 }}>{inputMode === "direct" ? "podium" : "send"}</span>
                 </button>
               </div>
@@ -2301,21 +2325,30 @@ export default function RehearsalRoom() {
           {/* stage */}
           <section className="pds-scroll" style={{ display: "flex", flexDirection: "column", minWidth: 0, padding: "16px 18px 14px", gap: 12, overflowY: "auto" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10, position: "sticky", top: -16, zIndex: 10, background: "var(--bg)", paddingTop: 16, marginTop: -16, paddingBottom: 8, marginBottom: -8 }}>
-              <span style={{ display: "inline-flex", alignItems: "center", gap: 8, height: 30, padding: "0 14px", borderRadius: 9999, background: controlling ? "rgba(0,187,255,.15)" : "rgba(255,6,96,.14)", color: controlling ? "var(--decor)" : "var(--accent)", fontSize: 11.5, fontWeight: 800 }}>
-                <span className="rr-dot" style={{ width: 8, height: 8, borderRadius: "50%", background: controlling ? "var(--decor)" : "var(--accent)", animation: "rrPulse 1.6s ease-in-out infinite" }} />
-                {controlling ? "YOU are driving — show him how it's done" : `${firstName} is driving`}
-              </span>
-              <button onClick={() => void (controlling ? handBack() : takeControl())} title={controlling ? "Give the screen back and turn what you showed into a fix" : isZoom ? "Freeze him and drive the screen yourself — the prospect SEES everything you do" : "Freeze him and drive the screen yourself — click inside the stream"} style={{ ...ghostBtn, height: 30, display: "inline-flex", alignItems: "center", gap: 6, borderColor: controlling ? "var(--decor)" : "var(--border)", color: controlling ? "var(--decor)" : "var(--ink1)" }}>
-                <span className="material-symbols-rounded" style={{ fontSize: 15 }}>{controlling ? "keyboard_return" : "back_hand"}</span>
-                {controlling ? "Hand back + teach" : "Take control"}
-              </button>
-              {stages.length > 0 && (currentBeat !== null || coverage.length > 0) && (
-                <span style={{ display: "inline-flex", alignItems: "center", gap: 6, height: 30, padding: "0 12px", borderRadius: 9999, background: "var(--purple-soft)", color: "var(--purple-ink)", fontSize: 11.5, fontWeight: 800 }}>
-                  {currentBeat !== null ? `beat ${Math.min(currentBeat, stages.length)}/${stages.length} · ${(stages[Math.min(currentBeat, stages.length) - 1]?.name ?? "").replace(/^[\d:—\-.\s]+/, "").slice(0, 22)}` : `flow`}
-                  {coverage.length > 0 && <span style={{ opacity: 0.75 }}>· {coverage.filter((b) => b.state === "covered").length} covered</span>}
+              {bound ? (
+                <>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 8, height: 30, padding: "0 14px", borderRadius: 9999, background: controlling ? "rgba(0,187,255,.15)" : "rgba(255,6,96,.14)", color: controlling ? "var(--decor)" : "var(--accent)", fontSize: 11.5, fontWeight: 800 }}>
+                    <span className="rr-dot" style={{ width: 8, height: 8, borderRadius: "50%", background: controlling ? "var(--decor)" : "var(--accent)", animation: "rrPulse 1.6s ease-in-out infinite" }} />
+                    {controlling ? "YOU are driving — show him how it's done" : `${firstName} is driving`}
+                  </span>
+                  <button onClick={() => void (controlling ? handBack() : takeControl())} title={controlling ? "Give the screen back and turn what you showed into a fix" : isZoom ? "Freeze him and drive the screen yourself — the prospect SEES everything you do" : "Freeze him and drive the screen yourself — click inside the stream"} style={{ ...ghostBtn, height: 30, display: "inline-flex", alignItems: "center", gap: 6, borderColor: controlling ? "var(--decor)" : "var(--border)", color: controlling ? "var(--decor)" : "var(--ink1)" }}>
+                    <span className="material-symbols-rounded" style={{ fontSize: 15 }}>{controlling ? "keyboard_return" : "back_hand"}</span>
+                    {controlling ? "Hand back + teach" : "Take control"}
+                  </button>
+                  {stages.length > 0 && (currentBeat !== null || coverage.length > 0) && (
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, height: 30, padding: "0 12px", borderRadius: 9999, background: "var(--purple-soft)", color: "var(--purple-ink)", fontSize: 11.5, fontWeight: 800 }}>
+                      {currentBeat !== null ? `beat ${Math.min(currentBeat, stages.length)}/${stages.length} · ${(stages[Math.min(currentBeat, stages.length) - 1]?.name ?? "").replace(/^[\d:—\-.\s]+/, "").slice(0, 22)}` : `flow`}
+                      {coverage.length > 0 && <span style={{ opacity: 0.75 }}>· {coverage.filter((b) => b.state === "covered").length} covered</span>}
+                    </span>
+                  )}
+                  <span style={{ fontSize: 12, color: "var(--ink2)", fontWeight: 600 }}>{lastTool ?? "waiting for the first move"}</span>
+                </>
+              ) : (
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 8, height: 30, padding: "0 14px", borderRadius: 9999, background: "var(--purple-soft)", color: "var(--purple-ink)", fontSize: 11.5, fontWeight: 800 }}>
+                  <span className="material-symbols-rounded rr-spin" style={{ fontSize: 15, display: "inline-block", animation: "rrSpin 1s linear infinite" }}>progress_activity</span>
+                  Getting {firstName}'s screen ready
                 </span>
               )}
-              <span style={{ fontSize: 12, color: "var(--ink2)", fontWeight: 600 }}>{lastTool ?? "waiting for the first move"}</span>
               {streamUrl && (
                 <a href={streamUrl} target="_blank" rel="noreferrer" style={{ marginLeft: "auto", fontSize: 11.5, fontWeight: 700, color: "var(--decor)", textDecoration: "none" }}>Open full screen</a>
               )}
@@ -2331,8 +2364,21 @@ export default function RehearsalRoom() {
                 {[0, 1, 2].map((i) => <span key={i} className="d" />)}
                 <span className="url">{streamHost || "sandbox screen"}</span>
               </div>
-              <div style={{ position: "relative", width: "100%", aspectRatio: "4 / 3", background: "#05070d" }} title={controlling ? "You are driving — click and type inside the screen" : "Watching — the wheel scrolls this panel; hit Take control to interact"}>
-                {streamUrl ? (
+              <div style={{ position: "relative", width: "100%", aspectRatio: "4 / 3", background: "#05070d" }} title={!bound ? `${firstName}'s screen is coming up` : controlling ? "You are driving — click and type inside the screen" : "Watching — the wheel scrolls this panel; hit Take control to interact"}>
+                {!bound ? (
+                  // WARMING: quiet loading in the stage instead of a stream/iframe —
+                  // a spinner, one reassuring line, a slim phase-driven progress bar
+                  // and a subtle current-phase caption. No multi-item checklist.
+                  <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 14, padding: 24, textAlign: "center" }}>
+                    <span className="material-symbols-rounded rr-spin" style={{ fontSize: 30, color: "var(--purple)", display: "inline-block", animation: "rrSpin 1s linear infinite" }}>progress_activity</span>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: "rgba(255,255,255,.82)" }}>{firstName}'s screen is coming up — about 3 minutes</div>
+                    <div style={{ width: "min(280px, 72%)", height: 3, borderRadius: 9999, background: "rgba(255,255,255,.12)", overflow: "hidden" }}>
+                      <div style={{ height: "100%", width: `${warmingPct}%`, background: "var(--purple)", borderRadius: 9999, transition: "width .6s ease" }} />
+                    </div>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: "rgba(255,255,255,.5)" }}>{warmingPhaseLabel}</div>
+                    {joinErr && <div style={{ fontSize: 11.5, fontWeight: 600, color: "var(--error-ink)" }}>{joinErr}</div>}
+                  </div>
+                ) : streamUrl ? (
                   // While watching, the stream ignores the mouse so the wheel scrolls
                   // the panel (otherwise the iframe eats it and the top/bottom of the
                   // screen are unreachable). Take control makes it interactive.
@@ -2345,9 +2391,9 @@ export default function RehearsalRoom() {
               </div>
             </div>
 
-            <div className="voicebar" style={{ flexShrink: 0 }}>
+            <div className="voicebar" style={{ flexShrink: 0, opacity: bound ? 1 : 0.7 }}>
               <span className="live-dot" />
-              {liveAudioOn ? "Live audio from the sandbox" : hear ? `Voice on — you hear ${firstName}` : `${firstName} is muted`}
+              {!bound ? `Audio connects once ${firstName}'s screen is up` : liveAudioOn ? "Live audio from the sandbox" : hear ? `Voice on — you hear ${firstName}` : `${firstName} is muted`}
               <div className="wave">
                 <span style={{ animationDelay: "0s" }} />
                 <span style={{ animationDelay: ".15s" }} />
