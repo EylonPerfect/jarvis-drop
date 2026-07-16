@@ -185,21 +185,32 @@ export default function RehearsalRoom() {
   const [joining, setJoining] = useState(false);
   const [joinErr, setJoinErr] = useState<string | null>(null);
   const [ending, setEnding] = useState(false);
-  // Demo account the sandbox logs in with (stored server-side for ALL sessions).
-  // Read-only here — the credential is edited in Connections. We only load it to
-  // show which account the clone signs in with on every session.
+  // Demo account the sandbox logs in with (stored server-side for ALL sessions)
   const [demoEmail, setDemoEmail] = useState("");
   const [demoHasPw, setDemoHasPw] = useState(false);
+  const [demoEdit, setDemoEdit] = useState(false);
+  const [demoFormEmail, setDemoFormEmail] = useState("");
+  const [demoFormPw, setDemoFormPw] = useState("");
+  const [demoSaving, setDemoSaving] = useState(false);
+  const [demoErr, setDemoErr] = useState("");
   useEffect(() => {
     void api.get<{ email: string; hasPassword: boolean }>("/api/demo-login")
-      .then((r) => { setDemoEmail(r.email); setDemoHasPw(r.hasPassword); })
+      .then((r) => { setDemoEmail(r.email); setDemoHasPw(r.hasPassword); setDemoFormEmail(r.email); })
       .catch(() => { /* leave empty */ });
   }, []);
+  async function saveDemoLogin() {
+    if (demoSaving) return;
+    setDemoSaving(true); setDemoErr("");
+    try {
+      const r = await api.put<{ email: string; hasPassword: boolean }>("/api/demo-login", { email: demoFormEmail.trim(), ...(demoFormPw ? { password: demoFormPw } : {}) });
+      setDemoEmail(r.email); setDemoHasPw(r.hasPassword); setDemoEdit(false); setDemoFormPw("");
+    } catch (e) { setDemoErr(e instanceof Error ? e.message : String(e)); }
+    setDemoSaving(false);
+  }
   // ---- gears: rehearsal (voice + screen) and live call ----
   const [live, setLive] = useState(false);
   const liveInit = useRef(false);
-  // one-shot guard for the mount auto-start (auto-warm + auto-enter on open)
-  const autoStarted = useRef(false);
+  const prewarmed = useRef(false);
   // tuning drawer (the studio, absorbed: style · lexicon · rules · knowledge · versions)
   const [tuneOpen, setTuneOpen] = useState(false);
   const [tuneTab, setTuneTab] = useState<"style" | "lexicon" | "rules" | "knowledge" | "versions">("style");
@@ -209,14 +220,11 @@ export default function RehearsalRoom() {
   const [versions, setVersions] = useState<VersionRow[]>([]);
   const [goldenId, setGoldenId] = useState<string | null>(null);
   const [pinningId, setPinningId] = useState<string | null>(null);
-  // readiness gate for promotion — score + whether promotion is unlocked, off
-  // the same /api/readiness the readiness screen uses (promoteUnlocked + score)
-  const [promoteInfo, setPromoteInfo] = useState<{ unlocked: boolean; score: number } | null>(null);
 
   const [events, setEvents] = useState<FeedEvent[]>([]);
   const [pending, setPending] = useState<string[]>([]);
   const [input, setInput] = useState("");
-  const [inputMode, setInputMode] = useState<"guest" | "direct">("guest");
+  const [inputMode, setInputMode] = useState<"guest" | "direct" | "coach">("guest");
   const [coachNote, setCoachNote] = useState<{ ok: boolean; text: string } | null>(null);
   const [coachBusy, setCoachBusy] = useState(false);
   const [listening, setListening] = useState(false);
@@ -247,11 +255,6 @@ export default function RehearsalRoom() {
   const [turnCoachOpen, setTurnCoachOpen] = useState<string | null>(null);
   const [turnCoachText, setTurnCoachText] = useState("");
   const stepmodeSessionRef = useRef<string | null>(null);
-  // turn pacing: Stepped (default — the clone pauses each turn for review) vs
-  // Play through (the clone flows without gating). Rehearsal only.
-  const [stepMode, setStepMode] = useState<"stepped" | "play">("stepped");
-  // "Redo this turn" in-flight key (the turn being re-run), for the inline note
-  const [redoBusy, setRedoBusy] = useState<string | null>(null);
 
   const feedRef = useRef<HTMLDivElement | null>(null);
   const spokenRef = useRef<number | null>(null);
@@ -282,22 +285,6 @@ export default function RehearsalRoom() {
   const isZoom = !!call && !ended && call.mode !== "rehearsal";
   const bound = !!call && !ended && phaseIs(call.phase, "READY");
   const rehearsalStarting = (!!call && !ended && !phaseIs(call.phase, "READY")) || joining;
-  // A rehearsal for the SELECTED clone that is still booting (not yet READY).
-  // When true the operator is already inside the live environment and the boot
-  // checklist shows IN the stage. Scoped to rehearsal (never Zoom) and to the
-  // selected clone — a warm screen for a DIFFERENT clone is handled by the cold
-  // card's "belongs to another clone" note, not here.
-  const rehearsalWarming =
-    live && !bound && !isZoom && rehearsalStarting &&
-    !(call && call.agent_id && call.agent_id !== agentId);
-  // The live environment (rail + stage) is up whenever we are live and either
-  // bound (READY) or still warming the selected clone.
-  const liveEnv = live && (bound || rehearsalWarming);
-  // A rehearsal owned by a DIFFERENT clone than the one selected — we never
-  // auto-warm over it; the cold card shows the "belongs to another clone" note.
-  const otherCloneActive =
-    !!call && !ended && call.mode === "rehearsal" &&
-    !!call.agent_id && call.agent_id !== agentId;
 
   // ---- agents ----
   useEffect(() => {
@@ -319,9 +306,6 @@ export default function RehearsalRoom() {
       setGraphVersion(typeof gv === "number" ? gv : 1);
     }).catch(() => { setPlaybook(null); setGraphVersion(1); });
     void loadVersions(agentId);
-    void api.get<{ score?: number; promoteUnlocked?: boolean }>(`/api/readiness/${agentId}`)
-      .then((r) => setPromoteInfo({ unlocked: !!r.promoteUnlocked, score: Math.round(r.score ?? 0) }))
-      .catch(() => setPromoteInfo(null));
   }, [agentId]);
   async function loadVersions(id: string) {
     try {
@@ -366,35 +350,14 @@ export default function RehearsalRoom() {
     setHear(false);
   }, [isZoom]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Auto-enter: once a rehearsal for the SELECTED clone is running — whether it
-  // is still warming or already ready — drop straight into the live environment.
-  // The old "Go live — ready" gate was pure friction: the session is already up.
-  // This effect keeps the room live from warming through ready; the mount
-  // auto-start below is what kicks a fresh session off on open. A rehearsal for a
-  // DIFFERENT clone never auto-enters (cold card handles it); Zoom is untouched.
+  // Pre-warm: the sandbox starts booting the moment you land, so "Go live" is
+  // ready by the time the first text passes are done. Fire-and-forget.
   useEffect(() => {
-    if (!statusLoaded || !call || call.ended_at) return;
-    if (call.mode !== "rehearsal") return;
-    if (call.agent_id && call.agent_id === agentId) setLive(true);
-  }, [statusLoaded, call, agentId]);
-
-  // Auto-start on open: land the operator straight in the rehearsal environment
-  // instead of a cold "Go live" gate. Fires ONCE per mount (autoStarted guard).
-  // Reuses goLive() — which setLive(true)s and only join()s when there is no
-  // active call — so an already-running rehearsal for this clone is picked up by
-  // the auto-enter effect above without a double-join. We also setLive(true)
-  // here optimistically so the cold card never flashes before join() returns.
-  // GUARDS: never on Zoom; never over a DIFFERENT clone's active rehearsal
-  // (that stays on the cold card so the operator can switch or end it).
-  useEffect(() => {
-    if (autoStarted.current) return;
-    if (!statusLoaded || !agentId || isZoom) return;
-    if (otherCloneActive) return; // don't auto-warm over another clone's screen
-    autoStarted.current = true;
-    setLive(true);       // optimistic — no cold-card flash before join() returns
-    void goLive();       // join()s only when no active call; else just enters
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [statusLoaded, agentId, isZoom, call]);
+    if (!statusLoaded || !agentId || prewarmed.current) return;
+    if (call && !call.ended_at) { prewarmed.current = true; return; } // something already running
+    prewarmed.current = true;
+    void api.post("/api/live/join", { mode: "rehearsal", agentId }).then(() => refreshStatus()).catch(() => { /* Go live can retry */ });
+  }, [statusLoaded, agentId, call]);
 
   // ---- beat jump: any script block is a chapter marker you can drop into ----
   const [beatMenu, setBeatMenu] = useState<{ i: number; x: number; y: number } | null>(null);
@@ -495,13 +458,81 @@ export default function RehearsalRoom() {
     setTeaching(false); setEditTarget(null); setEditText("");
   }
 
-  // ---- step editing lives in the storyboard now; the composer no longer adds
-  // steps. `stepBusy`/`stepNote` are still driven by removeStep below (the
-  // in-stage script-strip erase control) and its status line. ----
+  // ---- add step: operator inserts a prescriptive step into the beat sheet ----
+  const [stepOpen, setStepOpen] = useState(false);
+  const [stepMode, setStepMode] = useState<"say" | "show">("say");
+  const [stepBeat, setStepBeat] = useState(1);
+  const [stepText, setStepText] = useState("");
+  const [stepGuest, setStepGuest] = useState(""); // guest line directly above the anchor (few-shot teach)
   const [stepBusy, setStepBusy] = useState(false);
   const [stepNote, setStepNote] = useState("");
+  const SHOW_CHIPS = ["Show the ranked matches", "Go to the outreach tab", "Back to the positions board"];
+  function openStep(anchorGuest: string) {
+    setStepMode("say");
+    setStepText("");
+    setStepGuest(anchorGuest);
+    setStepBeat(Math.min(Math.max(currentBeat ?? 1, 1), Math.max(stages.length, 1)));
+    setStepOpen(true);
+  }
+  async function addStep() {
+    const text = stepText.trim();
+    if (!text || stepBusy || !agentId) return;
+    setStepBusy(true);
+    try {
+      const r = await api.get<{ playbook: Playbook }>(`/api/clones/${agentId}/playbook`);
+      const pb = r.playbook ?? {};
+      const stagesNow = Array.isArray(pb.stages) ? pb.stages : [];
+      if (!stagesNow.length) throw new Error("no beat sheet yet — build beats in the storyboard first");
+      const beat = Math.min(Math.max(stepBeat, 1), stagesNow.length);
+      const gvNow = typeof (pb as Record<string, unknown>).graphVersion === "number" ? (pb as Record<string, unknown>).graphVersion as number : 1;
+      const next = {
+        ...pb,
+        graphVersion: gvNow + 1,
+        stages: stagesNow.map((s, i) => {
+          if (i !== beat - 1) return s;
+          if (stepMode === "say") {
+            const lines = Array.isArray(s.voice?.exampleLines) ? s.voice.exampleLines as string[] : [];
+            return { ...s, voice: { ...(s.voice ?? {}), exampleLines: [...lines, text] } };
+          }
+          const acts = Array.isArray(s.screen?.actions) ? s.screen.actions : [];
+          return { ...s, screen: { ...(s.screen ?? {}), actions: [...acts, text] } };
+        }),
+      } as Playbook;
+      const put = await api.put<{ ok: boolean; playbook: Playbook; goldenRecompiled?: boolean }>(`/api/clones/${agentId}/playbook`, { playbook: next });
+      const saved = put.playbook ?? next;
+      setPlaybook(saved);
+      const gvSaved = (saved as Record<string, unknown>).graphVersion;
+      const gvFinal = typeof gvSaved === "number" ? gvSaved : gvNow + 1;
+      setGraphVersion(gvFinal);
+      // Anchored under a guest line: a Say step is ALSO the ideal reply to that
+      // moment — teach it as a few-shot via the same path as "Edit reply".
+      if (stepMode === "say" && stepGuest.trim() && spec) {
+        const shots = spec.few_shots ?? [];
+        await commitSpec(
+          { ...spec, few_shots: [...shots, { id: `f${shots.length + 1}`, situation: stepGuest.trim(), human_response: text, source: "step added in calibration", active: true }] },
+          `Step added: "${text.slice(0, 50)}"`,
+        );
+      }
+      // Session live: he takes the new step RIGHT NOW, not just next session.
+      let told = false;
+      if (bound && live) {
+        const beatName = (stagesNow[beat - 1]?.name ?? "").trim();
+        try {
+          await api.post("/api/live/nudge", { kind: "direct", text: `NEW STEP just added to beat ${beat}${beatName ? ` (${beatName})` : ""}: ${stepMode === "say" ? "say this line now" : "do this on screen now"}: '${text}'. Execute it now, then continue the call.` });
+          told = true;
+        } catch { /* graph is saved — next session picks it up */ }
+      }
+      setStepNote(`Step added to beat ${beat} — graph v${gvFinal}${told ? " · told him mid-call too" : ""}`);
+      setTimeout(() => setStepNote(""), 9000);
+      setStepOpen(false); setStepText(""); setStepGuest("");
+    } catch (e) {
+      setStepNote(`Add step failed: ${e instanceof Error ? e.message : String(e)} — nothing was applied.`);
+      setTimeout(() => setStepNote(""), 8000);
+    }
+    setStepBusy(false);
+  }
 
-  // erase a step from a beat — same PUT + hot-reload rails
+  // erase a step from a beat — the mirror of addStep, same PUT + hot-reload rails
   const [stepRmArm, setStepRmArm] = useState<string | null>(null);
   async function removeStep(beatIdx: number, kind: "say" | "show", index: number) {
     const key = `${beatIdx}:${kind}:${index}`;
@@ -542,6 +573,58 @@ export default function RehearsalRoom() {
     setStepBusy(false);
   }
 
+
+  // ---- reshape the whole beat sheet from one instruction (diff-previewed) ----
+  const [reshapeOpen, setReshapeOpen] = useState(false);
+  const [reshapeText, setReshapeText] = useState("");
+  const [reshapeBusy, setReshapeBusy] = useState(false);
+  const [reshapeErr, setReshapeErr] = useState("");
+  const [reshapeProp, setReshapeProp] = useState<Playbook | null>(null);
+  function reshapeDiff(cur: Stage[], prop: Stage[]): { name: string; label: string }[] {
+    const key = (st: Stage, i: number) => String((st as { id?: string }).id ?? `i${i}`);
+    const curBy = new Map(cur.map((st, i) => [key(st, i), { st, i }]));
+    const propIds = new Set(prop.map((st, i) => key(st, i)));
+    const rows = prop.map((st, i) => {
+      const k = key(st, i);
+      const old = curBy.get(k);
+      let label = "added";
+      if (old) label = JSON.stringify(old.st) === JSON.stringify(st) ? (old.i === i ? "unchanged" : "moved") : "changed";
+      return { name: String(st.name ?? `Beat ${i + 1}`), label };
+    });
+    for (const [k, v] of curBy) if (!propIds.has(k)) rows.push({ name: String(v.st.name ?? "beat"), label: "removed" });
+    return rows;
+  }
+  async function proposeReshape() {
+    const t = reshapeText.trim();
+    if (!t || reshapeBusy || !agentId) return;
+    setReshapeBusy(true); setReshapeErr(""); setReshapeProp(null);
+    try {
+      const res = await fetch(`${api.base}/api/clones/${agentId}/playbook/reshape`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(getAccessKey() ? { "X-API-Key": getAccessKey() } : {}) },
+        body: JSON.stringify({ instruction: t }),
+      });
+      const j = (await res.json().catch(() => ({}))) as { playbook?: Playbook; error?: string };
+      if (!res.ok || !j.playbook) throw new Error(j.error || `reshape → ${res.status}`);
+      setReshapeProp(j.playbook);
+    } catch (e) { setReshapeErr(e instanceof Error ? e.message : String(e)); }
+    setReshapeBusy(false);
+  }
+  async function applyReshape() {
+    if (!reshapeProp || reshapeBusy || !agentId) return;
+    setReshapeBusy(true); setReshapeErr("");
+    try {
+      const cur = await api.get<{ playbook: Playbook }>(`/api/clones/${agentId}/playbook`);
+      const gv = (Number((cur.playbook as Record<string, unknown>)?.graphVersion) || 1) + 1;
+      const next = { ...cur.playbook, ...reshapeProp, graphVersion: gv } as Playbook;
+      const r = await api.put<{ ok: boolean; playbook: Playbook }>(`/api/clones/${agentId}/playbook`, { playbook: next });
+      setPlaybook(r.playbook ?? next);
+      const gvs = ((r.playbook ?? next) as Record<string, unknown>).graphVersion;
+      setGraphVersion(typeof gvs === "number" ? gvs : gv);
+      setReshapeOpen(false); setReshapeProp(null); setReshapeText("");
+    } catch (e) { setReshapeErr(e instanceof Error ? e.message : String(e)); }
+    setReshapeBusy(false);
+  }
 
   // go live: reveal the hot gear; start the sandbox if pre-warm didn't
   async function goLive() {
@@ -593,7 +676,7 @@ export default function RehearsalRoom() {
       setPinned(false);
       setGoldenId(null);
       void loadVersions(agentId); // keep the header chip's golden gap current
-      setResumeNote("Taken off live — real calls use the draft persona until you promote again.");
+      setResumeNote("Unpinned — real calls use the live draft persona until you pin again.");
     } catch {
       setResumeNote("Unpin failed — try again.");
     }
@@ -610,10 +693,10 @@ export default function RehearsalRoom() {
       void loadVersions(agentId); // keep the header chip's golden gap current
       // golden pins the version — certification PROVES it: gates next, workspace after
       if (bound && live) {
-        setResumeNote("Promoted to live ✓ — run certification when you finish the session.");
+        setResumeNote("Pinned as golden ✓ — run certification when you finish the session.");
         setTimeout(() => setResumeNote(""), 9000);
       } else {
-        setResumeNote("Promoted to live ✓ — opening certification to complete him…");
+        setResumeNote("Pinned as golden ✓ — opening certification to complete him…");
         setTimeout(() => nav("certification"), 1400);
       }
     } catch (e) {
@@ -810,17 +893,7 @@ export default function RehearsalRoom() {
     if (!clean || !bound) return;
     setInput("");
     setPending((p) => [...p, clean]);
-    try {
-      await api.post("/api/live/nudge", { kind: "guest", text: clean });
-      // STEPPED rehearsal only: a guest reply otherwise queues behind the turn
-      // gate and Elie stays silent until an explicit advance, so replying feels
-      // dead. Release the gate right after the guest line so he answers the
-      // reply immediately. Play mode already flows; Zoom is a real call (never
-      // inject or advance there). `bound` is already guaranteed above.
-      if (stepMode === "stepped" && !isZoom) {
-        await api.post("/api/live/nudge", { kind: "advance" });
-      }
-    } catch { /* shows on next poll if it landed */ }
+    try { await api.post("/api/live/nudge", { kind: "guest", text: clean }); } catch { /* shows on next poll if it landed */ }
   }
   // ---- open mic: listening is the default in a live session; mute is the
   // exception. The browser stops recognition after silence, so it auto-restarts
@@ -1250,30 +1323,6 @@ export default function RehearsalRoom() {
 
   // ---- derived bits ----
   const stages = playbook?.stages ?? [];
-  // Scenario chips derive from THIS clone's loaded playbook (client-side, no
-  // backend call) so the guest lines match the call being rehearsed: the
-  // guest's own objections read as guest lines, then per-stage listen-for cues
-  // (things the guest might say), then beat names as topic prompts. Falls back
-  // to the generic recruiting list when the playbook yields nothing usable.
-  const scenarioChips = useMemo<string[]>(() => {
-    const pb = (playbook ?? {}) as Record<string, unknown>;
-    const out: string[] = [];
-    const push = (v: unknown) => {
-      const s = typeof v === "string" ? v.trim() : "";
-      if (s && s.length <= 52 && !out.some((o) => o.toLowerCase() === s.toLowerCase())) out.push(s);
-    };
-    // 1) objections — a guest raising one is a natural guest line
-    const objs = Array.isArray(pb.objections) ? pb.objections : [];
-    for (const o of objs) push((o as { objection?: unknown })?.objection);
-    // 2) per-stage listen-for cues (things the guest might say)
-    for (const s of stages) {
-      const lf = Array.isArray(s.voice?.listenFor) ? (s.voice?.listenFor as unknown[]) : [];
-      for (const c of lf) push(c);
-    }
-    // 3) beat names as topic prompts
-    for (const s of stages) if (s.name) push(cleanBeat(s.name));
-    return out.length ? out.slice(0, 4) : SCENARIOS;
-  }, [playbook, stages]);
   // where she is on the flow: the bridge emits BEAT n when she moves stages
   const noteBeat = useMemo(() => {
     for (let i = events.length - 1; i >= 0; i--) {
@@ -1371,16 +1420,15 @@ export default function RehearsalRoom() {
       // nudge / toolresult / error do not form turn parts
     }
     flush();
-    return turns.map((t, i) => ({ ...t, turnSeq: t.turnSeq >= 0 ? t.turnSeq : i + 1 }));
+    // turnSeq = the turn's position in the conversation (1,2,3,…). Always the
+    // sequential index so it's UNIQUE per turn — mixing the bridge's TURN_END
+    // number with an index fallback let two turns collide on the same number,
+    // which duplicated the "Reply N" label AND made their grade keys (`${turnSeq}|part`) clash.
+    return turns.map((t, i) => ({ ...t, turnSeq: i + 1 }));
   }, [events, stages]);
   const rehTotal = Math.max(stages.length, rehearsalTurns.length, 1);
   const rehCurrentIdx = rehearsalTurns.length - 1;
   const rehProg = `Reply ${Math.min(Math.max(rehearsalTurns.length, 1), rehTotal)} of ${rehTotal}`;
-  // Your-turn signal (rehearsal only): the current turn ended on a QUESTION to
-  // the guest — the clone's last say text, trimmed, ends with "?". Drives the
-  // composer's "reply as the guest" prompt and the turn card's Skip/Continue.
-  const currentTurn = rehearsalTurns[rehCurrentIdx] ?? null;
-  const awaitingGuestReply = bound && !isZoom && !!currentTurn?.speech && currentTurn.speech.text.trim().endsWith("?");
 
   // read the grades back for this call — on mount + after each write
   async function refreshGrades(callId: string) {
@@ -1423,35 +1471,15 @@ export default function RehearsalRoom() {
     void gradePart(t.turnSeq, "screen", "coach", `coach:screen:${t.turnSeq}:demo`);
     void takeControl();
   }
-  // Continue: settle any ungraded parts (approve), then release the turn gate.
-  // The ONLY way a turn advances — nothing auto-advances.
+  async function approveTurnBoth(t: RehearsalTurn) {
+    if (t.speech) await gradePart(t.turnSeq, "speech", "approve");
+    if (t.screen) await gradePart(t.turnSeq, "screen", "approve");
+  }
+  // Approve & continue: settle any ungraded parts, then release the turn gate.
   async function advanceTurn(t: RehearsalTurn) {
     if (t.speech && !grades[`${t.turnSeq}|speech`]) await gradePart(t.turnSeq, "speech", "approve");
     if (t.screen && !grades[`${t.turnSeq}|screen`]) await gradePart(t.turnSeq, "screen", "approve");
     try { await api.post("/api/live/nudge", { kind: "advance" }); } catch { /* next guest line still moves it on */ }
-  }
-  // Redo this turn: after coaching, re-run the moment so the operator hears the
-  // corrected version — release the gate, then replay THIS turn's opening guest
-  // line. Uses only existing nudge kinds; best-effort. Turns with no opening
-  // guest line (e.g. the greet) don't offer redo.
-  async function redoTurn(t: RehearsalTurn) {
-    const line = t.guest.trim();
-    if (!bound || !line || redoBusy) return;
-    setRedoBusy(t.key);
-    try {
-      await api.post("/api/live/nudge", { kind: "advance" });
-      await new Promise((r) => setTimeout(r, 400));
-      await api.post("/api/live/nudge", { kind: "guest", text: line });
-      setPending((p) => [...p, line]);
-    } catch { /* best-effort */ }
-    setTimeout(() => setRedoBusy(null), 2500);
-  }
-  // Play-through toggle: flip step-mode on the bridge. Stepped = "on" (gate each
-  // turn), Play through = "off" (flow freely). Reflected in the header control.
-  function toggleStepMode() {
-    const next = stepMode === "stepped" ? "play" : "stepped";
-    setStepMode(next);
-    void api.post("/api/live/nudge", { kind: "stepmode", text: next === "play" ? "off" : "on" }).catch(() => { /* best-effort */ });
   }
   // load grades when the rehearsal call binds / changes; clear outside rehearsal
   useEffect(() => {
@@ -1467,7 +1495,6 @@ export default function RehearsalRoom() {
     if (!callId) return;
     if (stepmodeSessionRef.current !== callId) {
       stepmodeSessionRef.current = callId;
-      setStepMode("stepped"); // a fresh session starts stepped — keep the control truthful
       void api.post("/api/live/nudge", { kind: "stepmode", text: "on" }).catch(() => { /* review still renders */ });
     }
     return () => { void api.post("/api/live/nudge", { kind: "stepmode", text: "off" }).catch(() => { /* teardown best-effort */ }); };
@@ -1490,10 +1517,9 @@ export default function RehearsalRoom() {
           {(agent?.name?.[0] ?? "?").toUpperCase()}
         </div>
         <div>
-          <div style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--ink3)", marginBottom: 1 }}>Calibration Room</div>
-          <h1 style={{ fontSize: 15.5, fontWeight: 800, letterSpacing: "-.02em", margin: 0 }}>{agent?.name ?? "Pick a clone"}</h1>
+          <h1 style={{ fontSize: 15.5, fontWeight: 800, letterSpacing: "-.02em", margin: 0 }}>{agent?.name ?? "Calibration room"}</h1>
           <div style={{ fontSize: 11, color: "var(--ink3)", fontWeight: 600 }}>
-            {agent ? (agent.role ?? "") : "pick a clone to calibrate"}
+            {agent ? `${agent.role ? `${agent.role} · ` : ""}rehearse with voice + the real screen, then run the call` : "pick a clone to calibrate"}
           </div>
         </div>
         <span style={{ display: "inline-flex", alignItems: "stretch", borderRadius: 9999, overflow: "hidden" }}>
@@ -1521,9 +1547,9 @@ export default function RehearsalRoom() {
           )}
         </span>
         <span style={{ position: "relative" }}>
-          <button onClick={() => { setGoldenMenu((m) => !m); setUnpinArm(false); }} disabled={!agentId} title="Live version — promote, take off live, certification" style={{ ...ghostBtn, display: "inline-flex", alignItems: "center", gap: 6, ...(pinned ? { borderColor: "var(--gold)", color: "var(--gold)" } : { color: "var(--ink2)" }) }}>
+          <button onClick={() => { setGoldenMenu((m) => !m); setUnpinArm(false); }} disabled={!agentId} title="Golden — pin, unpin, certification" style={{ ...ghostBtn, display: "inline-flex", alignItems: "center", gap: 6, ...(pinned ? { borderColor: "var(--gold)", color: "var(--gold)" } : { color: "var(--ink2)" }) }}>
             <span className="material-symbols-rounded" style={{ fontSize: 16, ...(pinned ? { fontVariationSettings: "'FILL' 1" } : {}) }}>{pinned ? "star" : "star_outline"}</span>
-            {pinning ? "Working…" : pinned ? (typeof goldenNumber === "number" ? `Live version · v${goldenNumber}` : "Live version") : "No live version"}
+            {pinning ? "Working…" : pinned ? "Live version" : "Not live"}
             <span className="material-symbols-rounded" style={{ fontSize: 15 }}>expand_more</span>
           </button>
           {goldenMenu && (
@@ -1548,39 +1574,27 @@ export default function RehearsalRoom() {
                   <span className="material-symbols-rounded" style={{ fontSize: 16 }}>verified</span>
                   Run certification
                 </button>
-                {/* golden-vs-draft choice — moved here from the old cold card.
-                    Applies to the NEXT session's persona mode (the current one
-                    already started). Only meaningful when a live version exists. */}
-                {pinned && (
-                  <>
-                    <div style={{ height: 1, background: "var(--border)", margin: "5px 8px" }} />
-                    <label title="Rehearse the LIVE version — exactly what real calls run — on your next session" style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 10px", fontSize: 12.5, fontWeight: 700, color: rehearseGolden ? "var(--gold)" : "var(--ink1)", cursor: "pointer" }}>
-                      <input type="checkbox" checked={rehearseGolden} onChange={(e) => setRehearseGolden(e.target.checked)} style={{ accentColor: "var(--gold)" }} />
-                      Rehearse the live version
-                    </label>
-                    <div style={{ fontSize: 10.5, color: "var(--ink3)", fontWeight: 600, padding: "0 10px 8px" }}>Applies to your next session.</div>
-                  </>
-                )}
               </div>
             </>
           )}
         </span>
-        {/* mode indicator (read-only): reflects the CURRENT session mode —
-            Rehearsal when !isZoom, Live call when isZoom. This is a status
-            readout, not a switch: starting a real Zoom call is out of scope
-            here, so it no longer pretends to toggle anything. */}
+        {/* mode toggle: Rehearsal | Live call (both flip the shared `live` gear; isZoom decides which is active) */}
         {statusLoaded && (
-          <span role="status" aria-label={isZoom ? "Live call" : "Rehearsal"} title={isZoom ? "On a real Zoom call — you are directing" : "Rehearsing with voice and the real screen"} style={{ display: "inline-flex", alignItems: "center", background: "var(--sunk)", borderRadius: 9999, padding: 4, gap: 3 }}>
-            <span
-              style={{ display: "inline-flex", alignItems: "center", gap: 6, height: 30, padding: "0 14px", borderRadius: 9999, fontSize: 12.5, fontWeight: 700, fontFamily: "inherit", ...(!isZoom ? { background: "var(--card)", color: "var(--ink1)", boxShadow: "var(--shadow)" } : { background: "transparent", color: "var(--ink2)" }) }}
+          <span style={{ display: "inline-flex", alignItems: "center", background: "var(--sunk)", borderRadius: 9999, padding: 4, gap: 3 }}>
+            <button
+              onClick={() => setLive(true)}
+              title="Rehearse with voice and the real screen"
+              style={{ display: "inline-flex", alignItems: "center", gap: 6, height: 30, padding: "0 14px", borderRadius: 9999, border: "none", fontSize: 12.5, fontWeight: 700, ...btnFont, ...(live && !isZoom ? { background: "var(--card)", color: "var(--ink1)", boxShadow: "var(--shadow)" } : { background: "transparent", color: "var(--ink2)" }) }}
             >
               <span className="material-symbols-rounded" style={{ fontSize: 16 }}>co_present</span>Rehearsal
-            </span>
-            <span
-              style={{ display: "inline-flex", alignItems: "center", gap: 6, height: 30, padding: "0 14px", borderRadius: 9999, fontSize: 12.5, fontWeight: 700, fontFamily: "inherit", ...(isZoom ? { background: "var(--accent)", color: "#fff" } : { background: "transparent", color: "var(--ink2)" }) }}
+            </button>
+            <button
+              onClick={() => setLive(true)}
+              title="A real Zoom call — you are directing"
+              style={{ display: "inline-flex", alignItems: "center", gap: 6, height: 30, padding: "0 14px", borderRadius: 9999, border: "none", fontSize: 12.5, fontWeight: 700, ...btnFont, ...(live && isZoom ? { background: "var(--accent)", color: "#fff" } : { background: "transparent", color: "var(--ink2)" }) }}
             >
               <span className="material-symbols-rounded" style={{ fontSize: 16 }}>videocam</span>Live call
-            </span>
+            </button>
           </span>
         )}
         <div style={{ flex: 1 }} />
@@ -1600,9 +1614,15 @@ export default function RehearsalRoom() {
         )}
       </header>
 
-      {/* Screen identity (“Calibration Room”) now lives as an eyebrow in the
-          header above the clone name — the big title block was redundant with
-          the header and cost two rows before any content. */}
+      {/* ---------- page title (mode toggle now lives in the header row) ---------- */}
+      {statusLoaded && (
+        <div style={{ flexShrink: 0, padding: "14px 18px 0" }}>
+          <div className="page-h" style={{ padding: "0 0 10px" }}>
+            <h1 style={{ fontSize: 26, fontWeight: 800, letterSpacing: "-.02em" }}>Calibration Room</h1>
+            <p style={{ margin: "6px 0 0", fontSize: 14, color: "var(--ink2)" }}>Rehearse with voice and the real screen, then run the call.</p>
+          </div>
+        </div>
+      )}
 
       {/* ---------- one-click teach: demonstrated steps → beat actions ---------- */}
       {teachSteps !== null && (
@@ -1626,6 +1646,82 @@ export default function RehearsalRoom() {
         </div>
       )}
 
+      {/* ---------- add step: prescriptive Say/Show step straight into the beat sheet ---------- */}
+      {stepOpen && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 60, background: "rgba(2,2,20,.6)", display: "grid", placeItems: "center" }} onClick={() => !stepBusy && setStepOpen(false)}>
+          <div onClick={(e) => e.stopPropagation()} style={{ width: 460, maxWidth: "92vw", background: "var(--card)", borderRadius: 18, boxShadow: "var(--shadow)", padding: "22px 24px" }}>
+            <div style={{ fontSize: 16, fontWeight: 800, marginBottom: 4 }}>Add a step</div>
+            <div style={{ fontSize: 12, color: "var(--ink2)", lineHeight: 1.5, marginBottom: 12 }}>
+              A prescriptive step goes straight into {firstName}'s beat sheet — a line he says, or a move he makes on screen, at that beat.
+            </div>
+            <div style={{ display: "flex", borderRadius: 9999, border: "1px solid var(--border)", overflow: "hidden", width: "fit-content", marginBottom: 10 }}>
+              <button onClick={() => setStepMode("say")} title="A line he should say at this moment" style={{ height: 30, padding: "0 16px", border: "none", background: stepMode === "say" ? "var(--purple-soft)" : "transparent", color: stepMode === "say" ? "var(--purple-ink)" : "var(--ink3)", fontSize: 11.5, fontWeight: 800, ...btnFont }}>Say</button>
+              <button onClick={() => setStepMode("show")} title="Something he should do on the screen at this moment" style={{ height: 30, padding: "0 16px", border: "none", background: stepMode === "show" ? "var(--purple-soft)" : "transparent", color: stepMode === "show" ? "var(--purple-ink)" : "var(--ink3)", fontSize: 11.5, fontWeight: 800, ...btnFont }}>Show</button>
+            </div>
+            <select value={stepBeat} onChange={(e) => setStepBeat(Number(e.target.value))} style={{ width: "100%", height: 38, borderRadius: 10, border: "1px solid var(--border)", background: "var(--sunk)", color: "var(--ink1)", fontFamily: "inherit", fontSize: 12.5, padding: "0 10px", marginBottom: 10 }}>
+              {stages.length === 0 && <option value={1}>No beats yet — build the storyboard first</option>}
+              {stages.map((s, i) => <option key={s.id ?? i} value={i + 1}>{i + 1}. {cleanBeat(s.name).slice(0, 60)}</option>)}
+            </select>
+            <textarea
+              value={stepText}
+              onChange={(e) => setStepText(e.target.value)}
+              rows={3}
+              autoFocus
+              placeholder={stepMode === "say" ? "The line he should say at this moment…" : "What he should do on screen, in plain words…"}
+              style={{ width: "100%", borderRadius: 12, border: "1px solid var(--border)", background: "var(--sunk)", color: "var(--ink1)", fontFamily: "inherit", fontSize: 12.5, lineHeight: 1.6, padding: "10px 12px", resize: "vertical" }}
+            />
+            {stepMode === "show" && (
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+                {SHOW_CHIPS.map((c) => (
+                  <button key={c} onClick={() => setStepText(c)} style={{ height: 26, padding: "0 11px", borderRadius: 9999, border: "1px dashed var(--purple)", background: "transparent", color: "var(--purple-ink)", fontSize: 10.5, fontWeight: 700, ...btnFont }}>{c}</button>
+                ))}
+              </div>
+            )}
+            {stepMode === "say" && stepGuest.trim() && (
+              <div style={{ fontSize: 10.5, color: "var(--ink3)", lineHeight: 1.5, marginTop: 8 }}>
+                Anchored under a guest line — he also learns it as the ideal reply to “{stepGuest.trim().slice(0, 90)}”.
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 14 }}>
+              <button onClick={() => void addStep()} disabled={stepBusy || !stepText.trim() || !stages.length} style={{ height: 42, padding: "0 20px", borderRadius: 9999, border: "none", background: "var(--purple)", color: "#fff", fontSize: 13, fontWeight: 800, cursor: "pointer", opacity: stepBusy || !stepText.trim() || !stages.length ? 0.6 : 1, ...btnFont }}>
+                {stepBusy ? "Adding…" : "Add step"}
+              </button>
+              <button onClick={() => setStepOpen(false)} disabled={stepBusy} style={{ background: "none", border: "none", color: "var(--ink3)", fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+
+      {/* ---------- reshape by instruction: propose -> diff preview -> confirm ---------- */}
+      {reshapeOpen && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 70, background: "rgba(2,2,20,.6)", display: "grid", placeItems: "center" }} onClick={() => !reshapeBusy && setReshapeOpen(false)}>
+          <div onClick={(e) => e.stopPropagation()} style={{ width: 560, maxWidth: "94vw", maxHeight: "84vh", overflowY: "auto", background: "var(--card)", borderRadius: 18, boxShadow: "var(--shadow)", padding: "22px 24px" }}>
+            <div style={{ fontSize: 16, fontWeight: 800, marginBottom: 4 }}>Reshape the beat sheet</div>
+            <div style={{ fontSize: 12, color: "var(--ink2)", lineHeight: 1.5, marginBottom: 12 }}>One instruction reshapes the WHOLE flow — you get a per-beat diff before anything is applied.</div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input value={reshapeText} onChange={(e) => setReshapeText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") void proposeReshape(); }} placeholder={"e.g. move pricing before autopilot"} style={{ flex: 1, height: 40, borderRadius: 10, border: "1px solid var(--border)", background: "var(--sunk)", color: "var(--ink1)", fontFamily: "inherit", fontSize: 12.5, padding: "0 12px" }} />
+              <button onClick={() => void proposeReshape()} disabled={reshapeBusy || !reshapeText.trim()} style={{ height: 40, padding: "0 16px", borderRadius: 9999, border: "none", background: "var(--purple)", color: "#fff", fontSize: 12.5, fontWeight: 800, cursor: "pointer", opacity: reshapeBusy || !reshapeText.trim() ? 0.6 : 1, fontFamily: "inherit" }}>{reshapeBusy && !reshapeProp ? "Reshaping…" : "Preview"}</button>
+            </div>
+            {reshapeErr && <div style={{ fontSize: 12, fontWeight: 700, color: "var(--error-ink)", marginTop: 10 }}>{reshapeErr}</div>}
+            {reshapeProp && (
+              <div style={{ marginTop: 14 }}>
+                <div style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: ".07em", textTransform: "uppercase", color: "var(--ink3)", marginBottom: 8 }}>Proposed flow · per-beat diff</div>
+                {reshapeDiff(stages, (reshapeProp.stages ?? []) as Stage[]).map((r, i) => (
+                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", borderRadius: 9, background: i % 2 ? "transparent" : "var(--sunk)" }}>
+                    <span style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: ".05em", padding: "1px 8px", borderRadius: 9999, background: r.label === "added" ? "var(--success-soft)" : r.label === "removed" ? "var(--error-soft)" : r.label === "changed" ? "var(--purple-soft)" : r.label === "moved" ? "rgba(0,187,255,.15)" : "var(--ghost)", color: r.label === "added" ? "var(--success-ink)" : r.label === "removed" ? "var(--error-ink)" : r.label === "changed" ? "var(--purple-ink)" : r.label === "moved" ? "var(--decor)" : "var(--ink3)" }}>{r.label.toUpperCase()}</span>
+                    <span style={{ fontSize: 12, fontWeight: 600, textDecoration: r.label === "removed" ? "line-through" : "none", opacity: r.label === "removed" ? 0.6 : 1 }}>{r.name}</span>
+                  </div>
+                ))}
+                <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 14 }}>
+                  <button onClick={() => void applyReshape()} disabled={reshapeBusy} style={{ height: 42, padding: "0 20px", borderRadius: 9999, border: "none", background: "var(--accent)", color: "#fff", fontSize: 13, fontWeight: 800, cursor: "pointer", opacity: reshapeBusy ? 0.6 : 1, fontFamily: "inherit" }}>{reshapeBusy ? "Applying…" : "Confirm — apply this flow"}</button>
+                  <button onClick={() => { setReshapeProp(null); }} disabled={reshapeBusy} style={{ background: "none", border: "none", color: "var(--ink3)", fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Discard proposal</button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* ---------- tuning drawer: the studio, absorbed (both gears) ---------- */}
       {tuneOpen && spec && (
@@ -1732,11 +1828,11 @@ export default function RehearsalRoom() {
                     </div>
                     {v.id === goldenId ? (
                       <span style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 11, fontWeight: 700, color: "var(--gold)", height: "fit-content", flexShrink: 0 }}>
-                        <span className="material-symbols-rounded" style={{ fontSize: 13, fontVariationSettings: "'FILL' 1" }}>star</span>live version
+                        <span className="material-symbols-rounded" style={{ fontSize: 13, fontVariationSettings: "'FILL' 1" }}>star</span>golden
                       </span>
                     ) : (
                       <button onClick={() => void pinVersion(v.id)} disabled={!!pinningId} style={{ fontSize: 11, fontWeight: 700, color: "var(--ink2)", background: "transparent", border: "none", cursor: "pointer", height: "fit-content", fontFamily: "inherit", flexShrink: 0, opacity: pinningId === v.id ? 0.5 : 1 }}>
-                        {pinningId === v.id ? "Promoting…" : "Make live"}
+                        {pinningId === v.id ? "Pinning…" : "Pin golden"}
                       </button>
                     )}
                   </div>
@@ -1749,10 +1845,7 @@ export default function RehearsalRoom() {
       )}
 
       {/* ---------- pre-session states (live gear only) ---------- */}
-      {/* Rehearsal warming now lives IN the stage (see the bound/warming block
-          below), so it is excluded here; this card still owns the initial
-          status check, the post-session "ended" screen, and Zoom warming. */}
-      {!bound && !rehearsalWarming && (live || !statusLoaded) && (
+      {!bound && (live || !statusLoaded) && (
         <div style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "grid", placeItems: "center", padding: 24 }} className="pds-scroll">
           <div style={{ background: "var(--card)", borderRadius: 18, boxShadow: "var(--shadow)", padding: "32px 36px", maxWidth: 560, width: "100%" }}>
             {!statusLoaded ? (
@@ -1779,30 +1872,24 @@ export default function RehearsalRoom() {
               </>
             ) : (
               <>
-                <div style={{ fontSize: 17, fontWeight: 800, marginBottom: 8 }}>Rehearsal ended</div>
+                <div style={{ fontSize: 17, fontWeight: 800, marginBottom: 8 }}>{pinned ? "Session ended" : "Session ended — nothing is golden yet"}</div>
                 <div style={{ fontSize: 12.5, color: "var(--ink2)", lineHeight: 1.6, marginBottom: 18 }}>
                   {pinned
-                    ? <>Every fix you applied is saved to {firstName}'s draft. {firstName} already has a <b style={{ color: "var(--gold)" }}>live version</b> driving real calls — if this session made them better, promote to update the live version. Screen-flow edits reach real calls immediately either way.</>
-                    : <>Every fix you applied is saved to {firstName}'s draft. Nothing drives real calls yet — when a run feels right, promote to make it the <b style={{ color: "var(--gold)" }}>live version</b>. Until then {firstName} stays in rehearsal.</>}
+                    ? <>A golden persona is pinned — that exact version drives {firstName}'s real calls. Fixes you applied in this session live in the draft; if they made {firstName} better, <b style={{ color: "var(--gold)" }}>pin again</b> to make them golden. Screen-flow edits reach real calls immediately either way.</>
+                    : <>Every fix you applied is saved, but none of it drives real calls until you pin. Keep rehearsing — go live, correct {firstName}, repeat — and when a run feels perfect, hit <b style={{ color: "var(--gold)" }}>Pin as golden</b>: that exact persona and flow becomes what {firstName} runs on a real call. Until then {firstName} stays in rehearsal.</>}
                 </div>
                 <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                   <button onClick={() => void goLive()} disabled={!agentId || joining} style={{ height: 44, padding: "0 22px", borderRadius: 9999, border: "none", background: "var(--accent)", color: "#fff", fontSize: 13.5, fontWeight: 800, boxShadow: "0 8px 24px rgba(255,6,96,.3)", opacity: joining ? 0.6 : 1, ...btnFont }}>
                     {joining ? "Starting…" : "Rehearse again"}
                   </button>
-                  {promoteInfo?.unlocked ? (
-                    <button onClick={pinGolden} disabled={pinning || !agentId} style={{ ...ghostBtn, borderColor: "var(--gold)", color: "var(--gold)", display: "inline-flex", alignItems: "center", gap: 6, opacity: pinning ? 0.6 : 1 }}>
-                      <span className="material-symbols-rounded" style={{ fontSize: 16, fontVariationSettings: "'FILL' 1" }}>star</span>
-                      {pinning ? "Promoting…" : pinned ? "Update the live version" : "Make this the live version"}
+                  {pinned ? (
+                    <button onClick={() => nav("certification")} style={{ ...ghostBtn, borderColor: "var(--purple)", color: "var(--purple-ink)", display: "inline-flex", alignItems: "center", gap: 6 }}>
+                      <span className="material-symbols-rounded" style={{ fontSize: 16 }}>verified</span>Run certification
                     </button>
                   ) : (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                      <button onClick={() => nav("readiness")} disabled={!agentId} style={{ ...ghostBtn, borderColor: "var(--purple)", color: "var(--purple-ink)", display: "inline-flex", alignItems: "center", gap: 6 }}>
-                        <span className="material-symbols-rounded" style={{ fontSize: 16 }}>fact_check</span>Run quality checks
-                      </button>
-                      <span style={{ fontSize: 11, color: "var(--ink3)", fontWeight: 600 }}>
-                        {promoteInfo ? <>Promotion unlocks at 70% — {firstName} is at {promoteInfo.score}%</> : "Promotion unlocks once quality checks pass."}
-                      </span>
-                    </div>
+                    <button onClick={pinGolden} disabled={pinning || !agentId} style={{ ...ghostBtn, borderColor: "var(--gold)", color: "var(--gold)", opacity: pinning ? 0.6 : 1 }}>
+                      {pinning ? "Pinning…" : "It was perfect — Pin as golden"}
+                    </button>
                   )}
                 </div>
               </>
@@ -1812,13 +1899,8 @@ export default function RehearsalRoom() {
         </div>
       )}
 
-      {/* ---------- fallback card: NOT the default landing ---------- */}
-      {/* Opening the room auto-warms + auto-enters straight into the live
-          environment (see the mount auto-start effect). This card is now only a
-          FALLBACK: no clone selected, a warm/join error (with retry), another
-          clone owns the warm screen, or a session that was ended in-room (the
-          one-shot auto-start already fired, so we don't silently re-warm). */}
-      {statusLoaded && !liveEnv && (!agentId || joinErr || otherCloneActive || autoStarted.current) && (
+      {/* ---------- idle / start: pick a clone, then go live (voice + real screen) ---------- */}
+      {statusLoaded && !live && (
         <div className="pds-scroll" style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "18px 22px", display: "flex", justifyContent: "center" }}>
           <section style={{ width: "100%", maxWidth: 720, display: "flex", flexDirection: "column", gap: 14 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -1826,76 +1908,107 @@ export default function RehearsalRoom() {
                 {agents.length === 0 && <option value="">No agents yet</option>}
                 {agents.map((a) => <option key={a.id} value={a.id}>{a.name}{a.role ? ` — ${a.role}` : ""}</option>)}
               </select>
+              {stages.length > 0 && (
+                <div style={{ display: "flex", gap: 6, overflowX: "auto", flex: 1, minWidth: 0, alignItems: "center" }} className="pds-scroll">
+                  {stages.slice(0, 8).map((s, i) => (
+                    <span key={s.id ?? i} onClick={(e) => setBeatMenu({ i, x: e.clientX, y: e.clientY })} title="Edit · drop" style={{ flexShrink: 0, display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 8px 6px 11px", borderRadius: 9999, background: "var(--sunk)", border: "1px solid var(--border)", fontSize: 11, fontWeight: 700, color: "var(--ink2)", whiteSpace: "nowrap", cursor: "pointer" }}>
+                      {i + 1}. {cleanBeat(s.name).slice(0, 26)}
+                      <button onClick={(e) => { e.stopPropagation(); void dropBeat(i); }} disabled={dropping} title="Drop this beat — he stops doing it" style={{ display: "inline-flex", alignItems: "center", border: "none", background: dropArm === i ? "var(--error-soft)" : "transparent", color: dropArm === i ? "var(--error-ink)" : "var(--ink3)", cursor: "pointer", fontFamily: "inherit", borderRadius: 9999, padding: dropArm === i ? "1px 6px" : 0, fontSize: 9.5, fontWeight: 800 }}>
+                        {dropArm === i ? "Drop?" : <span className="material-symbols-rounded" style={{ fontSize: 13 }}>close</span>}
+                      </button>
+                    </span>
+                  ))}
+                  {dropNote && <span style={{ flexShrink: 0, fontSize: 10.5, fontWeight: 700, color: dropNote.startsWith("Drop failed") ? "var(--error-ink)" : "var(--success-ink)" }}>{dropNote}</span>}
+                </div>
+              )}
             </div>
 
             <div style={{ flex: 1, minHeight: 260, borderRadius: 16, border: "1px dashed var(--border)", background: "var(--card)", display: "grid", placeItems: "center", padding: 24 }}>
               <div style={{ textAlign: "center", maxWidth: 440 }}>
-                {/* Fallback states only — a live/warming rehearsal for THIS clone
-                    renders the environment (rail + stage) above, never here. */}
-                {joinErr ? (
-                  /* (b) warming / join errored → message + retry (reuses goLive) */
+                {rehearsalStarting && !(call && call.agent_id && call.agent_id !== agentId) ? (
+                  /* WARMING — show the boot checklist instead of the cold intro */
                   <>
-                    <span className="material-symbols-rounded" style={{ fontSize: 44, color: "var(--error-ink)" }}>error</span>
-                    <div style={{ fontSize: 16.5, fontWeight: 800, margin: "10px 0 6px" }}>Couldn't start the session</div>
-                    <div style={{ fontSize: 12.5, color: "var(--error-ink)", fontWeight: 600, lineHeight: 1.6, marginBottom: 16 }}>{joinErr}</div>
-                    <button onClick={() => void goLive()} disabled={!agentId || joining} style={{ height: 46, padding: "0 26px", borderRadius: 9999, border: "none", background: "var(--accent)", color: "#fff", fontSize: 14, fontWeight: 800, boxShadow: "0 8px 24px rgba(255,6,96,.3)", cursor: "pointer", opacity: joining ? 0.6 : 1, ...btnFont }}>
-                      {joining ? "Starting…" : "Try again"}
-                    </button>
-                    <div style={{ fontSize: 11, color: "var(--ink3)", fontWeight: 600, marginTop: 10 }}>Spins up a fresh sandbox — about 3–4 minutes.</div>
-                  </>
-                ) : !agentId ? (
-                  /* (a) no clone selected → point them at the picker above */
-                  <>
-                    <span className="material-symbols-rounded" style={{ fontSize: 44, color: "var(--purple)" }}>co_present</span>
-                    <div style={{ fontSize: 16.5, fontWeight: 800, margin: "10px 0 6px" }}>Pick a clone to calibrate</div>
-                    <div style={{ fontSize: 12.5, color: "var(--ink2)", lineHeight: 1.6 }}>
-                      Choose a clone above and the room drops you straight into its rehearsal environment — voice and the real GoPerfect UI, just like a call.
+                    <span className="material-symbols-rounded" style={{ fontSize: 40, color: "var(--purple)" }}>co_present</span>
+                    <div style={{ fontSize: 16.5, fontWeight: 800, margin: "10px 0 4px" }}>Warming up {firstName}'s screen</div>
+                    <div style={{ fontSize: 12, color: "var(--ink3)", lineHeight: 1.6, marginBottom: 18 }}>Spinning up the sandbox and signing in to GoPerfect — usually 3 to 4 minutes.</div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 9, textAlign: "left", maxWidth: 280, margin: "0 auto" }}>
+                      {PHASES.map((p, i) => {
+                        const done = donePhases.includes(p) || (phaseIdx >= 0 && i < phaseIdx);
+                        const current = phaseIdx === i || (phaseIdx < 0 && i === 0 && !done);
+                        return (
+                          <div key={p} style={{ display: "flex", alignItems: "center", gap: 10, opacity: done || current ? 1 : 0.45 }}>
+                            <span className="material-symbols-rounded" style={{ fontSize: 17, color: done ? "var(--success-ink)" : current ? "var(--purple)" : "var(--ink3)" }}>
+                              {done ? "check_circle" : current ? "progress_activity" : "radio_button_unchecked"}
+                            </span>
+                            <span style={{ fontSize: 12.5, fontWeight: 600, color: done || current ? "var(--ink1)" : "var(--ink3)" }}>{PHASE_LABELS[p]}</span>
+                            {current && !done && <span style={{ fontSize: 10.5, fontWeight: 700, color: "var(--ink3)" }}>working…</span>}
+                          </div>
+                        );
+                      })}
                     </div>
+                    {joinErr && <div style={{ marginTop: 14, fontSize: 12, fontWeight: 600, color: "var(--error-ink)" }}>{joinErr}</div>}
                   </>
                 ) : (
-                  /* another clone owns the warm screen, or a session was ended
-                     in-room — offer a manual re-entry (auto-start already fired) */
+                  /* COLD — nothing warming yet: explain + let them start */
                   <>
                     <span className="material-symbols-rounded" style={{ fontSize: 44, color: "var(--purple)" }}>co_present</span>
                     <div style={{ fontSize: 16.5, fontWeight: 800, margin: "10px 0 6px" }}>Ready when you are</div>
                     <div style={{ fontSize: 12.5, color: "var(--ink2)", lineHeight: 1.6, marginBottom: 16 }}>
                       Go live spins up a sandbox where {firstName} speaks, shares the screen and drives the product — voice and the real GoPerfect UI, just like a call.
                     </div>
-                    {otherCloneActive ? (
+                    {call && !call.ended_at && call.mode === "rehearsal" && call.agent_id && call.agent_id !== agentId ? (
                       <div style={{ fontSize: 12, color: "var(--warning-ink)", fontWeight: 600, marginBottom: 12 }}>
                         The warm screen belongs to another clone — end it from the director console or switch back to rehearse live.
                       </div>
                     ) : null}
+                    <label title={pinned ? "Rehearse the LIVE version — exactly what real calls run" : "Nothing live yet — promote a version first"} style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 7, fontSize: 11.5, fontWeight: 700, color: rehearseGolden ? "var(--gold)" : "var(--ink3)", marginBottom: 10, cursor: pinned ? "pointer" : "default", opacity: pinned ? 1 : 0.55 }}>
+                      <input type="checkbox" checked={rehearseGolden} disabled={!pinned} onChange={(e) => setRehearseGolden(e.target.checked)} style={{ accentColor: "var(--gold)" }} />
+                      Rehearse the live version (next session)
+                    </label>
                     <button onClick={() => void goLive()} disabled={!agentId || joining} style={{ height: 46, padding: "0 26px", borderRadius: 9999, border: "none", background: "var(--accent)", color: "#fff", fontSize: 14, fontWeight: 800, boxShadow: "0 8px 24px rgba(255,6,96,.3)", cursor: "pointer", opacity: joining ? 0.6 : 1, ...btnFont }}>
-                      {joining ? "Starting…" : "Go live — voice + screen"}
+                      {bound ? "Go live — ready" : "Go live — voice + screen"}
                     </button>
-                    <div style={{ fontSize: 11, color: "var(--ink3)", fontWeight: 600, marginTop: 10 }}>Spins up a fresh sandbox — about 3–4 minutes.</div>
+                    <div style={{ fontSize: 11, color: "var(--ink3)", fontWeight: 600, marginTop: 10 }}>Starts a fresh sandbox (3–4 min).</div>
+                    {joinErr && <div style={{ marginTop: 10, fontSize: 12, fontWeight: 600, color: "var(--error-ink)" }}>{joinErr}</div>}
                   </>
                 )}
               </div>
             </div>
 
-            {/* Demo account — read-only; edited in Connections */}
+            {/* Demo account — the login the sandbox uses on every session */}
             <div style={{ padding: "12px 14px", borderRadius: 12, background: "var(--sunk)", border: "1px solid var(--border)" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <span className="material-symbols-rounded" style={{ fontSize: 16, color: "var(--purple)" }}>key</span>
                 <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: ".05em", textTransform: "uppercase", color: "var(--ink3)" }}>Demo account</span>
-                <button onClick={() => nav("connections")} style={{ marginLeft: "auto", background: "none", border: "none", color: "var(--purple-ink)", fontSize: 11.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>{demoEmail ? "Change" : "Set up"}</button>
+                {!demoEdit && (
+                  <button onClick={() => { setDemoEdit(true); setDemoFormEmail(demoEmail); setDemoFormPw(""); }} style={{ marginLeft: "auto", background: "none", border: "none", color: "var(--purple-ink)", fontSize: 11.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>{demoEmail ? "Change" : "Set up"}</button>
+                )}
               </div>
-              <div style={{ fontSize: 12.5, color: demoEmail ? "var(--ink2)" : "var(--warning-ink)", marginTop: 6, lineHeight: 1.5 }}>
-                {demoEmail
-                  ? <>{firstName} logs into the product as <b style={{ color: "var(--ink1)" }}>{demoEmail}</b>{demoHasPw ? "" : " (no password set)"} on every rehearsal and live call. Manage it in Connections.</>
-                  : "No login saved — the screen will sit on the login page. Set the demo account in Connections and every session uses it."}
-              </div>
+              {!demoEdit ? (
+                <div style={{ fontSize: 12.5, color: demoEmail ? "var(--ink2)" : "var(--warning-ink)", marginTop: 6, lineHeight: 1.5 }}>
+                  {demoEmail
+                    ? <>{firstName} logs into the product as <b style={{ color: "var(--ink1)" }}>{demoEmail}</b> on every rehearsal and live call.</>
+                    : "No login saved — the screen will sit on the login page. Add the demo account once and every session uses it."}
+                </div>
+              ) : (
+                <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+                  <input value={demoFormEmail} onChange={(e) => setDemoFormEmail(e.target.value)} placeholder="Demo account email" style={{ height: 36, borderRadius: 9, border: "1px solid var(--border)", background: "var(--card)", color: "var(--ink1)", fontFamily: "inherit", fontSize: 12.5, padding: "0 12px" }} />
+                  <input value={demoFormPw} onChange={(e) => setDemoFormPw(e.target.value)} type="password" placeholder={demoHasPw ? "Password (leave blank to keep current)" : "Password"} style={{ height: 36, borderRadius: 9, border: "1px solid var(--border)", background: "var(--card)", color: "var(--ink1)", fontFamily: "inherit", fontSize: 12.5, padding: "0 12px" }} />
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <button onClick={() => void saveDemoLogin()} disabled={demoSaving || !demoFormEmail.trim() || (!demoHasPw && !demoFormPw)} style={{ height: 34, padding: "0 16px", borderRadius: 9999, border: "none", background: "var(--purple)", color: "#fff", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", opacity: demoSaving || !demoFormEmail.trim() || (!demoHasPw && !demoFormPw) ? 0.6 : 1 }}>{demoSaving ? "Saving…" : "Save for all sessions"}</button>
+                    <button onClick={() => { setDemoEdit(false); setDemoErr(""); }} style={{ background: "none", border: "none", color: "var(--ink3)", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Cancel</button>
+                  </div>
+                  <div style={{ fontSize: 10.5, color: "var(--ink3)" }}>Stored on your server only, used by the sandbox to sign in. The password is never shown back.</div>
+                  {demoErr && <div style={{ fontSize: 11.5, color: "var(--error-ink)", fontWeight: 600 }}>{demoErr}</div>}
+                </div>
+              )}
             </div>
           </section>
         </div>
       )}
 
-      {/* ---------- live environment: rail + stage (ready OR rehearsal warming) ---------- */}
-      {/* Warming a rehearsal for the selected clone renders the environment too,
-          with the stage showing the boot checklist until `bound` (READY). */}
-      {live && (bound || rehearsalWarming) && (
+      {/* ---------- bound: rail + stage ---------- */}
+      {bound && live && (
         <div style={{ flex: 1, minHeight: 0, display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,0.82fr)" }}>
           {/* conversation rail */}
           <section style={{ display: "flex", flexDirection: "column", borderRight: "1px solid var(--divider)", minHeight: 0 }}>
@@ -1942,16 +2055,9 @@ export default function RehearsalRoom() {
                         <div key={t.key} className="turn approved">
                           <div className="collapsed">
                             <div className="mini">
-                              <div className="l">{t.beatName ?? `Reply ${t.turnSeq}`}</div>
+                              <div className="l">Reply {t.turnSeq}{t.beatName ? ` · ${t.beatName}` : ""}</div>
                               <div className="s">{t.speech?.text ?? t.screen?.text ?? t.guest ?? ""}</div>
                             </div>
-                            {coached && bound && !isZoom && !!t.guest.trim() && (
-                              redoBusy === t.key
-                                ? <span style={{ fontSize: 11, fontWeight: 700, color: "var(--purple-ink)", flexShrink: 0 }}>re-running…</span>
-                                : <button onClick={() => void redoTurn(t)} title={`Re-run this moment so you hear ${firstName}'s corrected version`} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 700, color: "var(--purple-ink)", background: "transparent", border: "1px solid var(--purple)", borderRadius: 9999, padding: "3px 9px", cursor: "pointer", fontFamily: "inherit", flexShrink: 0 }}>
-                                    <span className="material-symbols-rounded" style={{ fontSize: 13 }}>replay</span>Redo
-                                  </button>
-                            )}
                             <span className={`badge ${coached ? "coached" : "ok"}`}>
                               <span className="material-symbols-rounded" style={{ fontSize: 13 }}>{coached ? "edit" : "check"}</span>
                               {coached ? "coached" : "approved"}
@@ -1962,9 +2068,7 @@ export default function RehearsalRoom() {
                     }
                     const speechKey = `${t.turnSeq}|speech`;
                     const screenKey = `${t.turnSeq}|screen`;
-                    const coachedThisTurn = sp?.verdict === "coach" || sc?.verdict === "coach";
-                    const awaitingReply = awaitingGuestReply; // this is the current turn
-                    const canRedo = bound && !isZoom && !!t.guest.trim();
+                    const stStatus = (g?: { verdict: string }) => (g?.verdict === "coach" ? "coached" : g?.verdict === "approve" ? "approved" : "waiting");
                     const teachBtn: CSSProperties = { height: 34, padding: "0 14px", borderRadius: 10, border: "none", background: "var(--purple)", color: "#fff", fontSize: 12, fontWeight: 700, flexShrink: 0, ...btnFont };
                     return (
                       <div key={t.key} className="turn current">
@@ -1980,8 +2084,11 @@ export default function RehearsalRoom() {
                                 <span className="lbl">What he says</span>
                                 <span className="spacer" />
                                 <div className="acts">
+                                  <button className={`mini-btn approve${sp?.verdict === "approve" ? " done" : ""}`} onClick={() => void gradePart(t.turnSeq, "speech", "approve")}>
+                                    <span className="material-symbols-rounded" style={{ fontSize: 15 }}>check</span>{sp?.verdict === "approve" ? "Approved" : "Approve"}
+                                  </button>
                                   <button className={`mini-btn coach${sp?.verdict === "coach" ? " done" : ""}`} onClick={() => toggleTurnCoach(speechKey)}>
-                                    <span className="material-symbols-rounded" style={{ fontSize: 15 }}>edit</span>{sp?.verdict === "coach" ? "Coached" : "Coach"}
+                                    <span className="material-symbols-rounded" style={{ fontSize: 15 }}>edit</span>Coach
                                   </button>
                                 </div>
                               </div>
@@ -2001,8 +2108,11 @@ export default function RehearsalRoom() {
                                 <span className="lbl">What he shows</span>
                                 <span className="spacer" />
                                 <div className="acts">
+                                  <button className={`mini-btn approve${sc?.verdict === "approve" ? " done" : ""}`} onClick={() => void gradePart(t.turnSeq, "screen", "approve")}>
+                                    <span className="material-symbols-rounded" style={{ fontSize: 15 }}>check</span>{sc?.verdict === "approve" ? "Approved" : "Approve"}
+                                  </button>
                                   <button className={`mini-btn coach${sc?.verdict === "coach" ? " done" : ""}`} onClick={() => toggleTurnCoach(screenKey)}>
-                                    <span className="material-symbols-rounded" style={{ fontSize: 15 }}>edit</span>{sc?.verdict === "coach" ? "Coached" : "Coach"}
+                                    <span className="material-symbols-rounded" style={{ fontSize: 15 }}>edit</span>Coach
                                   </button>
                                 </div>
                               </div>
@@ -2029,20 +2139,13 @@ export default function RehearsalRoom() {
                         </div>
                         <div className="tfoot">
                           <div className="status">
-                            {redoBusy === t.key
-                              ? <span style={{ color: "var(--purple-ink)", fontWeight: 700 }}>re-running this moment…</span>
-                              : awaitingReply
-                                ? <span style={{ color: "var(--accent)", fontWeight: 700 }}>{firstName} asked you something — reply as the guest below.</span>
-                                : <span>Review — coach {firstName}, or continue.</span>}
+                            {t.speech && <span>Speech <b style={{ color: sp ? "var(--success-ink)" : "var(--ink3)" }}>{stStatus(sp)}</b></span>}
+                            {t.screen && <span>Screen <b style={{ color: sc ? "var(--success-ink)" : "var(--ink3)" }}>{stStatus(sc)}</b></span>}
                           </div>
                           <div className="spacer" />
-                          {coachedThisTurn && canRedo && redoBusy !== t.key && (
-                            <button onClick={() => void redoTurn(t)} title={`Re-run this moment so you hear ${firstName}'s corrected version`} style={{ ...ghostBtn, height: 34, padding: "0 13px", fontSize: 12.5, borderColor: "var(--purple)", color: "var(--purple-ink)", display: "inline-flex", alignItems: "center", gap: 6 }}>
-                              <span className="material-symbols-rounded" style={{ fontSize: 15 }}>replay</span>Redo this turn
-                            </button>
-                          )}
-                          <button onClick={() => void advanceTurn(t)} style={{ height: 34, padding: "0 16px", borderRadius: 9999, fontSize: 12.5, display: "inline-flex", alignItems: "center", gap: 6, ...btnFont, fontWeight: 700, ...(awaitingReply ? { border: "1px solid var(--border)", background: "var(--sunk)", color: "var(--ink2)" } : { border: "none", background: "var(--success)", color: "#04231a" }) }}>
-                            {awaitingReply ? "Skip — no reply" : "Continue"}<span className="material-symbols-rounded" style={{ fontSize: 15 }}>arrow_forward</span>
+                          <button onClick={() => void approveTurnBoth(t)} style={{ ...ghostBtn, height: 34, padding: "0 14px", fontSize: 12.5 }}>Approve both</button>
+                          <button onClick={() => void advanceTurn(t)} style={{ height: 34, padding: "0 16px", borderRadius: 9999, border: "none", background: "var(--success)", color: "#04231a", fontSize: 12.5, display: "inline-flex", alignItems: "center", gap: 6, ...btnFont, fontWeight: 700 }}>
+                            Continue<span className="material-symbols-rounded" style={{ fontSize: 15 }}>arrow_forward</span>
                           </button>
                         </div>
                       </div>
@@ -2141,13 +2244,15 @@ export default function RehearsalRoom() {
                 <div className="tri">
                   <button className={inputMode === "guest" ? "on" : (isZoom ? "disabled" : undefined)} onClick={() => setInputMode("guest")} title={isZoom ? "Speak as the guest — only for solo tests; a real prospect is also talking" : undefined}>As guest</button>
                   <button className={inputMode === "direct" ? "on" : undefined} onClick={() => setInputMode("direct")} title={`Silent instruction — the guest never hears it, ${firstName} acts on it immediately`}>Direct {firstName}</button>
+                  <button className={inputMode === "coach" ? "on" : undefined} onClick={() => setInputMode("coach")} title="Coach — the instruction STICKS: routed to persona rules, sliders, beats or situational directives (and lands mid-call too)">Coach</button>
                 </div>
-                {inputMode === "guest" && scenarioChips.map((s) => (
+                {inputMode === "guest" && SCENARIOS.map((s) => (
                   <button key={s} onClick={() => void sendGuest(s)} disabled={chipDisabled} style={{ height: 28, padding: "0 12px", borderRadius: 9999, border: "1px solid var(--border)", background: "transparent", color: "var(--ink2)", fontSize: 11, fontWeight: 700, ...btnFont }}>
                     {s}
                   </button>
                 ))}
                 {coachNote && <span style={{ fontSize: 10.5, fontWeight: 700, color: coachNote.ok ? "var(--success-ink)" : "var(--error-ink)" }}>{coachBusy ? "Coaching…" : coachNote.text}</span>}
+                {inputMode === "coach" && !coachNote && <span style={{ fontSize: 10.5, fontWeight: 600, color: "var(--ink3)" }}>{coachBusy ? "Routing the instruction…" : "Coaching sticks — it becomes rules, sliders, beat edits or directives."}</span>}
                 {inputMode === "direct" && ["Go to the outreach tab", "Back to the positions board", "Show the matches now"].map((s) => (
                   <button key={s} onClick={() => void sendDirect(s)} disabled={chipDisabled} style={{ height: 28, padding: "0 12px", borderRadius: 9999, border: "1px dashed var(--purple)", background: "transparent", color: "var(--purple-ink)", fontSize: 11, fontWeight: 700, ...btnFont }}>
                     {s}
@@ -2160,25 +2265,21 @@ export default function RehearsalRoom() {
                   On a real call you direct, not speak — whatever you send, the prospect hears {firstName}.
                 </div>
               )}
-              {awaitingGuestReply && inputMode === "guest" && (
-                <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "8px 12px", marginBottom: 9, borderRadius: 10, background: "rgba(255,6,96,.10)", border: "1px solid var(--accent)" }}>
-                  <span className="rr-dot" style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--accent)", animation: "rrPulse 1.4s ease-in-out infinite", flexShrink: 0 }} />
-                  <span style={{ fontSize: 12, fontWeight: 700, color: "var(--accent)" }}>{firstName} asked you something — reply as the guest</span>
-                  <span style={{ fontSize: 11, fontWeight: 600, color: "var(--ink3)", animation: "rrBlink 2s ease infinite" }}>waiting for your reply…</span>
-                </div>
-              )}
               <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={() => openStep("")} title="Insert a prescriptive step into the beat sheet" style={{ height: 42, padding: "0 13px", borderRadius: 9999, border: "1px dashed var(--purple)", background: "transparent", color: "var(--purple-ink)", fontSize: 11.5, fontWeight: 800, display: "inline-flex", alignItems: "center", gap: 4, flexShrink: 0, ...btnFont }}>
+                  <span className="material-symbols-rounded" style={{ fontSize: 15 }}>add</span>Step
+                </button>
                 <input
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter") void (inputMode === "direct" ? sendDirect(input) : sendGuest(input)); }}
-                  placeholder={inputMode === "direct" ? `Tell ${firstName} what to do — "go to the outreach section of the position"…` : awaitingGuestReply ? `Reply as the guest — ${firstName} is waiting…` : "Say something as the guest…"}
-                  style={{ flex: 1, height: 42, borderRadius: 9999, border: awaitingGuestReply && inputMode === "guest" ? "1.5px solid var(--accent)" : inputMode === "direct" ? "1px solid var(--purple)" : "1px solid var(--border)", background: "var(--sunk)", color: "var(--ink1)", fontFamily: "inherit", fontSize: 12.5, padding: "0 16px", outline: "none", boxShadow: awaitingGuestReply && inputMode === "guest" ? "0 0 0 3px rgba(255,6,96,.15)" : "none" }}
+                  onKeyDown={(e) => { if (e.key === "Enter") void (inputMode === "coach" ? sendCoach(input) : inputMode === "direct" ? sendDirect(input) : sendGuest(input)); }}
+                  placeholder={inputMode === "coach" ? `Coach ${firstName} — "when they ask about outreach performance, show the analytics screen"…` : inputMode === "direct" ? `Tell ${firstName} what to do — "go to the outreach section of the position"…` : "Say something as the guest…"}
+                  style={{ flex: 1, height: 42, borderRadius: 9999, border: inputMode === "direct" ? "1px solid var(--purple)" : "1px solid var(--border)", background: "var(--sunk)", color: "var(--ink1)", fontFamily: "inherit", fontSize: 12.5, padding: "0 16px", outline: "none" }}
                 />
                 <button onClick={toggleMic} title={micOn ? "Mic is live — click to mute" : isZoom ? "Mic muted — click to talk as the guest (solo tests)" : "Mic muted — click to talk"} style={{ width: 42, height: 42, borderRadius: "50%", border: micOn ? "1.5px solid var(--accent)" : "1.5px solid var(--border)", background: micOn ? "rgba(255,6,96,.12)" : "transparent", color: micOn ? "var(--accent)" : "var(--ink2)", display: "grid", placeItems: "center", ...btnFont }}>
                   <span className="material-symbols-rounded" style={{ fontSize: 18, animation: micOn && listening ? "rrBlink 2.4s ease infinite" : "none" }}>{micOn ? "mic" : "mic_off"}</span>
                 </button>
-                <button onClick={() => void (inputMode === "direct" ? sendDirect(input) : sendGuest(input))} title="Send" style={{ width: 42, height: 42, borderRadius: "50%", border: "none", background: "var(--purple)", color: "#fff", display: "grid", placeItems: "center", ...btnFont }}>
+                <button onClick={() => void (inputMode === "coach" ? sendCoach(input) : inputMode === "direct" ? sendDirect(input) : sendGuest(input))} title="Send" style={{ width: 42, height: 42, borderRadius: "50%", border: "none", background: "var(--purple)", color: "#fff", display: "grid", placeItems: "center", ...btnFont }}>
                   <span className="material-symbols-rounded" style={{ fontSize: 18 }}>{inputMode === "direct" ? "podium" : "send"}</span>
                 </button>
               </div>
@@ -2188,22 +2289,14 @@ export default function RehearsalRoom() {
           {/* stage */}
           <section className="pds-scroll" style={{ display: "flex", flexDirection: "column", minWidth: 0, padding: "16px 18px 14px", gap: 12, overflowY: "auto" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10, position: "sticky", top: -16, zIndex: 10, background: "var(--bg)", paddingTop: 16, marginTop: -16, paddingBottom: 8, marginBottom: -8 }}>
-              <span style={{ display: "inline-flex", alignItems: "center", gap: 8, height: 30, padding: "0 14px", borderRadius: 9999, background: !bound ? "var(--purple-soft)" : controlling ? "rgba(0,187,255,.15)" : "rgba(255,6,96,.14)", color: !bound ? "var(--purple-ink)" : controlling ? "var(--decor)" : "var(--accent)", fontSize: 11.5, fontWeight: 800 }}>
-                <span className="rr-dot" style={{ width: 8, height: 8, borderRadius: "50%", background: !bound ? "var(--purple)" : controlling ? "var(--decor)" : "var(--accent)", animation: "rrPulse 1.6s ease-in-out infinite" }} />
-                {!bound ? `Booting ${firstName}'s screen` : controlling ? "YOU are driving — show him how it's done" : `${firstName} is driving`}
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 8, height: 30, padding: "0 14px", borderRadius: 9999, background: controlling ? "rgba(0,187,255,.15)" : "rgba(255,6,96,.14)", color: controlling ? "var(--decor)" : "var(--accent)", fontSize: 11.5, fontWeight: 800 }}>
+                <span className="rr-dot" style={{ width: 8, height: 8, borderRadius: "50%", background: controlling ? "var(--decor)" : "var(--accent)", animation: "rrPulse 1.6s ease-in-out infinite" }} />
+                {controlling ? "YOU are driving — show him how it's done" : `${firstName} is driving`}
               </span>
-              {bound && (
               <button onClick={() => void (controlling ? handBack() : takeControl())} title={controlling ? "Give the screen back and turn what you showed into a fix" : isZoom ? "Freeze him and drive the screen yourself — the prospect SEES everything you do" : "Freeze him and drive the screen yourself — click inside the stream"} style={{ ...ghostBtn, height: 30, display: "inline-flex", alignItems: "center", gap: 6, borderColor: controlling ? "var(--decor)" : "var(--border)", color: controlling ? "var(--decor)" : "var(--ink1)" }}>
                 <span className="material-symbols-rounded" style={{ fontSize: 15 }}>{controlling ? "keyboard_return" : "back_hand"}</span>
                 {controlling ? "Hand back + teach" : "Take control"}
               </button>
-              )}
-              {bound && !isZoom && (
-              <button onClick={toggleStepMode} title={stepMode === "stepped" ? `Stepped — ${firstName} pauses each turn for your review. Click to let him play through.` : `Play through — ${firstName} flows without stopping. Click to step turn by turn.`} style={{ ...ghostBtn, height: 30, display: "inline-flex", alignItems: "center", gap: 6, borderColor: stepMode === "play" ? "var(--decor)" : "var(--border)", color: stepMode === "play" ? "var(--decor)" : "var(--ink1)" }}>
-                <span className="material-symbols-rounded" style={{ fontSize: 15 }}>{stepMode === "stepped" ? "pause_circle" : "play_circle"}</span>
-                {stepMode === "stepped" ? "Stepped" : "Play through"}
-              </button>
-              )}
               {stages.length > 0 && (currentBeat !== null || coverage.length > 0) && (
                 <span style={{ display: "inline-flex", alignItems: "center", gap: 6, height: 30, padding: "0 12px", borderRadius: 9999, background: "var(--purple-soft)", color: "var(--purple-ink)", fontSize: 11.5, fontWeight: 800 }}>
                   {currentBeat !== null ? `beat ${Math.min(currentBeat, stages.length)}/${stages.length} · ${(stages[Math.min(currentBeat, stages.length) - 1]?.name ?? "").replace(/^[\d:—\-.\s]+/, "").slice(0, 22)}` : `flow`}
@@ -2226,32 +2319,8 @@ export default function RehearsalRoom() {
                 {[0, 1, 2].map((i) => <span key={i} className="d" />)}
                 <span className="url">{streamHost || "sandbox screen"}</span>
               </div>
-              <div style={{ position: "relative", width: "100%", aspectRatio: "4 / 3", background: "#05070d" }} title={!bound ? "The sandbox is booting — the screen opens here when it's ready" : controlling ? "You are driving — click and type inside the screen" : "Watching — the wheel scrolls this panel; hit Take control to interact"}>
-                {!bound ? (
-                  // Warming: the boot checklist lives IN the stage, so the operator
-                  // watches progress right where the screen will appear.
-                  <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", gap: 14, padding: 24 }}>
-                    <span className="material-symbols-rounded" style={{ fontSize: 34, color: "var(--purple)" }}>co_present</span>
-                    <div style={{ fontSize: 14.5, fontWeight: 800, color: "#e7ecf5" }}>Warming up {firstName}'s screen</div>
-                    <div style={{ fontSize: 11.5, color: "#9fb0c8", lineHeight: 1.5, textAlign: "center", maxWidth: 340 }}>Spinning up the sandbox and signing in to GoPerfect — usually 3 to 4 minutes. You're in the room; the screen opens here the moment it's ready.</div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 8, textAlign: "left", width: 260 }}>
-                      {PHASES.map((p, i) => {
-                        const done = donePhases.includes(p) || (phaseIdx >= 0 && i < phaseIdx);
-                        const current = phaseIdx === i || (phaseIdx < 0 && i === 0 && !done);
-                        return (
-                          <div key={p} style={{ display: "flex", alignItems: "center", gap: 10, opacity: done || current ? 1 : 0.45 }}>
-                            <span className="material-symbols-rounded" style={{ fontSize: 16, color: done ? "var(--success-ink)" : current ? "var(--purple)" : "#7d8ca3" }}>
-                              {done ? "check_circle" : current ? "progress_activity" : "radio_button_unchecked"}
-                            </span>
-                            <span style={{ fontSize: 12, fontWeight: 600, color: done || current ? "#e7ecf5" : "#7d8ca3" }}>{PHASE_LABELS[p]}</span>
-                            {current && !done && <span style={{ fontSize: 10, fontWeight: 700, color: "#7d8ca3" }}>working…</span>}
-                          </div>
-                        );
-                      })}
-                    </div>
-                    {joinErr && <div style={{ fontSize: 11.5, fontWeight: 600, color: "var(--error-ink)" }}>{joinErr}</div>}
-                  </div>
-                ) : streamUrl ? (
+              <div style={{ position: "relative", width: "100%", aspectRatio: "4 / 3", background: "#05070d" }} title={controlling ? "You are driving — click and type inside the screen" : "Watching — the wheel scrolls this panel; hit Take control to interact"}>
+                {streamUrl ? (
                   // While watching, the stream ignores the mouse so the wheel scrolls
                   // the panel (otherwise the iframe eats it and the top/bottom of the
                   // screen are unreachable). Take control makes it interactive.
@@ -2264,7 +2333,6 @@ export default function RehearsalRoom() {
               </div>
             </div>
 
-            {bound && (
             <div className="voicebar" style={{ flexShrink: 0 }}>
               <span className="live-dot" />
               {liveAudioOn ? "Live audio from the sandbox" : hear ? `Voice on — you hear ${firstName}` : `${firstName} is muted`}
@@ -2277,7 +2345,6 @@ export default function RehearsalRoom() {
               </div>
               <span className="mut" style={{ marginLeft: "auto", fontSize: 12 }}>{firstName}, real voice</span>
             </div>
-            )}
 
             {/* script beat strip */}
             <div style={{ background: "var(--card)", borderRadius: 18, boxShadow: "var(--shadow)", padding: "14px 16px" }}>
@@ -2287,7 +2354,8 @@ export default function RehearsalRoom() {
                   {stages.length ? `${stages.length} beat${stages.length === 1 ? "" : "s"} · graph v${graphVersion}` : `graph v${graphVersion}`}
                 </span>
                 {dropNote && <span style={{ fontSize: 10.5, fontWeight: 700, color: dropNote.startsWith("Drop failed") ? "var(--error-ink)" : "var(--success-ink)" }}>{dropNote}</span>}
-                <button onClick={() => nav("screenmap")} style={{ marginLeft: "auto", fontSize: 11, fontWeight: 700, color: "var(--decor)", background: "none", border: "none", ...btnFont }}>Edit storyboard</button>
+                <button onClick={() => { setReshapeOpen(true); setReshapeProp(null); setReshapeErr(""); }} style={{ marginLeft: "auto", fontSize: 11, fontWeight: 700, color: "var(--purple-ink)", background: "none", border: "none", ...btnFont }}>Reshape by instruction</button>
+                <button onClick={() => nav("screenmap")} style={{ fontSize: 11, fontWeight: 700, color: "var(--decor)", background: "none", border: "none", ...btnFont }}>Edit storyboard</button>
               </div>
               {stages.length === 0 ? (
                 <div style={{ fontSize: 11.5, color: "var(--ink3)", padding: "6px 2px" }}>No call graph yet. Build one in the screen map and the beats show up here.</div>
@@ -2343,7 +2411,7 @@ export default function RehearsalRoom() {
                 Jump {firstName} to this beat
               </button>
             )}
-            <button onClick={() => { const i = beatMenu.i; setBeatMenu(null); try { localStorage.setItem("sb_open_beat", String(i)); } catch {} nav("screenmap"); }} style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 10px", borderRadius: 9, border: "none", background: "transparent", color: "var(--ink1)", fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", textAlign: "left" }}>
+            <button onClick={() => { setBeatMenu(null); nav("screenmap"); }} style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 10px", borderRadius: 9, border: "none", background: "transparent", color: "var(--ink1)", fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", textAlign: "left" }}>
               <span className="material-symbols-rounded" style={{ fontSize: 16 }}>edit_note</span>
               Edit in storyboard
             </button>
