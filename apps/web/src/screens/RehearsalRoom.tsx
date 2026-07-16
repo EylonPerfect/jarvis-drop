@@ -185,34 +185,25 @@ export default function RehearsalRoom() {
   const [joining, setJoining] = useState(false);
   const [joinErr, setJoinErr] = useState<string | null>(null);
   const [ending, setEnding] = useState(false);
-  // Demo account THIS clone signs into — per-agent, with a shared-default
-  // fallback. inherited=true means it's still falling back to the shared/global
-  // default because this clone has no own login yet. Edited inline below via
-  // PUT /api/clones/:agentId/demo-login (password write-only; omit to keep it).
+  // Demo account the sandbox logs in with (stored server-side for ALL sessions)
   const [demoEmail, setDemoEmail] = useState("");
   const [demoHasPw, setDemoHasPw] = useState(false);
-  const [demoInherited, setDemoInherited] = useState(false);
   const [demoEdit, setDemoEdit] = useState(false);
   const [demoFormEmail, setDemoFormEmail] = useState("");
   const [demoFormPw, setDemoFormPw] = useState("");
   const [demoSaving, setDemoSaving] = useState(false);
   const [demoErr, setDemoErr] = useState("");
   useEffect(() => {
-    if (!agentId) return;
-    setDemoEdit(false); setDemoErr("");
-    void api.get<{ email: string; hasPassword: boolean; inherited: boolean }>(`/api/clones/${agentId}/demo-login`)
-      .then((r) => { setDemoEmail(r.email || ""); setDemoHasPw(!!r.hasPassword); setDemoInherited(!!r.inherited); setDemoFormEmail(r.email || ""); })
+    void api.get<{ email: string; hasPassword: boolean }>("/api/demo-login")
+      .then((r) => { setDemoEmail(r.email); setDemoHasPw(r.hasPassword); setDemoFormEmail(r.email); })
       .catch(() => { /* leave empty */ });
-  }, [agentId]);
+  }, []);
   async function saveDemoLogin() {
-    if (!agentId || demoSaving) return;
+    if (demoSaving) return;
     setDemoSaving(true); setDemoErr("");
     try {
-      await api.put(`/api/clones/${agentId}/demo-login`, { email: demoFormEmail.trim(), ...(demoFormPw ? { password: demoFormPw } : {}) });
-      // Re-load so the row reflects the authoritative state (own login, not inherited).
-      const r = await api.get<{ email: string; hasPassword: boolean; inherited: boolean }>(`/api/clones/${agentId}/demo-login`).catch(() => null);
-      if (r) { setDemoEmail(r.email || ""); setDemoHasPw(!!r.hasPassword); setDemoInherited(!!r.inherited); }
-      setDemoEdit(false); setDemoFormPw("");
+      const r = await api.put<{ email: string; hasPassword: boolean }>("/api/demo-login", { email: demoFormEmail.trim(), ...(demoFormPw ? { password: demoFormPw } : {}) });
+      setDemoEmail(r.email); setDemoHasPw(r.hasPassword); setDemoEdit(false); setDemoFormPw("");
     } catch (e) { setDemoErr(e instanceof Error ? e.message : String(e)); }
     setDemoSaving(false);
   }
@@ -1238,7 +1229,10 @@ export default function RehearsalRoom() {
 
   useEffect(() => {
     const el = feedRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (!el) return;
+    // auto-scroll to the newest reply ONLY if you're already near the bottom —
+    // don't yank you away while you've scrolled up to review an earlier turn
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 140) el.scrollTop = el.scrollHeight;
   }, [items.length]);
 
   const lastTool = useMemo(() => {
@@ -1984,31 +1978,30 @@ export default function RehearsalRoom() {
               </div>
             </div>
 
-            {/* Demo account — per-agent, with a shared-default fallback. Inline editor. */}
+            {/* Demo account — the login the sandbox uses on every session */}
             <div style={{ padding: "12px 14px", borderRadius: 12, background: "var(--sunk)", border: "1px solid var(--border)" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <span className="material-symbols-rounded" style={{ fontSize: 16, color: "var(--purple)" }}>key</span>
                 <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: ".05em", textTransform: "uppercase", color: "var(--ink3)" }}>Demo account</span>
-                {demoEmail && demoInherited && <span style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: ".05em", textTransform: "uppercase", color: "var(--ink3)", background: "var(--card)", border: "1px solid var(--border)", borderRadius: 9999, padding: "2px 8px" }}>shared default</span>}
                 {!demoEdit && (
-                  <button onClick={() => { setDemoEdit(true); setDemoFormEmail(demoEmail); setDemoFormPw(""); setDemoErr(""); }} disabled={!agentId} style={{ marginLeft: "auto", background: "none", border: "none", color: "var(--purple-ink)", fontSize: 11.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", opacity: agentId ? 1 : 0.5 }}>{demoInherited || !demoEmail ? "Set up" : "Change"}</button>
+                  <button onClick={() => { setDemoEdit(true); setDemoFormEmail(demoEmail); setDemoFormPw(""); }} style={{ marginLeft: "auto", background: "none", border: "none", color: "var(--purple-ink)", fontSize: 11.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>{demoEmail ? "Change" : "Set up"}</button>
                 )}
               </div>
               {!demoEdit ? (
                 <div style={{ fontSize: 12.5, color: demoEmail ? "var(--ink2)" : "var(--warning-ink)", marginTop: 6, lineHeight: 1.5 }}>
                   {demoEmail
-                    ? <>{firstName} logs into the product as <b style={{ color: "var(--ink1)" }}>{demoEmail}</b>{demoHasPw ? "" : " (no password set)"} on every rehearsal and live call.{demoInherited ? " Using the shared default — set one to override for this clone." : ""}</>
-                    : "No login saved — the screen will sit on the login page. Set the demo account and every session for this clone uses it."}
+                    ? <>{firstName} logs into the product as <b style={{ color: "var(--ink1)" }}>{demoEmail}</b> on every rehearsal and live call.</>
+                    : "No login saved — the screen will sit on the login page. Add the demo account once and every session uses it."}
                 </div>
               ) : (
                 <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
                   <input value={demoFormEmail} onChange={(e) => setDemoFormEmail(e.target.value)} placeholder="Demo account email" style={{ height: 36, borderRadius: 9, border: "1px solid var(--border)", background: "var(--card)", color: "var(--ink1)", fontFamily: "inherit", fontSize: 12.5, padding: "0 12px" }} />
-                  <input value={demoFormPw} onChange={(e) => setDemoFormPw(e.target.value)} type="password" placeholder={demoHasPw && !demoInherited ? "Password (leave blank to keep current)" : "Password"} style={{ height: 36, borderRadius: 9, border: "1px solid var(--border)", background: "var(--card)", color: "var(--ink1)", fontFamily: "inherit", fontSize: 12.5, padding: "0 12px" }} />
+                  <input value={demoFormPw} onChange={(e) => setDemoFormPw(e.target.value)} type="password" placeholder={demoHasPw ? "Password (leave blank to keep current)" : "Password"} style={{ height: 36, borderRadius: 9, border: "1px solid var(--border)", background: "var(--card)", color: "var(--ink1)", fontFamily: "inherit", fontSize: 12.5, padding: "0 12px" }} />
                   <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                    <button onClick={() => void saveDemoLogin()} disabled={demoSaving || !demoFormEmail.trim() || (!(demoHasPw && !demoInherited) && !demoFormPw)} style={{ height: 34, padding: "0 16px", borderRadius: 9999, border: "none", background: "var(--purple)", color: "#fff", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", opacity: demoSaving || !demoFormEmail.trim() || (!(demoHasPw && !demoInherited) && !demoFormPw) ? 0.6 : 1 }}>{demoSaving ? "Saving…" : "Save for this clone"}</button>
+                    <button onClick={() => void saveDemoLogin()} disabled={demoSaving || !demoFormEmail.trim() || (!demoHasPw && !demoFormPw)} style={{ height: 34, padding: "0 16px", borderRadius: 9999, border: "none", background: "var(--purple)", color: "#fff", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", opacity: demoSaving || !demoFormEmail.trim() || (!demoHasPw && !demoFormPw) ? 0.6 : 1 }}>{demoSaving ? "Saving…" : "Save for all sessions"}</button>
                     <button onClick={() => { setDemoEdit(false); setDemoErr(""); }} style={{ background: "none", border: "none", color: "var(--ink3)", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Cancel</button>
                   </div>
-                  <div style={{ fontSize: 10.5, color: "var(--ink3)" }}>Stored on your server only, used by the sandbox to sign in as this clone. The password is never shown back.</div>
+                  <div style={{ fontSize: 10.5, color: "var(--ink3)" }}>Stored on your server only, used by the sandbox to sign in. The password is never shown back.</div>
                   {demoErr && <div style={{ fontSize: 11.5, color: "var(--error-ink)", fontWeight: 600 }}>{demoErr}</div>}
                 </div>
               )}
@@ -2047,8 +2040,17 @@ export default function RehearsalRoom() {
                 </>
               )}
             </div>
-            <div ref={feedRef} className="pds-scroll" style={{ flex: 1, overflowY: "auto", padding: "6px 16px 12px", display: "flex", flexDirection: "column", gap: 10 }}>
+            <div ref={feedRef} className="pds-scroll" style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "6px 16px 12px", display: "flex", flexDirection: "column", gap: 10 }}>
               {/* REHEARSAL: turn-by-turn approve / coach cards. Zoom keeps the transcript feed (below, isZoom branch). */}
+              {!isZoom && rehCurrentIdx > 0 && (
+                <button
+                  onClick={() => feedRef.current?.scrollTo({ top: 0, behavior: "smooth" })}
+                  title="Scroll up to the earlier replies"
+                  style={{ position: "sticky", top: 0, zIndex: 3, alignSelf: "center", display: "inline-flex", alignItems: "center", gap: 5, height: 26, padding: "0 12px", borderRadius: 9999, border: "1px solid var(--border)", background: "var(--card)", color: "var(--ink2)", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", boxShadow: "var(--shadow)" }}>
+                  <span className="material-symbols-rounded" style={{ fontSize: 14 }}>expand_less</span>
+                  {rehCurrentIdx} earlier repl{rehCurrentIdx === 1 ? "y" : "ies"}
+                </button>
+              )}
               {!isZoom && (
                 rehearsalTurns.length === 0 ? (
                   <div style={{ fontSize: 12, color: "var(--ink3)", padding: "18px 4px", lineHeight: 1.6 }}>
