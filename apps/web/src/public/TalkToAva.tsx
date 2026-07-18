@@ -44,6 +44,9 @@ type StatusResp = {
 };
 type RawTurn = { role?: string; speaker?: string; who?: string; text?: string; content?: string };
 type Turn = { ava: boolean; text: string };
+// Ava's REAL voice: raw PCM s16le/24k/mono in base64 chunks, offset-cursored —
+// the SAME contract GET /api/live/audio serves and RehearsalRoom's engine plays.
+type AudioResp = { live: boolean; offset: number; chunk: string; rate?: number };
 
 // Dedicated, decoupled fetch for the PUBLIC demo endpoints. It deliberately
 // does NOT go through api/client.ts: those endpoints are unauthenticated, and
@@ -75,7 +78,7 @@ const GREEN = "#2ED37D";
 
 // Minimal SpeechRecognition typing (same browser API RehearsalRoom uses for
 // mic capture). Kept local so we don't pull in product types.
-type SR = { start: () => void; stop: () => void; abort: () => void; onresult: ((e: unknown) => void) | null; onend: (() => void) | null; onerror: (() => void) | null; continuous: boolean; interimResults: boolean; lang: string };
+type SR = { start: () => void; stop: () => void; abort: () => void; onresult: ((e: unknown) => void) | null; onspeechstart: (() => void) | null; onend: (() => void) | null; onerror: (() => void) | null; continuous: boolean; interimResults: boolean; lang: string };
 
 export default function TalkToAva({ nav }: { nav: Nav }) {
   const [phase, setPhase] = useState<Phase>("connecting");
@@ -89,6 +92,8 @@ export default function TalkToAva({ nav }: { nav: Nav }) {
   const [micOn, setMicOn] = useState(false);
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
+  // true while Ava's streamed voice is actively voicing — pulses the orb/wave.
+  const [speaking, setSpeaking] = useState(false);
 
   // email capture (END only)
   const [email, setEmail] = useState("");
@@ -101,6 +106,26 @@ export default function TalkToAva({ nav }: { nav: Nav }) {
   const endedRef = useRef(false);
   const recRef = useRef<SR | null>(null);
   const feedRef = useRef<HTMLDivElement | null>(null);
+
+  // --- audio path: play Ava's REAL voice (vspk PCM) via Web Audio ---
+  // The engine + barge-in below are lifted from RehearsalRoom's live-stream
+  // player (screens/RehearsalRoom.tsx): poll /audio, decode s16le → Float32,
+  // schedule at 24kHz with a small look-ahead; barge-in flushes what's queued.
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const streamOffsetRef = useRef(-1);        // byte cursor into the sandbox raw file
+  const streamNextTRef = useRef(0);          // next scheduled start time (ctx clock)
+  const streamSrcsRef = useRef<AudioBufferSourceNode[]>([]);
+  const streamVoicedAtRef = useRef(0);       // last ms we saw real (non-silence) PCM
+  const streamSpeakingRef = useRef(false);   // Ava-is-voicing latch (mic discipline)
+  const speakingRef = useRef(false);         // mirrors the `speaking` UI state
+  const micOnRef = useRef(false);            // mirrors `micOn` for loop/callbacks
+  const liveRef = useRef(false);             // mirrors phase === "live"
+  // echo-cancelled VAD "guard ear" — lets barge-in work WHILE Ava talks and the
+  // (non-echo-cancelled) recognizer is paused, so she "shuts up instantly".
+  const vadStreamRef = useRef<MediaStream | null>(null);
+  const vadCtxRef = useRef<AudioContext | null>(null);
+  const vadRafRef = useRef<number | null>(null);
+  const vadCleanupRef = useRef<(() => void) | null>(null);
 
   const stopPolling = useCallback(() => {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
@@ -178,6 +203,12 @@ export default function TalkToAva({ nav }: { nav: Nav }) {
     return () => {
       stopPolling();
       try { recRef.current?.abort(); } catch { /* noop */ }
+      // release the VAD guard's mic + its audio context (the stream engine's
+      // own AudioContext is torn down by its effect's cleanup).
+      try { vadStreamRef.current?.getTracks().forEach((t) => t.stop()); } catch { /* gone */ }
+      vadStreamRef.current = null;
+      try { void vadCtxRef.current?.close(); } catch { /* closed */ }
+      vadCtxRef.current = null;
       const id = sessionRef.current;
       if (id && !endedRef.current) { demoFetch(`/api/demo/${id}/end`, "POST", {}).catch(() => {}); }
     };
@@ -209,37 +240,194 @@ export default function TalkToAva({ nav }: { nav: Nav }) {
     say(t);
   };
 
-  // Mic capture via the browser SpeechRecognition API (same client the studio's
-  // rehearsal uses). Each finalized phrase POSTs /say — which is also the
-  // barge-in signal to the backend voice loop. Text input is the no-mic
-  // fallback and is ALWAYS available.
-  const toggleMic = useCallback(() => {
+  // Mirror micOn / live phase into refs so the audio loop and recognizer
+  // callbacks read the current value without re-subscribing.
+  useEffect(() => { micOnRef.current = micOn; }, [micOn]);
+  useEffect(() => { liveRef.current = phase === "live"; }, [phase]);
+
+  // BARGE-IN / interrupt: drop everything scheduled and rejoin at the live edge.
+  // Lifted from RehearsalRoom's streamFlush + stopVoice — the reason Ava "shuts
+  // up instantly" the moment the prospect speaks.
+  function stopPlayback() {
+    streamSrcsRef.current.forEach((s) => { try { s.stop(); } catch { /* done */ } });
+    streamSrcsRef.current = [];
+    streamOffsetRef.current = -1;
+    const ctx = audioCtxRef.current;
+    if (ctx) streamNextTRef.current = ctx.currentTime;
+    streamSpeakingRef.current = false;
+  }
+
+  // ---- VAD guard (RehearsalRoom ~791-831) --------------------------------
+  function stopVadGuard() {
+    if (vadRafRef.current !== null) cancelAnimationFrame(vadRafRef.current);
+    vadRafRef.current = null;
+    vadCleanupRef.current?.();
+    vadCleanupRef.current = null;
+  }
+  async function startVadGuard() {
+    if (!micOnRef.current || vadRafRef.current !== null) return;
+    try {
+      if (!vadStreamRef.current) {
+        vadStreamRef.current = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+      }
+      const ctx = vadCtxRef.current ?? new AudioContext();
+      vadCtxRef.current = ctx;
+      if (ctx.state === "suspended") void ctx.resume();
+      const src = ctx.createMediaStreamSource(vadStreamRef.current);
+      const an = ctx.createAnalyser();
+      an.fftSize = 512;
+      src.connect(an);
+      vadCleanupRef.current = () => { try { src.disconnect(); } catch { /* gone */ } };
+      const buf = new Uint8Array(an.fftSize);
+      let hot = 0;
+      const tick = () => {
+        an.getByteTimeDomainData(buf);
+        let sum = 0;
+        for (let i = 0; i < buf.length; i++) { const d = (buf[i] - 128) / 128; sum += d * d; }
+        const rms = Math.sqrt(sum / buf.length);
+        hot = rms > 0.055 ? hot + 1 : 0;
+        if (hot >= 4) { // ~sustained real speech, not a pop
+          stopPlayback();  // Ava shuts up instantly
+          stopVadGuard();
+          if (micOnRef.current && liveRef.current) startRecog(); // now listen for real
+          return;
+        }
+        vadRafRef.current = requestAnimationFrame(tick);
+      };
+      vadRafRef.current = requestAnimationFrame(tick);
+    } catch { /* no mic permission — Ava plays walkie-talkie style */ }
+  }
+
+  // ---- mic recognizer (SpeechRecognition; RehearsalRoom start/stopRecog) --
+  // Each finalized phrase POSTs /say (also the backend barge-in signal) AND cuts
+  // local playback. onspeechstart is the instant barge-in. Text input is the
+  // no-mic fallback and is ALWAYS available.
+  function stopRecog() {
+    const r = recRef.current;
+    recRef.current = null;
+    try { if (r) { r.onend = null; (r.abort ?? r.stop).call(r); } } catch { /* already stopped */ }
+  }
+  function startRecog() {
+    if (recRef.current) return;
     const W = window as unknown as { SpeechRecognition?: new () => SR; webkitSpeechRecognition?: new () => SR };
     const Ctor = W.SpeechRecognition || W.webkitSpeechRecognition;
-    if (!Ctor) { setErrMsg("This browser can't capture your mic — type to Ava instead."); return; }
-    if (micOn) { try { recRef.current?.stop(); } catch { /* noop */ } setMicOn(false); return; }
+    if (!Ctor) { setErrMsg("This browser can't capture your mic — type to Ava instead."); setMicOn(false); return; }
     try {
       const rec = new Ctor();
       rec.continuous = true;
       rec.interimResults = false;
       rec.lang = "en-US";
+      // BARGE-IN: the instant you start talking, Ava stops.
+      rec.onspeechstart = () => stopPlayback();
       rec.onresult = (e: unknown) => {
         const ev = e as { results: ArrayLike<ArrayLike<{ transcript: string }>>; resultIndex: number };
         for (let i = ev.resultIndex; i < ev.results.length; i++) {
           const phrase = ev.results[i][0]?.transcript;
-          if (phrase) say(phrase);
+          if (phrase) { stopPlayback(); say(phrase); }
         }
       };
       // The browser stops recognition after a silence; restart while mic is on.
-      rec.onend = () => { if (recRef.current === rec && micOn) { try { rec.start(); } catch { /* noop */ } } };
+      rec.onend = () => { if (recRef.current === rec && micOnRef.current && liveRef.current) { try { rec.start(); } catch { /* noop */ } } };
       rec.onerror = () => { /* keep the session alive; the text box still works */ };
       recRef.current = rec;
       rec.start();
-      setMicOn(true);
     } catch {
       setErrMsg("Couldn't start the mic — type to Ava instead.");
+      setMicOn(false);
     }
-  }, [micOn, say]);
+  }
+  const toggleMic = useCallback(() => {
+    const W = window as unknown as { SpeechRecognition?: new () => SR; webkitSpeechRecognition?: new () => SR };
+    if (!(W.SpeechRecognition || W.webkitSpeechRecognition)) { setErrMsg("This browser can't capture your mic — type to Ava instead."); return; }
+    if (micOn) { setMicOn(false); stopRecog(); stopVadGuard(); return; }
+    setMicOn(true);
+    startRecog();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [micOn]);
+
+  // ---- stream engine: poll /api/demo/:id/audio, schedule PCM via Web Audio -
+  // A direct port of RehearsalRoom's live-audio effect (~1168-1237): what you
+  // hear is the sandbox's ACTUAL output (EL hybrid voice, real pacing). While
+  // Ava is voicing, the (non-echo-cancelled) recognizer pauses and the VAD guard
+  // listens for YOUR barge-in — same discipline as the studio. Autoplay is fine:
+  // the "Talk to Ava" click that mounted this screen is the user gesture.
+  useEffect(() => {
+    if (phase !== "live") return;
+    const id = sessionRef.current;
+    if (!id) return;
+    let stopped = false;
+    const ctx = new AudioContext({ sampleRate: 24000 });
+    audioCtxRef.current = ctx;
+    if (ctx.state === "suspended") void ctx.resume().catch(() => { /* gesture may be needed */ });
+    streamNextTRef.current = 0;
+    streamOffsetRef.current = -1;
+    const loop = async () => {
+      while (!stopped) {
+        try {
+          const r = await demoFetch<AudioResp>(`/api/demo/${id}/audio?after=${streamOffsetRef.current}`, "GET");
+          if (stopped) break;
+          if (!r.live) {
+            if (speakingRef.current) { speakingRef.current = false; setSpeaking(false); }
+            await new Promise((res) => setTimeout(res, 1500));
+            continue;
+          }
+          streamOffsetRef.current = r.offset;
+          if (r.chunk) {
+            const bin = atob(r.chunk);
+            const n = bin.length & ~1;
+            if (n > 1) {
+              const f32 = new Float32Array(n / 2);
+              let voiced = false;
+              for (let i = 0; i < n / 2; i++) {
+                let v = (bin.charCodeAt(2 * i + 1) << 8) | bin.charCodeAt(2 * i);
+                if (v >= 0x8000) v -= 0x10000;
+                f32[i] = v / 32768;
+                if (v > 600 || v < -600) voiced = true;
+              }
+              if (voiced) streamVoicedAtRef.current = Date.now();
+              const abuf = ctx.createBuffer(1, f32.length, 24000);
+              abuf.getChannelData(0).set(f32);
+              const src = ctx.createBufferSource();
+              src.buffer = abuf;
+              src.connect(ctx.destination);
+              const t = Math.max(ctx.currentTime + 0.12, streamNextTRef.current);
+              src.start(t);
+              streamNextTRef.current = t + abuf.duration;
+              streamSrcsRef.current.push(src);
+              src.onended = () => { streamSrcsRef.current = streamSrcsRef.current.filter((x) => x !== src); };
+            }
+          }
+          // reflect real-voice state in the UI (orb + waveform pulse)
+          const now = Date.now();
+          const voicedRecently = now - streamVoicedAtRef.current < 900;
+          if (voicedRecently !== speakingRef.current) { speakingRef.current = voicedRecently; setSpeaking(voicedRecently); }
+          // mic discipline: pause recog while she speaks, VAD guard hears you
+          if (voicedRecently && !streamSpeakingRef.current) {
+            streamSpeakingRef.current = true;
+            if (micOnRef.current) { stopRecog(); void startVadGuard(); }
+          } else if (!voicedRecently && streamSpeakingRef.current && now - streamVoicedAtRef.current > 1200) {
+            streamSpeakingRef.current = false;
+            stopVadGuard();
+            if (micOnRef.current && liveRef.current) startRecog();
+          }
+        } catch { /* next poll */ }
+        await new Promise((res) => setTimeout(res, 500));
+      }
+    };
+    void loop();
+    return () => {
+      stopped = true;
+      speakingRef.current = false;
+      setSpeaking(false);
+      streamSpeakingRef.current = false;
+      stopVadGuard();
+      streamSrcsRef.current.forEach((s) => { try { s.stop(); } catch { /* done */ } });
+      streamSrcsRef.current = [];
+      audioCtxRef.current = null;
+      void ctx.close().catch(() => { /* closed */ });
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase]);
 
   const endByUser = useCallback(() => {
     const id = sessionRef.current;
@@ -327,6 +515,7 @@ export default function TalkToAva({ nav }: { nav: Nav }) {
             setShowTranscript={setShowTranscript}
             feedRef={feedRef}
             wrapUp={wrapUp}
+            speaking={speaking}
           />
         )}
 
@@ -488,10 +677,10 @@ function ConnectingView({ phase, queuePos }: { phase: Phase; queuePos: number | 
 }
 
 function LiveView({
-  streamUrl, transcript, showTranscript, setShowTranscript, feedRef, wrapUp,
+  streamUrl, transcript, showTranscript, setShowTranscript, feedRef, wrapUp, speaking,
 }: {
   streamUrl: string; transcript: Turn[]; showTranscript: boolean;
-  setShowTranscript: (v: boolean) => void; feedRef: React.MutableRefObject<HTMLDivElement | null>; wrapUp: boolean;
+  setShowTranscript: (v: boolean) => void; feedRef: React.MutableRefObject<HTMLDivElement | null>; wrapUp: boolean; speaking: boolean;
 }) {
   const lastAva = [...transcript].reverse().find((t) => t.ava);
   let host = "ava's screen";
@@ -526,14 +715,14 @@ function LiveView({
             )}
             {/* Floating orb tile, like a Zoom self-view */}
             <div style={{ position: "absolute", right: 12, bottom: 12, width: 92, height: 92, borderRadius: 14, background: "rgba(4,4,42,.55)", backdropFilter: "blur(6px)", display: "flex", alignItems: "center", justifyContent: "center", border: "1px solid rgba(255,255,255,.15)" }}>
-              <AvaOrb size={64} speaking />
+              <AvaOrb size={64} speaking={speaking} />
             </div>
           </div>
         </div>
 
         {/* Voice bar + live caption (last thing Ava said) */}
         <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", borderRadius: 14, background: "var(--card)", border: "1px solid var(--border)" }}>
-          <Wave active />
+          <Wave active={speaking} />
           <div style={{ flex: 1, minWidth: 0, fontSize: 13.5, color: "var(--ink2)", lineHeight: 1.45, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} aria-live="polite">
             {lastAva ? lastAva.text : "Ava is live — say hello, or ask her to show you the product."}
           </div>

@@ -239,6 +239,52 @@ export async function transcriptFor(sessionId: string): Promise<{ role: string; 
   } catch { return []; }
 }
 
+/**
+ * Stream the bound sandbox's ACTUAL spoken output — the vspk PulseAudio sink —
+ * as base64 PCM s16le/24k/mono. This is a byte-for-byte lift of the capture /
+ * poll mechanism in GET /api/live/audio (routes/live.ts): the ONLY difference
+ * is that the sandbox is resolved from the demo pool (by sessionId) instead of
+ * the authenticated live_calls row. Delivers Ava's REAL voice (same EL hybrid
+ * voice + pacing a Zoom listener hears) to the public demo browser.
+ *
+ *   after < 0  → self-start the recorder in e2b BACKGROUND mode (a foreground
+ *                nohup gets SIGKILLed with its process group when the RPC
+ *                returns) and return the live-edge offset. The marker file lets
+ *                a later poll know the writer is already up. vspk is a null-sink
+ *                whose monitor emits real PCM while the hybrid EL player writes
+ *                to it — exactly what a Zoom listener hears.
+ *   after >= 0 → tail up to 72KB (~1.5s) from that offset, base64-encoded.
+ */
+export async function audioFor(
+  sessionId: string,
+  after: number,
+): Promise<{ live: boolean; offset: number; chunk: string; rate: number }> {
+  const slot = slots.find((s) => s.sessionId === sessionId && s.state === "leased");
+  if (!slot?.sandboxId) return { live: false, offset: 0, chunk: "", rate: 24000 };
+  try {
+    const d = await connectSandbox(slot.sandboxId);
+    if (after < 0) {
+      const chk = await d.commands.run(`test -f /tmp/room_audio.started && echo up || echo down`, { timeoutMs: 10000 });
+      if ((chk.stdout || "").trim() !== "up") {
+        await d.commands.run(
+          `touch /tmp/room_audio.started; pacat --record --format=s16le --rate=24000 --channels=1 --device=vspk.monitor > /tmp/room_audio.raw 2>/dev/null`,
+          { background: true },
+        ).catch(() => { /* poll will retry */ });
+        await new Promise((res) => setTimeout(res, 600));
+      }
+      const r = await d.commands.run(`stat -c %s /tmp/room_audio.raw 2>/dev/null || echo 0`, { timeoutMs: 10000 });
+      const size = parseInt(((r.stdout || "0").trim().split("\n").pop() || "0"), 10) || 0;
+      return { live: true, offset: size, chunk: "", rate: 24000 };
+    }
+    const r = await d.commands.run(`tail -c +${after + 1} /tmp/room_audio.raw 2>/dev/null | head -c 72000 | base64 -w0`, { timeoutMs: 10000 });
+    const b64 = (r.stdout || "").replace(/\s+/g, "");
+    const bytes = b64 ? Buffer.from(b64, "base64").length : 0;
+    return { live: true, offset: after + bytes, chunk: b64, rate: 24000 };
+  } catch {
+    return { live: false, offset: Math.max(0, after), chunk: "", rate: 24000 };
+  }
+}
+
 // ---- maintenance loop ------------------------------------------------------
 function refill(): void {
   if (!D.poolEnabled) return;

@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { query, one } from "../db/pool.js";
 import { config } from "../config.js";
 import { emit, EVENTS } from "../lib/analytics.js";
-import { lease, reap, sayTo, slotForSession, transcriptFor, poolStats } from "../lib/demoPool.js";
+import { lease, reap, sayTo, slotForSession, transcriptFor, poolStats, audioFor } from "../lib/demoPool.js";
 
 // ============================================================================
 // routes/demo.ts — PUBLIC, UNAUTHENTICATED "Talk to Ava" demo API.
@@ -180,6 +180,24 @@ export default async function demoRoutes(app: FastifyInstance) {
       [newId("dl"), ORG, sessionId, email]);
     void emit(EVENTS.SIGNUP_STARTED, { orgId: ORG, callId: sessionId, distinctId: sessionId, props: { source: "ava_demo" } });
     return reply.code(200).send({ ok: true });
+  });
+
+  // ---- GET /api/demo/:sessionId/audio : Ava's REAL spoken voice (vspk PCM) -
+  // Unauthenticated, like the rest of /api/demo/*. Streams the session's bound
+  // sandbox output EXACTLY as GET /api/live/audio does — base64 PCM s16le/24k
+  // mono chunks the browser schedules via Web Audio (see TalkToAva.tsx). The
+  // sandbox is resolved from the warm pool by sessionId inside audioFor() (same
+  // slot binding slotForSession/sayTo/transcriptFor use), so this stays a cheap
+  // in-memory lookup on the hot poll path — no per-poll DB read. Capture
+  // self-starts on the first poll (after=-1 asks for the live edge); each later
+  // poll tails up to 72KB (~1.5s). Returns { live:false } for any non-live or
+  // unknown session, which the client treats as "not voicing yet".
+  app.get("/api/demo/:sessionId/audio", async (req, reply) => {
+    const { sessionId } = req.params as { sessionId: string };
+    const q = (req.query ?? {}) as { after?: string };
+    const after = Math.max(-1, parseInt(q.after ?? "-1", 10) || -1);
+    const a = await audioFor(sessionId, after);
+    return reply.code(200).send(a);
   });
 
   // ---- GET /api/demo/pool : lightweight pool health (ops visibility) -------

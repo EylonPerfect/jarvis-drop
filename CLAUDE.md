@@ -319,3 +319,13 @@ Definition of done to open doors: cutover flipped (Eylon logs in, 2nd org walled
 AUTH_MODE=password is LIVE. Sequence executed: scoping fixes (8 route files) + auth-mode-aware app gate (GET /api/auth/mode; App.tsx routes password-mode users to PublicAuth) + service-account path (password mode: session cookie wins; cookieless BFF_API_KEY callers act as legacy org — internal self-calls fidelity/readiness/debrief/scheduled-join/studio work) → deployed dual-mode image → verified (mode=password, 401 unauth, service path 200, signup→session→me→api 200 smoke test) → dropped org_id DEFAULT on all 28 tenant tables.
 ROLLBACK = set AUTH_MODE=access-code in .env + docker compose up -d bff web (image is dual-mode; dropped defaults are harmless since code sets org_id explicitly). Backup: .env.bak.preflip.
 OPEN: Eylon signs up via /site#/auth then his user is re-attached to org_legacy (owner) to keep existing data. FOLLOW-UP #73: internal self-calls pin to legacy org — must propagate target org before non-legacy orgs run rehearsals (blocks Talk to Ava).
+
+---
+
+## TALK-TO-AVA + ACTIVATION INTEGRATED (2026-07-19)
+
+Merged into prod + deployed (password mode): Talk-to-Ava (demoPool/demo.ts/demoTenant + public TalkToAva.tsx, **pool OFF** DEMO_POOL_ENABLED unset), activation first-run (FirstRun.tsx, 0-clone landing), rehearsal cap + go-live paywall (PaywallModal, gate OFF BILLING_GATE_ENFORCED=false), monitoring (alerts.ts funnel events) + legal (PublicLegal terms/privacy), #73 org-propagation. Integration commits: 51ea891 (bad) → 775c1d3 (fixed). Rollback tag/ snapshot: 88d4768.
+
+**HARD LESSON (LAW): the bff runs via  (no compile step) —  does NOT type-check; it only packages. A missing export / broken import only surfaces at RUNTIME boot. ALWAYS verify `docker logs jarvis-new-bff-1` shows "Server listening" (not SyntaxError) after a bff deploy; "image built" ≠ working.** Also: sequential `git merge-file` on multi-source files with a shared base can SILENTLY drop additions (no conflict marker) when two sources change nearby regions — and it operates per exact path, so lib/ vs routes/ mistakes drop whole files. Verify expected symbols (grep) after merging, per source.
+
+REMAINING for Talk-to-Ava live: re-run #74 audio (merged baseline; stream sandbox PCM via /api/live/audio pattern), seed Northwind (org_demo_northwind/ag_demo_ava) into prod + apply Ava demo-host golden + deploy ta_persona duplexnav7 bail-out to /root/ah-scripts, then warm-pool live test (needs Eylon OK on E2B cost + pool size, DEMO_POOL_ENABLED=true).
