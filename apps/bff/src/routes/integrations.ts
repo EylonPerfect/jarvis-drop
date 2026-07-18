@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { query, one } from "../db/pool.js";
+import { orgId } from "../lib/auth.js";
 import { hermes } from "../hermes.js";
 import type { Integration, IntegrationField, IntegrationTestResult } from "@jarvis/shared";
 
@@ -81,7 +82,7 @@ const CATALOG: CatalogEntry[] = [
     },
   },
   {
-    id: "elevenlabs", label: "ElevenLabs (Voice)", category: "voice", icon: "mic", authKind: "apiKey", recommended: true,
+    id: "elevenlabs", label: "ElevenLabs (Voice)", category: "voice", icon: "mic", authKind: "apiKey", recommended: true, aiHub: true,
     fields: [
       { key: "apiKey", label: "API key", placeholder: "xi-…", secret: true },
       { key: "voiceId", label: "Voice ID", placeholder: "e.g. Rachel / 21m00…", optional: true },
@@ -149,7 +150,7 @@ const CATALOG: CatalogEntry[] = [
     },
   },
   {
-    id: "recall", label: "Recall.ai (meeting bot)", category: "voice", icon: "video", authKind: "apiKey", recommended: false,
+    id: "recall", label: "Recall.ai (meeting bot)", category: "voice", icon: "video", authKind: "apiKey", recommended: false, aiHub: true,
     fields: [
       { key: "apiKey", label: "API key", placeholder: "Recall.ai API key", secret: true },
       { key: "region", label: "Region", placeholder: "us-east-1 / eu-central-1 / us-west-2", optional: true },
@@ -165,6 +166,23 @@ const CATALOG: CatalogEntry[] = [
         const r = await fetch(`https://${region}.recall.ai/api/v1/bot/?limit=1`, { headers: { authorization: `Token ${key}` } });
         return r.ok ? { ok: true, detail: `Recall.ai connected (${region}).` } : { ok: false, detail: `Recall.ai rejected the key (${r.status}) — check the key and region.` };
       } catch (e) { return { ok: false, detail: `Could not reach Recall.ai: ${(e as Error).message}` }; }
+    },
+  },
+  {
+    id: "e2b", label: "E2B (Agent computers)", category: "runtime", icon: "monitor", authKind: "apiKey", recommended: true, aiHub: true,
+    fields: [{ key: "apiKey", label: "API key", placeholder: "e2b_…", secret: true }],
+    note: "Gives each agent its own virtual computer (Linux desktop) to operate — browse, use apps, do real work. Powers the Agent Workstation.",
+    docsUrl: "https://e2b.dev/dashboard",
+    detailOf: (v) => `key ••••${last4(v.apiKey)}`,
+    test: async (v) => {
+      const key = v.apiKey?.trim();
+      if (!key) return { ok: false, detail: "Missing API key." };
+      try {
+        const r = await fetch("https://api.e2b.dev/templates", { headers: { "X-API-KEY": key } });
+        if (r.ok) return { ok: true, detail: "E2B connected." };
+        if (r.status === 401 || r.status === 403) return { ok: false, detail: `E2B rejected the key (${r.status}).` };
+        return { ok: true, detail: `E2B key stored (status ${r.status}).` };
+      } catch (e) { return { ok: false, detail: `Could not reach E2B: ${(e as Error).message}` }; }
     },
   },
   {
@@ -185,8 +203,8 @@ const CATALOG: CatalogEntry[] = [
 
 interface Row { id: string; values: Record<string, string>; connected: boolean; detail: string | null }
 
-async function stateFor(id: string): Promise<Row | null> {
-  return one<Row>(`SELECT id, values, connected, detail FROM integrations WHERE id = $1`, [id]);
+async function stateFor(org: string, id: string): Promise<Row | null> {
+  return one<Row>(`SELECT id, values, connected, detail FROM integrations WHERE org_id = $1 AND id = $2`, [org, id]);
 }
 
 // Merge catalog metadata with stored state into a browser-safe Integration
@@ -202,6 +220,7 @@ function toIntegration(entry: CatalogEntry, row: Row | null, live: boolean): Int
     fields: entry.fields,
     note: entry.note,
     recommended: entry.recommended,
+    aiHub: entry.aiHub,
     hermesToolset: entry.hermesToolset,
     docsUrl: entry.docsUrl,
     live: entry.authKind === "none" ? live : undefined,
@@ -211,27 +230,27 @@ function toIntegration(entry: CatalogEntry, row: Row | null, live: boolean): Int
   };
 }
 
-// Ids of integrations that currently have a stored, connected credential.
-export async function getConnectedIntegrationIds(): Promise<Set<string>> {
+// Ids of an org's integrations that currently have a stored, connected credential.
+export async function getConnectedIntegrationIds(org: string): Promise<Set<string>> {
   try {
-    const rows = await query<{ id: string }>(`SELECT id FROM integrations WHERE connected = true`);
+    const rows = await query<{ id: string }>(`SELECT id FROM integrations WHERE org_id = $1 AND connected = true`, [org]);
     return new Set(rows.map((r) => r.id));
   } catch {
     return new Set();
   }
 }
 
-// Raw stored values for one integration (server-side use only, e.g. voice route).
-export async function getIntegrationValues(id: string): Promise<Record<string, string> | null> {
-  const row = await stateFor(id);
+// Raw stored values for one of an org's integrations (server-side use only).
+export async function getIntegrationValues(org: string, id: string): Promise<Record<string, string> | null> {
+  const row = await stateFor(org, id);
   return row?.connected ? row.values ?? {} : null;
 }
 
 export default async function integrationsRoutes(app: FastifyInstance) {
-  app.get("/api/integrations", async () => {
+  app.get("/api/integrations", async (req) => {
     const status = await hermes.get<{ version?: string }>("/api/status");
     const live = status.ok && !!status.data && typeof status.data === "object";
-    const rows = await query<Row>(`SELECT id, values, connected, detail FROM integrations`);
+    const rows = await query<Row>(`SELECT id, values, connected, detail FROM integrations WHERE org_id = $1`, [orgId(req)]);
     const byId = new Map(rows.map((r) => [r.id, r]));
     return CATALOG.map((e) => toIntegration(e, byId.get(e.id) ?? null, live));
   });
@@ -254,10 +273,10 @@ export default async function integrationsRoutes(app: FastifyInstance) {
     const status = await hermes.get<{ version?: string }>("/api/status");
     const live = status.ok && !!status.data && typeof status.data === "object";
     await query(
-      `INSERT INTO integrations (id, values, connected, detail, updated_at)
-       VALUES ($1, $2, true, $3, now())
-       ON CONFLICT (id) DO UPDATE SET values = EXCLUDED.values, connected = true, detail = EXCLUDED.detail, updated_at = now()`,
-      [id, JSON.stringify(values), detail],
+      `INSERT INTO integrations (org_id, id, values, connected, detail, updated_at)
+       VALUES ($4, $1, $2, true, $3, now())
+       ON CONFLICT (org_id, id) DO UPDATE SET values = EXCLUDED.values, connected = true, detail = EXCLUDED.detail, updated_at = now()`,
+      [id, JSON.stringify(values), detail, orgId(req)],
     );
     return toIntegration(entry, { id, values, connected: true, detail }, live);
   });
@@ -266,7 +285,7 @@ export default async function integrationsRoutes(app: FastifyInstance) {
     const id = (req.params as { id: string }).id;
     const entry = CATALOG.find((e) => e.id === id);
     if (!entry) { reply.code(404); return { ok: false, detail: "unknown integration" }; }
-    const row = await stateFor(id);
+    const row = await stateFor(orgId(req), id);
     if (!row?.connected) return { ok: false, detail: "Not connected yet." };
     if (!entry.test) return { ok: true, detail: `${entry.label} credentials are stored. (No live test available — presence check passed.)` };
     return entry.test(row.values ?? {});
@@ -274,7 +293,7 @@ export default async function integrationsRoutes(app: FastifyInstance) {
 
   app.delete("/api/integrations/:id", async (req) => {
     const id = (req.params as { id: string }).id;
-    await query(`DELETE FROM integrations WHERE id = $1`, [id]);
+    await query(`DELETE FROM integrations WHERE org_id = $1 AND id = $2`, [orgId(req), id]);
     return { ok: true };
   });
 }

@@ -23,6 +23,8 @@ services:
       context: .
       dockerfile: apps/bff/Dockerfile
     restart: unless-stopped
+    volumes:
+      - /root/ah-scripts:/app/ah
     depends_on:
       db:
         condition: service_healthy
@@ -33,10 +35,23 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER:-jarvis}:${POSTGRES_PASSWORD:-jarvis}@db:5432/${POSTGRES_DB:-jarvis}
       DATABASE_SSL: "false"
       MIGRATE_ON_BOOT: "true"
+      CRED_ENC_KEY: ${CRED_ENC_KEY:-}
+      AUTH_MODE: ${AUTH_MODE:-access-code}
+      TRUST_PROXY: ${TRUST_PROXY:-true}
+      SUPERADMIN_API_KEY: ${SUPERADMIN_API_KEY:-}
+      SUPERADMIN_EMAIL: ${SUPERADMIN_EMAIL:-}
+      SUPERADMIN_PASSWORD_HASH: ${SUPERADMIN_PASSWORD_HASH:-}
       # SEED_ON_BOOT unset → auto-seed only when the DB is empty.
       # Optional shared secret guarding the BFF (see DEPLOY.md). If set, Nginx
       # must forward it (uncomment the proxy_set_header line in nginx.conf).
       BFF_API_KEY: ${BFF_API_KEY:-}
+      # Lemon Squeezy billing (merchant-of-record). Empty -> billing inert.
+      LEMONSQUEEZY_API_KEY: ${LEMONSQUEEZY_API_KEY:-}
+      LEMONSQUEEZY_STORE_ID: ${LEMONSQUEEZY_STORE_ID:-}
+      LEMONSQUEEZY_WEBHOOK_SECRET: ${LEMONSQUEEZY_WEBHOOK_SECRET:-}
+      LEMONSQUEEZY_VARIANT_STARTER: ${LEMONSQUEEZY_VARIANT_STARTER:-}
+      LEMONSQUEEZY_VARIANT_GROWTH: ${LEMONSQUEEZY_VARIANT_GROWTH:-}
+      BILLING_GATE_ENFORCED: ${BILLING_GATE_ENFORCED:-false}
       HERMES_BASE_URL: ${HERMES_BASE_URL:-http://host.docker.internal:8642}
       HERMES_API_KEY: ${HERMES_API_KEY:-change-me}
       HERMES_SESSION_KEY: ${HERMES_SESSION_KEY:-operator-primary}
@@ -72,6 +87,16 @@ services:
         condition: service_healthy
     ports:
       - "${WEB_PORT:-8080}:80"
+    labels:
+      # HTTPS front door via the host traefik (mic APIs need a secure origin)
+      - traefik.enable=true
+      - traefik.http.routers.afterhuman.entrypoints=websecure
+      - traefik.http.routers.afterhuman.rule=Host(`afterhuman.srv1797540.hstgr.cloud`)
+      - traefik.http.routers.afterhuman.tls.certresolver=letsencrypt
+      - traefik.http.routers.afterhuman.service=afterhuman
+      - traefik.http.services.afterhuman.loadbalancer.server.port=80
+      # the web IMAGE bakes an old jarvis.srv... router - bind it explicitly too
+      - traefik.http.routers.jarvis.service=jarvis
 
   # Real headless Chrome on the VPS. The BFF drives it (navigate + screenshot)
   # so the Command Center can actually open a browser and show the live page.
@@ -80,8 +105,8 @@ services:
     restart: unless-stopped
     environment:
       TOKEN: ${BROWSERLESS_TOKEN:-lsbrowser}
-      CONCURRENT: "3"
-      TIMEOUT: "60000"
+      CONCURRENT: "6"
+      TIMEOUT: "1800000"
     # Internal only — reached by the BFF at http://browserless:3000
 
 volumes:

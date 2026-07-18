@@ -20,6 +20,7 @@ export type ViewId =
   | "modelsettings"
   | "landing"
   | "pricing"
+  | "billing"
   | "agentshome"
   | "echo"
   | "clonerep"
@@ -46,7 +47,10 @@ export type ViewId =
   | "knowledge"
   | "tools"
   | "workflows"
-  | "monitor";
+  | "monitor"
+  | "trust"
+  | "dpa"
+  | "retention";
 
 type Leaf = { id: ViewId; icon: string; label: string };
 type NavGroupDef = { group: true; id: ViewId; icon: string; label: string; children: Leaf[] };

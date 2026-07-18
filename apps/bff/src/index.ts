@@ -4,8 +4,12 @@ import fastifyStatic from "@fastify/static";
 import { existsSync } from "node:fs";
 import { config } from "./config.js";
 import { hermesReachable } from "./hermes.js";
+import { resolveRequestAuth } from "./lib/auth.js";
+import { encryptExistingDemoLogins } from "./lib/tenancy.js";
+import { encryptionEnabled } from "./lib/cryptoCreds.js";
 import { pool } from "./db/pool.js";
 import { runMigrations, waitForDb } from "./db/migrate.js";
+import usageRoutes from "./routes/usage.js";
 import { seed } from "./db/seed.js";
 
 import agentsRoutes from "./routes/agents.js";
@@ -30,8 +34,47 @@ import voiceRoutes from "./routes/voice.js";
 import artifactsRoutes from "./routes/artifacts.js";
 import meetingsRoutes from "./routes/meetings.js";
 import presentRoutes from "./routes/present.js";
+import workstationRoutes from "./routes/workstation.js";
+import callRoutes from "./routes/call.js";
+import cloneCallsRoutes from "./routes/cloneCalls.js";
+import studioRoutes from "./routes/studio.js";
+import liveRoutes from "./routes/live.js";
+import fathomRoutes from "./routes/fathom.js";
+import voicechatRoutes from "./routes/voicechat.js";
+import cartographerRoutes from "./routes/cartographer.js";
+import coachRoutes from "./routes/coach.js";
+import readinessRoutes from "./routes/readiness.js";
+import fidelityRoutes from "./routes/fidelity.js";
+import pipelineRoutes from "./routes/pipeline.js";
+import authRoutes from "./routes/auth.js";
+import schedulingRoutes, { startScheduler } from "./routes/scheduling.js";
+import metricsRoutes from "./routes/metrics.js";
+import securityRoutes from "./routes/security.js";
+import statusRoutes from "./routes/status.js";
+import reportsRoutes from "./routes/reports.js";
+import onboardingRoutes from "./routes/onboarding.js";
+import superadminRoutes from "./routes/superadmin.js";
+import retentionRoutes from "./routes/retention.js";
+import billingRoutes from "./routes/billing.js";
 
-const app = Fastify({ logger: true });
+// trustProxy: behind Traefik, X-Forwarded-For must be trusted so req.ip / the
+// super-admin new-IP alert see the real client IP (CLAUDE.md deploy note).
+const app = Fastify({ logger: true, trustProxy: process.env.TRUST_PROXY === "true" });
+
+// Preserve the RAW request body on req.rawBody while still JSON-parsing it, so
+// the billing (Lemon Squeezy) webhook can verify its signature over the exact bytes. Applies to
+// application/json only; empty bodies parse to {} to keep bodyless POSTs working
+// (the web client omits Content-Type when there is no body -- those skip this).
+app.addContentTypeParser("application/json", { parseAs: "string" }, (req, body, done) => {
+  (req as unknown as { rawBody?: string }).rawBody = body as string;
+  if (!body || (body as string).trim() === "") return done(null, {});
+  try {
+    done(null, JSON.parse(body as string));
+  } catch (err) {
+    (err as Error & { statusCode?: number }).statusCode = 400;
+    done(err as Error, undefined);
+  }
+});
 
 // Baseline security headers on every response.
 app.addHook("onSend", async (_req, reply, payload) => {
@@ -41,20 +84,62 @@ app.addHook("onSend", async (_req, reply, payload) => {
   return payload;
 });
 
-// Auth gate. The BFF proxies into hermes' full toolset (terminal commands via
-// /api/chat), so when a BFF_API_KEY is configured every /api request must carry
-// it (X-API-Key or Bearer). Exempt the health probe and static/SPA GETs. When
-// no key is set the gate is open — safe only because HOST defaults to loopback;
-// a public deployment must set BFF_API_KEY and/or sit behind an auth proxy.
+// Auth gate. Two modes, chosen by AUTH_MODE (config.auth.mode):
+//
+//  access-code (default, pre-cutover): the legacy single shared-secret gate —
+//  when BFF_API_KEY is set every /api request must carry it (X-API-Key/Bearer).
+//  Every request is pinned to the legacy org so org-scoped queries behave exactly
+//  like today's single tenant. Nothing changes for existing clients.
+//
+//  password (post-cutover): real email+password auth. Every /api request must
+//  carry a valid session cookie, which resolves req.user + req.org; unauthenticated
+//  requests are rejected (except the login/signup endpoints).
+//
+// Either way, the BFF proxies into hermes' full toolset (terminal), so a public
+// deployment MUST run one of these modes (and sit behind TLS in password mode).
 app.addHook("onRequest", async (req, reply) => {
-  if (!config.bffApiKey) return;
+  // Best-effort populate req.user/req.org/req.orgId for EVERY request:
+  //  - access-code mode → pinned to the legacy org
+  //  - password mode   → resolved from the session cookie when one is present
+  // This runs even for the exempt endpoints below so that a cookie-bearing
+  // operator-browser call to GET /api/live/* still gets its org. (Cookieless
+  // Recall calls fall back to the legacy org — see TENANCY-SCOPING.md.)
+  const authed = await resolveRequestAuth(req);
+
+  // Always-open endpoints.
   if (req.url === "/api/health") return;
+  // Public: the FE reads the auth mode before choosing a login gate.
+  if (req.method === "GET" && req.url === "/api/auth/mode") return;
+  // Public status page + its JSON feed (operational transparency; read-only).
+  if (req.method === "GET" && (req.url === "/status" || req.url.startsWith("/api/status"))) return;
+  // Super-admin surface enforces its own gate (IP allowlist + session +
+  // password + role); it is authoritative there, so bypass the shared BFF key.
+  if (req.url.startsWith("/api/superadmin")) return;
   if (req.method === "GET" && !req.url.startsWith("/api")) return; // static / SPA
   // Presenter page runs inside Recall's headless browser (no login). Its GET
   // endpoints are authorized by the unguessable session id in the URL.
   if (req.method === "GET" && req.url.startsWith("/api/present/")) return;
   // Recall posts real-time transcription here; authorized by the ?t token.
   if (req.method === "POST" && req.url.startsWith("/api/meetings/webhook")) return;
+  // Lemon Squeezy posts subscription events here; authorized by the X-Signature
+  // HMAC (verifyWebhookSignature), so it bypasses the shared BFF key.
+  if (req.method === "POST" && req.url.startsWith("/api/billing/webhook")) return;
+  // Real-time voice agent page runs inside Recall's browser (no login). Its GET
+  // config/screenshot and the POST token-mint are authorized by the unguessable
+  // session id in the URL (same model as /present).
+  if (req.method === "GET" && req.url.startsWith("/api/live/")) return;
+  if (req.method === "POST" && req.url.startsWith("/api/live/") && (req.url.endsWith("/token") || req.url.endsWith("/act"))) return;
+
+  if (config.auth.mode === "password") {
+    // Public: obtaining a session.
+    if (req.method === "POST" && (req.url === "/api/auth/login" || req.url === "/api/auth/signup")) return;
+    if (!authed.ok) return reply.code(401).send({ error: "unauthorized", reason: authed.reason });
+    return;
+  }
+
+  // access-code mode: the legacy shared-secret check (open when no key is set —
+  // safe only behind loopback / an auth proxy).
+  if (!config.bffApiKey) return;
   const auth = req.headers["authorization"];
   const provided =
     (req.headers["x-api-key"] as string | undefined) ??
@@ -92,6 +177,7 @@ await app.register(commandRoutes);
 await app.register(chatRoutes);
 await app.register(approvalsRoutes);
 await app.register(adminRoutes);
+await app.register(usageRoutes);
 await app.register(stateRoutes);
 await app.register(filesRoutes);
 await app.register(browserRoutes);
@@ -101,6 +187,28 @@ await app.register(voiceRoutes);
 await app.register(artifactsRoutes);
 await app.register(meetingsRoutes);
 await app.register(presentRoutes);
+await app.register(workstationRoutes);
+await app.register(callRoutes);
+await app.register(cloneCallsRoutes);
+await app.register(studioRoutes);
+await app.register(liveRoutes);
+await app.register(fathomRoutes);
+await app.register(voicechatRoutes);
+await app.register(cartographerRoutes);
+await app.register(coachRoutes);
+await app.register(readinessRoutes);
+await app.register(fidelityRoutes);
+await app.register(pipelineRoutes);
+await app.register(authRoutes);
+await app.register(schedulingRoutes);
+await app.register(metricsRoutes);
+await app.register(securityRoutes);
+await app.register(statusRoutes);
+await app.register(reportsRoutes);
+await app.register(onboardingRoutes);
+await app.register(superadminRoutes);
+await app.register(retentionRoutes);
+await app.register(billingRoutes);
 
 // Optional single-process mode: serve the built web app + SPA fallback.
 if (config.serveWeb) {
@@ -133,6 +241,19 @@ async function boot() {
         app.log.info("SEED_ON_BOOT=true — loading demo data…");
         await seed({ force: true });
       }
+      // Credential encryption at rest: warn loudly if no key, else run the
+      // one-time (idempotent) backfill that encrypts any legacy plaintext
+      // demo_login passwords in place.
+      if (!encryptionEnabled()) {
+        app.log.warn("CRED_ENC_KEY is not set — demo_login passwords are stored as PLAINTEXT. Set it in production (see MIGRATION runbook).");
+      } else {
+        try {
+          const n = await encryptExistingDemoLogins();
+          if (n > 0) app.log.info(`Encrypted ${n} legacy plaintext demo_login password(s) at rest.`);
+        } catch (e) {
+          app.log.error({ err: String(e) }, "demo_login credential encryption backfill failed");
+        }
+      }
     } catch (err) {
       // Don't crash at boot if the DB is briefly unavailable — the process
       // stays up so /api/health can report db:false and liveness probes pass.
@@ -150,6 +271,11 @@ async function boot() {
 
   await app.listen({ port: config.port, host: config.host });
   app.log.info(`JARVIS BFF on ${config.host}:${config.port} → hermes ${config.hermes.baseUrl}${config.serveWeb ? " (serving web)" : ""}`);
+
+  // Clone calendar-watch + due-call scheduler (calendar-driven pre-warm + launch,
+  // gated by readiness >=70). Timers are unref'd so they never hold the process.
+  try { startScheduler(); app.log.info("Clone calendar-watch scheduler started"); }
+  catch (err) { app.log.error({ err }, "scheduler failed to start"); }
 }
 
 boot().catch((err) => {

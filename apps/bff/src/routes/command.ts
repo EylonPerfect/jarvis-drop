@@ -1,8 +1,10 @@
 import type { FastifyInstance } from "fastify";
-import { one, query } from "../db/pool.js";
+import { query } from "../db/pool.js";
 import { hermes } from "../hermes.js";
 import { getConnectedIntegrationIds } from "./integrations.js";
 import { getActiveProvider, completeProviderChat } from "../lib/providers.js";
+import { orgId } from "../lib/auth.js";
+import { getSetting } from "../lib/settingsStore.js";
 import type { FeedItem, CommandResult } from "@jarvis/shared";
 
 // Commands that need real tool execution (web, browser, sending, scheduling,
@@ -24,11 +26,11 @@ function progressFromLog(log: string): string {
 // Build a system prompt grounded in THIS system's live state — what's connected
 // to the Hermes agent, which integrations have credentials, the agent roster,
 // and the app's capabilities — so the Command Center is not a generic chatbot.
-async function systemContext(): Promise<string> {
+async function systemContext(org: string): Promise<string> {
   const [status, connected, agents] = await Promise.all([
     hermes.get<{ version?: string }>("/api/status"),
-    getConnectedIntegrationIds(),
-    query<{ name: string; role: string; status: string }>(`SELECT name, role, status FROM agents ORDER BY sort, created_at`).catch(() => []),
+    getConnectedIntegrationIds(org),
+    query<{ name: string; role: string; status: string }>(`SELECT name, role, status FROM agents WHERE org_id = $1 ORDER BY sort, created_at`, [org]).catch(() => []),
   ]);
   const hermesUp = status.ok && !!status.data && typeof status.data === "object";
   const conn = [...connected];
@@ -44,8 +46,8 @@ async function systemContext(): Promise<string> {
 }
 
 export default async function commandRoutes(app: FastifyInstance) {
-  app.get("/api/command/feed", async (): Promise<FeedItem[]> => {
-    return (await one<{ value: FeedItem[] }>(`SELECT value FROM settings WHERE key = 'feed'`))?.value ?? [];
+  app.get("/api/command/feed", async (req): Promise<FeedItem[]> => {
+    return (await getSetting<FeedItem[]>(orgId(req), "feed")) ?? [];
   });
 
   // "Act" mode. Questions + drafting → instant grounded answer from the model.
@@ -54,12 +56,12 @@ export default async function commandRoutes(app: FastifyInstance) {
   app.post("/api/command/run", async (req): Promise<CommandResult> => {
     const text = ((req.body as { text?: string })?.text ?? "").toString().trim();
     if (!text) return { ok: false, via: "none", status: "failed", detail: "empty command" };
-    const system = await systemContext();
+    const system = await systemContext(orgId(req));
     const needsTools = TOOL_ACTION.test(text);
 
     // Fast path: questions / drafting → grounded model answer, right now.
     if (!needsTools) {
-      const active = await getActiveProvider();
+      const active = await getActiveProvider(orgId(req));
       if (active) {
         const r = await completeProviderChat(active, [ { role: "system", content: system }, { role: "user", content: text } ]);
         if (r.ok && r.content) return { ok: true, via: "provider", status: "done", output: r.content };
@@ -80,7 +82,7 @@ export default async function commandRoutes(app: FastifyInstance) {
     } catch { /* fall through */ }
 
     // Last resort: grounded provider answer even for a tool request.
-    const active = await getActiveProvider();
+    const active = await getActiveProvider(orgId(req));
     if (active) {
       const r = await completeProviderChat(active, [ { role: "system", content: system }, { role: "user", content: text } ]);
       if (r.ok && r.content) return { ok: true, via: "provider", status: "done", output: r.content };

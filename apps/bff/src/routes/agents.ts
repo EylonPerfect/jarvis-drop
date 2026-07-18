@@ -1,10 +1,15 @@
 import type { FastifyInstance } from "fastify";
 import { query, one } from "../db/pool.js";
+import { orgId } from "../lib/auth.js";
+import { agentInOrg } from "../lib/tenancy.js";
+import { purgeAgent } from "../lib/purge.js";
+import { getSetting, setSetting, deleteSetting } from "../lib/settingsStore.js";
 import { hermes } from "../hermes.js";
 import { getActiveProvider, completeProviderChat } from "../lib/providers.js";
 import { config } from "../config.js";
 import { getCompany } from "./company.js";
 import { getConnectedIntegrationIds } from "./integrations.js";
+import { playbookToInstructions } from "@jarvis/shared";
 import type { Agent, AgentRun, RuntimeStats, NewAgent, ConnectionCatalogItem, AgentRunResult, AgentRunRecord } from "@jarvis/shared";
 
 // Live company research: fetch the company website (via the server-side Chrome)
@@ -93,6 +98,9 @@ function rowToAgent(r: any): Agent {
     goals: Array.isArray(r.goals) ? r.goals : [],
     evidence: Array.isArray(r.evidence) ? r.evidence : [],
     onboarding: r.onboarding && Object.keys(r.onboarding).length ? r.onboarding : undefined,
+    persona: r.persona && Object.keys(r.persona).length ? r.persona : undefined,
+    golden_persona_id: r.golden_persona_id ?? undefined,
+    voice_id: r.voice_id ?? undefined,
     createdAt: r.created_at,
   };
 }
@@ -100,8 +108,8 @@ function rowToAgent(r: any): Agent {
 export default async function agentsRoutes(app: FastifyInstance) {
   // Roster (Postgres-owned orchestration config; each entry can reference a
   // hermes sub-agent / skill once the operator wires it).
-  app.get("/api/agents", async () => {
-    const rows = await query(`SELECT * FROM agents ORDER BY sort, created_at`);
+  app.get("/api/agents", async (req) => {
+    const rows = await query(`SELECT * FROM agents WHERE org_id = $1 ORDER BY sort, created_at`, [orgId(req)]);
     return rows.map(rowToAgent);
   });
 
@@ -114,7 +122,7 @@ export default async function agentsRoutes(app: FastifyInstance) {
     const name = (b?.name ?? "").trim();
     if (!role) return reply.code(400).send({ error: "role is required" });
 
-    const active = await getActiveProvider();
+    const active = await getActiveProvider(orgId(req));
     if (active) {
       const sys =
         "You design autonomous AI agents. Given an agent's name and role, write its operating spec. " +
@@ -157,7 +165,7 @@ export default async function agentsRoutes(app: FastifyInstance) {
     const scenario = (b?.scenario ?? "").trim();
     if (!scenario) return reply.code(400).send({ error: "scenario is required" });
 
-    const active = await getActiveProvider();
+    const active = await getActiveProvider(orgId(req));
     if (active) {
       const sys =
         "You design calendar-triggered playbooks for an AI agent. Given the agent's role and a scenario, " +
@@ -205,7 +213,7 @@ export default async function agentsRoutes(app: FastifyInstance) {
     const transcript = Array.isArray(b?.transcript) ? b.transcript.filter((m) => m && typeof m.content === "string") : [];
 
     // Company context (set-once profile) + live website research → tailored recs.
-    const company = await getCompany();
+    const company = await getCompany(orgId(req));
     const research = await researchCompany(company.domain);
 
     const subject =
@@ -227,7 +235,7 @@ export default async function agentsRoutes(app: FastifyInstance) {
       ? transcript.map((m) => `${m.role === "assistant" ? "INTERVIEWER" : "OPERATOR"}: ${m.content}`).join("\n")
       : "(no answers yet — ask your first question and return an initial profile skeleton)";
 
-    const active = await getActiveProvider();
+    const active = await getActiveProvider(orgId(req));
     if (active) {
       try {
         const r = await completeProviderChat(active, [
@@ -297,21 +305,16 @@ export default async function agentsRoutes(app: FastifyInstance) {
   // Wizard draft — persists the in-progress "Hire an Agent" wizard so each step
   // survives a refresh / navigation. Stored as one JSON blob in settings under
   // 'agent_draft'. The client saves on every step change; clears on deploy.
-  app.get("/api/agents/draft", async () => {
-    const row = await one<{ value: unknown }>(`SELECT value FROM settings WHERE key = 'agent_draft'`);
-    return { draft: row?.value ?? null };
+  app.get("/api/agents/draft", async (req) => {
+    return { draft: (await getSetting(orgId(req), "agent_draft")) ?? null };
   });
   app.put("/api/agents/draft", async (req) => {
     const b = (req.body ?? {}) as { draft?: unknown };
-    await query(
-      `INSERT INTO settings (key, value) VALUES ('agent_draft', $1)
-       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
-      [JSON.stringify(b.draft ?? null)],
-    );
+    await setSetting(orgId(req), "agent_draft", b.draft ?? null);
     return { ok: true };
   });
-  app.delete("/api/agents/draft", async () => {
-    await query(`DELETE FROM settings WHERE key = 'agent_draft'`);
+  app.delete("/api/agents/draft", async (req) => {
+    await deleteSetting(orgId(req), "agent_draft");
     return { ok: true };
   });
 
@@ -319,12 +322,12 @@ export default async function agentsRoutes(app: FastifyInstance) {
   // vs. configured-pending flag. Runtime tools (web/browser/terminal/…) are live
   // when Hermes is reachable; messaging is live when the gateway is running;
   // email/calendar/notion/payments need credentials (pending) until connected.
-  app.get("/api/agents/connection-catalog", async () => {
+  app.get("/api/agents/connection-catalog", async (req) => {
     const status = await hermes.get<any>("/api/status");
     const hermesUp = status.ok && !!status.data && typeof status.data === "object";
     const gatewayRunning = !!(status.data && status.data.gateway_running);
     // Which connectors have a real stored credential (Integrations screen).
-    const connectedIds = await getConnectedIntegrationIds();
+    const connectedIds = await getConnectedIntegrationIds(orgId(req));
     // Map a wizard connector id → the integration id that credentials it.
     const credOf: Record<string, string> = {
       email: "gmail", calendar: "google_calendar", notetaker: "notetaker",
@@ -371,10 +374,23 @@ export default async function agentsRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: "name and role are required" });
     }
     const id = `ag_${Date.now().toString(36)}`;
-    const maxSort = await one<{ m: number }>(`SELECT COALESCE(MAX(sort), -1) + 1 AS m FROM agents`);
+    const org = orgId(req);
+    const maxSort = await one<{ m: number }>(`SELECT COALESCE(MAX(sort), -1) + 1 AS m FROM agents WHERE org_id = $1`, [org]);
+
+    // Clone-from-calls (AE/CS): when an approved call playbook is present, it is
+    // the single source of truth for how this agent runs live calls — compile it
+    // to instructions server-side (overriding any client-sent instructions) and
+    // stash the storyboard under playbook.kind='calls' so the cockpit can show it.
+    let instructions = b.instructions ?? null;
+    let playbook = b.playbook ?? {};
+    if (b.callPlaybook?.approved && Array.isArray(b.callPlaybook.stages) && b.callPlaybook.stages.length) {
+      const company = await getCompany(orgId(req));
+      instructions = playbookToInstructions(b.callPlaybook, b.name.trim(), company.name || "the company");
+      playbook = { kind: "calls", name: `Call playbook · ${b.callPlaybook.stages.length} stages`, callPlaybook: b.callPlaybook };
+    }
     await query(
-      `INSERT INTO agents (id, icon, name, role, status, status_label, model, tools, collaborators, autonomy, instructions, plan, routine, budget, schedule, permissions, overview, playbook, weekly_plan, calendar_playbooks, connections, budget_config, build_track, clone_source, goals, evidence, onboarding, sort)
-       VALUES ($1,$2,$3,$4,'standby','Standby',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)`,
+      `INSERT INTO agents (id, org_id, icon, name, role, status, status_label, model, tools, collaborators, autonomy, instructions, plan, routine, budget, schedule, permissions, overview, playbook, weekly_plan, calendar_playbooks, connections, budget_config, build_track, clone_source, goals, evidence, onboarding, sort)
+       VALUES ($1,$27,$2,$3,$4,'standby','Standby',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)`,
       [
         id,
         b.icon || "bot",
@@ -384,14 +400,14 @@ export default async function agentsRoutes(app: FastifyInstance) {
         JSON.stringify(b.tools ?? []),
         JSON.stringify(b.collaborators ?? []),
         b.autonomy ?? "Ask before acting",
-        b.instructions ?? null,
+        instructions,
         b.plan ?? null,
         b.routine ?? null,
         b.budget ?? null,
         b.schedule ?? null,
         JSON.stringify(b.permissions ?? []),
         b.overview ?? null,
-        JSON.stringify(b.playbook ?? {}),
+        JSON.stringify(playbook),
         JSON.stringify(b.weeklyPlan ?? {}),
         JSON.stringify(b.calendarPlaybooks ?? []),
         JSON.stringify(b.connections ?? []),
@@ -402,9 +418,10 @@ export default async function agentsRoutes(app: FastifyInstance) {
         JSON.stringify(b.evidence ?? []),
         JSON.stringify(b.onboarding ?? {}),
         maxSort?.m ?? 0,
+        org,
       ],
     );
-    const row = await one(`SELECT * FROM agents WHERE id = $1`, [id]);
+    const row = await one(`SELECT * FROM agents WHERE id = $1 AND org_id = $2`, [id, org]);
     return reply.code(201).send(rowToAgent(row));
   });
 
@@ -444,10 +461,25 @@ export default async function agentsRoutes(app: FastifyInstance) {
     if (b.goals !== undefined) set("goals", JSON.stringify(b.goals));
     if (b.evidence !== undefined) set("evidence", JSON.stringify(b.evidence));
     if (b.onboarding !== undefined) set("onboarding", JSON.stringify(b.onboarding));
+    const newVoiceId = (b as { voiceId?: string }).voiceId;
+    if (newVoiceId !== undefined) set("voice_id", newVoiceId);
     if (!sets.length) return reply.code(400).send({ error: "no fields to update" });
+    const org = orgId(req);
     vals.push(id);
-    await query(`UPDATE agents SET ${sets.join(", ")} WHERE id = $${vals.length}`, vals);
-    const row = await one(`SELECT * FROM agents WHERE id = $1`, [id]);
+    vals.push(org);
+    await query(`UPDATE agents SET ${sets.join(", ")} WHERE id = $${vals.length - 1} AND org_id = $${vals.length}`, vals);
+    // A voice choice must land in BOTH homes: agents.voice_id AND the persona's
+    // voice block — several consumers read the persona copy first, and a stale
+    // one makes the picker (and the room's playback) revert to the old voice.
+    if (newVoiceId !== undefined) {
+      const cur = await one<{ persona: Record<string, unknown> | null }>(`SELECT persona FROM agents WHERE id = $1 AND org_id = $2`, [id, org]);
+      if (cur?.persona && typeof cur.persona === "object") {
+        const p = cur.persona as { voice?: Record<string, unknown> };
+        p.voice = { ...(p.voice ?? {}), elevenlabs_voice_id: newVoiceId };
+        await query(`UPDATE agents SET persona = $2 WHERE id = $1 AND org_id = $3`, [id, JSON.stringify(p), org]);
+      }
+    }
+    const row = await one(`SELECT * FROM agents WHERE id = $1 AND org_id = $2`, [id, org]);
     if (!row) return reply.code(404).send({ error: "not found" });
     return rowToAgent(row);
   });
@@ -461,8 +493,8 @@ export default async function agentsRoutes(app: FastifyInstance) {
     const period = q.period === "weekly" ? "weekly" : q.period === "monthly" ? "monthly" : "daily";
     const interval = period === "weekly" ? "7 days" : period === "monthly" ? "30 days" : "1 day";
     const rows = await query<{ kind: string; n: number }>(
-      `SELECT kind, COUNT(*)::int AS n FROM agent_activity WHERE agent_id = $1 AND at >= now() - $2::interval GROUP BY kind`,
-      [id, interval],
+      `SELECT kind, COUNT(*)::int AS n FROM agent_activity WHERE agent_id = $1 AND org_id = $3 AND at >= now() - $2::interval GROUP BY kind`,
+      [id, interval, orgId(req)],
     );
     const by: Record<string, number> = {};
     for (const r of rows) by[r.kind] = Number(r.n);
@@ -477,7 +509,7 @@ export default async function agentsRoutes(app: FastifyInstance) {
     if (!kind || !["goal", "task", "routine", "scheduled", "workflow"].includes(kind)) {
       return reply.code(400).send({ error: "kind must be one of goal|task|routine|scheduled|workflow" });
     }
-    await query(`INSERT INTO agent_activity (agent_id, kind) VALUES ($1, $2)`, [id, kind]);
+    await query(`INSERT INTO agent_activity (agent_id, kind, org_id) VALUES ($1, $2, $3)`, [id, kind, orgId(req)]);
     return { ok: true };
   });
 
@@ -485,8 +517,8 @@ export default async function agentsRoutes(app: FastifyInstance) {
   app.get("/api/agents/:id/communications", async (req) => {
     const { id } = req.params as { id: string };
     const rows = await query<any>(
-      `SELECT id, channel, party, subject, preview, at FROM agent_comms WHERE agent_id = $1 ORDER BY at DESC LIMIT 20`,
-      [id],
+      `SELECT id, channel, party, subject, preview, at FROM agent_comms WHERE agent_id = $1 AND org_id = $2 ORDER BY at DESC LIMIT 20`,
+      [id, orgId(req)],
     );
     return rows.map((r) => ({ id: Number(r.id), channel: r.channel, party: r.party ?? undefined, subject: r.subject ?? undefined, preview: r.preview ?? undefined, at: r.at }));
   });
@@ -497,32 +529,42 @@ export default async function agentsRoutes(app: FastifyInstance) {
     if (b.channel !== "slack" && b.channel !== "email") {
       return reply.code(400).send({ error: "channel must be 'slack' or 'email'" });
     }
-    await query(`INSERT INTO agent_comms (agent_id, channel, party, subject, preview) VALUES ($1,$2,$3,$4,$5)`, [id, b.channel, b.party ?? null, b.subject ?? null, b.preview ?? null]);
+    await query(`INSERT INTO agent_comms (agent_id, channel, party, subject, preview, org_id) VALUES ($1,$2,$3,$4,$5,$6)`, [id, b.channel, b.party ?? null, b.subject ?? null, b.preview ?? null, orgId(req)]);
     return reply.code(201).send({ ok: true });
   });
 
   // Remove all agents (clear the roster) + their activity/comms.
-  app.delete("/api/agents", async () => {
+  app.delete("/api/agents", async (req) => {
     // Clear child rows first (safe if a FK is ever added), then the agents.
-    await query(`DELETE FROM agent_activity`);
-    await query(`DELETE FROM agent_comms`);
-    await query(`DELETE FROM agent_runs`);
-    await query(`DELETE FROM agents`);
+    // Scoped to the caller's org so one tenant's "clear roster" never touches another.
+    const org = orgId(req);
+    await query(`DELETE FROM agent_activity WHERE org_id = $1`, [org]);
+    await query(`DELETE FROM agent_comms WHERE org_id = $1`, [org]);
+    await query(`DELETE FROM agent_runs WHERE org_id = $1`, [org]);
+    await query(`DELETE FROM agents WHERE org_id = $1`, [org]);
     return { ok: true };
   });
 
   app.delete("/api/agents/:id", async (req) => {
     const { id } = req.params as { id: string };
-    await query(`DELETE FROM agent_runs WHERE agent_id = $1`, [id]).catch(() => {});
-    await query(`DELETE FROM agents WHERE id = $1`, [id]);
-    return { ok: true };
+    const org = orgId(req);
+    // Ownership gate: only purge an agent that belongs to this org.
+    if (!(await agentInOrg(id, org))) return { ok: true }; // idempotent no-op for other orgs
+    // HARD purge (lib/purge.ts): the agent's whole footprint — runs, activity,
+    // comms, call sources, persona history, calibration transcripts, debriefs,
+    // live_calls, rehearsal grades, its per-agent settings (incl. demo creds) —
+    // in one transaction, PLUS best-effort revoke of its cloned ElevenLabs voice,
+    // e2b sandbox kill, and on-disk film removal, with an audit record. Not a
+    // soft delete: we keep neither the voice likeness nor stored creds.
+    const result = await purgeAgent(org, id, { actor: req.user?.id });
+    return { ok: true, purged: result.deleted, external: result.external };
   });
 
   // Compile the agent's operating system prompt: its instructions + the concrete
   // capabilities/connections it may use (so it knows its toolset), grounded on
   // Hermes core (memory, context, web + headless browser).
-  async function agentSystemPrompt(a: Agent): Promise<string> {
-    const connected = await getConnectedIntegrationIds();
+  async function agentSystemPrompt(a: Agent, org: string): Promise<string> {
+    const connected = await getConnectedIntegrationIds(org);
     const connLabels: Record<string, string> = {
       gmail: "Gmail (read/send email)", google_calendar: "Google Calendar", slack: "Slack",
       elevenlabs: "voice (ElevenLabs)", notetaker: "meeting notetaker", crm: "CRM",
@@ -549,10 +591,11 @@ export default async function agentsRoutes(app: FastifyInstance) {
   // are executed on demand / on schedule via /run.)
   app.post("/api/agents/:id/deploy", async (req, reply) => {
     const { id } = req.params as { id: string };
-    const row = await one(`SELECT * FROM agents WHERE id = $1`, [id]);
+    const org = orgId(req);
+    const row = await one(`SELECT * FROM agents WHERE id = $1 AND org_id = $2`, [id, org]);
     if (!row) return reply.code(404).send({ error: "not found" });
-    await query(`UPDATE agents SET status = 'optimal', status_label = 'Deployed' WHERE id = $1`, [id]);
-    const updated = await one(`SELECT * FROM agents WHERE id = $1`, [id]);
+    await query(`UPDATE agents SET status = 'optimal', status_label = 'Deployed' WHERE id = $1 AND org_id = $2`, [id, org]);
+    const updated = await one(`SELECT * FROM agents WHERE id = $1 AND org_id = $2`, [id, org]);
     return rowToAgent(updated);
   });
 
@@ -561,21 +604,22 @@ export default async function agentsRoutes(app: FastifyInstance) {
   // agent's result and records the run.
   app.post("/api/agents/:id/run", async (req, reply): Promise<AgentRunResult> => {
     const { id } = req.params as { id: string };
+    const org = orgId(req);
     const body = (req.body ?? {}) as { task?: string };
     const task = (body.task ?? "").toString().trim();
-    const row = await one(`SELECT * FROM agents WHERE id = $1`, [id]);
+    const row = await one(`SELECT * FROM agents WHERE id = $1 AND org_id = $2`, [id, org]);
     if (!row) { reply.code(404); return { ok: false, output: "", detail: "agent not found", via: "none", at: new Date().toISOString() }; }
     if (!task) { reply.code(400); return { ok: false, output: "", detail: "task is required", via: "none", at: new Date().toISOString() }; }
     const agent = rowToAgent(row);
-    const system = await agentSystemPrompt(agent);
+    const system = await agentSystemPrompt(agent, org);
     const at = new Date().toISOString();
 
     const record = async (fields: { taskId?: string | null; status: string; output?: string; via: string }) => {
       await query(
-        `INSERT INTO agent_runs (agent_id, task_id, task, status, output, via) VALUES ($1, $2, $3, $4, $5, $6)`,
-        [id, fields.taskId ?? null, task, fields.status, fields.output ?? null, fields.via],
+        `INSERT INTO agent_runs (agent_id, task_id, task, status, output, via, org_id) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [id, fields.taskId ?? null, task, fields.status, fields.output ?? null, fields.via, org],
       ).catch(() => {});
-      await query(`INSERT INTO agent_activity (agent_id, kind) VALUES ($1, 'task')`, [id]).catch(() => {});
+      await query(`INSERT INTO agent_activity (agent_id, kind, org_id) VALUES ($1, 'task', $2)`, [id, org]).catch(() => {});
     };
 
     // 1) Dispatch to the Hermes agent's kanban queue — REAL autonomous execution
@@ -614,7 +658,7 @@ export default async function agentsRoutes(app: FastifyInstance) {
     } catch { /* fall through to provider */ }
 
     // 2) Fall back to the active AI Core provider (reasoning without Hermes tools).
-    const active = await getActiveProvider();
+    const active = await getActiveProvider(orgId(req));
     if (active) {
       const r = await completeProviderChat(active, [ { role: "system", content: system }, { role: "user", content: task } ]);
       if (r.ok && r.content) {
@@ -630,9 +674,10 @@ export default async function agentsRoutes(app: FastifyInstance) {
   // kanban board so completed work shows its result.
   app.get("/api/agents/:id/runs", async (req): Promise<AgentRunRecord[]> => {
     const { id } = req.params as { id: string };
+    const org = orgId(req);
     const rows = await query<{ id: number; agent_id: string; task_id: string | null; task: string; status: string; output: string | null; via: string | null; created_at: string; updated_at: string }>(
-      `SELECT * FROM agent_runs WHERE agent_id = $1 ORDER BY created_at DESC LIMIT 30`,
-      [id],
+      `SELECT * FROM agent_runs WHERE agent_id = $1 AND org_id = $2 ORDER BY created_at DESC LIMIT 30`,
+      [id, org],
     );
     // Refresh in-flight Hermes runs.
     for (const r of rows.filter((x) => x.status === "running" && x.task_id)) {
@@ -663,7 +708,7 @@ export default async function agentsRoutes(app: FastifyInstance) {
   });
 
   // Runtime executions. Prefer live hermes runs; fall back to the seeded log.
-  app.get("/api/agents/runs", async () => {
+  app.get("/api/agents/runs", async (req) => {
     const live = await hermes.get<any>("/v1/runs");
     // Accept a bare array or the OpenAI-style {data:[...]} / {runs:[...]} envelope.
     const list = Array.isArray(live.data) ? live.data : live.data?.data ?? live.data?.runs;
@@ -685,8 +730,8 @@ export default async function agentsRoutes(app: FastifyInstance) {
       }));
       if (runs.length) return runs;
     }
-    const seeded = await one<{ value: AgentRun[] }>(`SELECT value FROM settings WHERE key = 'runs'`);
-    return seeded?.value ?? [];
+    const seeded = await getSetting<AgentRun[]>(orgId(req), "runs");
+    return seeded ?? [];
   });
 
   // Recent Hermes runtime sessions (cockpit center pane). These are the agent
@@ -709,10 +754,10 @@ export default async function agentsRoutes(app: FastifyInstance) {
     }));
   });
 
-  app.get("/api/agents/runtime", async (): Promise<RuntimeStats> => {
-    const rows = await query<{ status: string }>(`SELECT status FROM agents`);
+  app.get("/api/agents/runtime", async (req): Promise<RuntimeStats> => {
+    const rows = await query<{ status: string }>(`SELECT status FROM agents WHERE org_id = $1`, [orgId(req)]);
     const active = rows.filter((r) => r.status === "optimal").length;
-    const runs = (await one<{ value: AgentRun[] }>(`SELECT value FROM settings WHERE key = 'runs'`))?.value ?? [];
+    const runs = (await getSetting<AgentRun[]>(orgId(req), "runs")) ?? [];
     const stepsToday = runs.reduce((n, r) => n + (r.steps?.length ?? 0), 0);
     const errors = runs.reduce((n, r) => n + (r.errCount ?? 0), 0);
     return { active, recentRuns: runs.length, stepsToday, errors };

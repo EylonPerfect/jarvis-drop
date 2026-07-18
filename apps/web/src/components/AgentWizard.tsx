@@ -3,6 +3,8 @@ import type { CSSProperties } from "react";
 import { Button, Icon, Switch } from "../ds";
 import { useApi } from "../api/hooks";
 import { api } from "../api/client";
+import { CloneFromCallsStep } from "./CloneFromCalls";
+import { roleCategoryOf } from "@jarvis/shared";
 import { useVoiceOutput } from "../hooks/useSpeech";
 import type {
   AiProvider,
@@ -22,6 +24,19 @@ import type {
   AccessStatus,
   DiscoverResult,
   DiscoverProfile,
+  AutonomyTier,
+  DutyCycle,
+  AgentIdentity,
+  EscalationConfig,
+  ReviewCadence,
+  Person,
+  DisclosurePolicy,
+  AgentKpi,
+  Apprenticeship,
+  Grant,
+  RuntimeCapabilities,
+  CallSource,
+  CallPlaybook,
 } from "@jarvis/shared";
 
 // ============================================================
@@ -57,10 +72,103 @@ const TOOL_CHOICES = ["web_search", "code_interpreter", "filesystem", "github", 
 const AUTONOMY_CHOICES = ["Ask before acting", "Act, then report", "Fully autonomous"];
 const PERMISSION_LABELS = ["Read knowledge base", "Send messages", "Control browser", "Send email", "Execute tools", "Spend budget", "Make payments"];
 
+// Trust is a tier, not a pile of toggles — you promote an agent through these the
+// way a new hire earns autonomy. Permissions are DERIVED from the chosen tier;
+// the raw toggles become an advanced override.
+const TRUST_TIERS: { tier: AutonomyTier; name: string; tagline: string; detail: string; autonomy: string }[] = [
+  { tier: 1, name: "Shadow", tagline: "Observes & drafts. Sends nothing.", detail: "Reads everything it's granted and prepares drafts for review — but delivers nothing on its own. Like reading support threads before you take them.", autonomy: "Ask before acting" },
+  { tier: 2, name: "Supervised", tagline: "Acts, but every outbound needs approval.", detail: "Can write and send, but each email, message, or update waits in its manager's approval queue. Nothing leaves without a yes.", autonomy: "Act, then report" },
+  { tier: 3, name: "Autonomous", tagline: "Acts freely within scope.", detail: "Works on its own inside its grants. Irreversible actions (delete, refund, send contract) still verify before committing.", autonomy: "Fully autonomous" },
+];
+
+// Duty cycle drives cost + whether the agent gets a "body": front-stage wires to
+// the real E2B workstation + live-call voice runtime.
+const DUTY_CYCLES: { key: DutyCycle; name: string; cost: string; detail: string }[] = [
+  { key: "backstage", name: "Backstage only", cost: "$", detail: "No calls. Runs on API workers only — email, CRM, docs, back-office." },
+  { key: "balanced", name: "Balanced", cost: "$$", detail: "Calls plus back office — the everyday hybrid." },
+  { key: "frontstage", name: "Front-stage heavy", cost: "$$$", detail: "Joins calls & demos — provisions a live computer (VM body) + realtime voice." },
+];
+
+// Review cadence — a new hire is watched closely, then trusted. Default mirrors
+// a real probation: daily for the first two weeks, then weekly.
+const REVIEW_CADENCES: { key: ReviewCadence; name: string; detail: string }[] = [
+  { key: "daily_2w_then_weekly", name: "Daily for 2 weeks, then weekly", detail: "Close supervision through probation, then ease off — the default for a new unit." },
+  { key: "weekly", name: "Weekly", detail: "A standing weekly review of the agent's work." },
+  { key: "biweekly", name: "Every two weeks", detail: "Lighter-touch check-ins for an agent you already trust." },
+];
+
+// Rules of engagement — the moments an agent must stop and hand off to a human.
+const ESCALATION_TRIGGERS: { key: keyof EscalationConfig; label: string; hint: string }[] = [
+  { key: "discountOrContract", label: "Discounts or contracts", hint: "Anything touching price or a signed agreement" },
+  { key: "churnOrLegalRisk", label: "Churn or legal risk", hint: "A customer at risk, or anything legal" },
+  { key: "askedIfAI", label: "Asked if it's an AI", hint: "Someone asks directly whether they're talking to a bot" },
+  { key: "irreversibleAction", label: "Irreversible actions", hint: "Deletes, refunds, sends that can't be undone" },
+  { key: "sentimentDrop", label: "Sentiment drops", hint: "The person gets frustrated or upset" },
+  { key: "lowConfidence", label: "Low confidence", hint: "The agent isn't sure it's right" },
+];
+
+// Departments a unit can belong to (spec Step 1). Free-text is allowed too.
+const DEPARTMENTS = ["CS", "Sales", "R&D", "Support", "Ops", "Marketing", "Finance", "Other"];
+
+// Default start date = next Monday (a new hire's typical first day).
+function nextMondayISO(): string {
+  const d = new Date();
+  const day = d.getDay(); // 0 Sun … 6 Sat
+  const add = ((8 - day) % 7) || 7; // days until the next Monday (never today)
+  d.setDate(d.getDate() + add);
+  return d.toISOString().slice(0, 10);
+}
+
+// Step 2 apprenticeship — default exclusions offered as one-click chips.
+const DEFAULT_EXCLUSIONS = ["HR 1:1s", "Compensation threads", "Personal DMs", "Legal / board matters"];
+// Demo Slack channels for the source picker (real workspace sync is out of scope).
+const DEMO_SLACK_CHANNELS = ["#cs-team", "#support", "#sales", "#product", "#general", "#deals", "#eng"];
+
+// Step 5 KPI presets by role/template key — one-click starters (spec).
+const KPI_PRESETS: Record<string, AgentKpi[]> = {
+  csm: [{ name: "CSAT", target: "≥ 4.5" }, { name: "Onboarding completion", target: "≤ 30 days" }, { name: "Response SLA", target: "< 2h" }, { name: "NRR of book", target: "≥ 100%" }],
+  "sales-dev": [{ name: "Qualified meetings", target: "20 / month" }, { name: "Reply rate", target: "≥ 8%" }, { name: "Pipeline created", target: "$250k / quarter" }],
+  recruiter: [{ name: "Qualified candidates", target: "15 / role" }, { name: "Time to shortlist", target: "≤ 5 days" }, { name: "Offer-accept rate", target: "≥ 80%" }],
+  support: [{ name: "First-response time", target: "< 15m" }, { name: "CSAT", target: "≥ 4.6" }, { name: "Resolution rate", target: "≥ 90%" }],
+  ops: [{ name: "Report on-time rate", target: "100%" }, { name: "Data accuracy", target: "≥ 99%" }],
+  swe: [{ name: "PRs merged", target: "10 / week" }, { name: "Review turnaround", target: "< 4h" }, { name: "Escaped bugs", target: "0 P0" }],
+};
+
+// Step 3 default runtime capabilities.
+const DEFAULT_CAPS: RuntimeCapabilities = { webSearch: true, browserControl: false, terminal: false, longTermMemory: true, scheduling: false, codeExecution: false };
+const CAP_LABELS: { key: keyof RuntimeCapabilities; label: string; hint: string }[] = [
+  { key: "webSearch", label: "Web search", hint: "Look things up on the open web" },
+  { key: "browserControl", label: "Browser control", hint: "Per-agent headless browser via Hermes" },
+  { key: "terminal", label: "Terminal / shell", hint: "Run shell commands in its sandbox" },
+  { key: "longTermMemory", label: "Long-term memory", hint: "Remember across sessions" },
+  { key: "scheduling", label: "Scheduling (cron)", hint: "Run itself on a schedule" },
+  { key: "codeExecution", label: "Code execution", hint: "Execute code to compute / transform" },
+];
+
+// Step 4 disclosure policy options (required when the agent takes calls).
+const DISCLOSURE_OPTIONS: { key: DisclosurePolicy; label: string; detail: string }[] = [
+  { key: "always", label: "Always disclose", detail: "States it's an AI up front, every time." },
+  { key: "when_asked", label: "Disclose when asked", detail: "Confirms it's an AI only if someone asks." },
+  { key: "per_customer", label: "Per-customer setting", detail: "Follows each customer's disclosure preference." },
+];
+
+// Map a tier onto the coarse permission toggles (payments always off — finance
+// is never grantable in this wizard).
+function tierPermissions(tier: AutonomyTier): AgentPermission[] {
+  const allowAll = tier >= 2;
+  return PERMISSION_LABELS.map((label) => {
+    if (label === "Make payments") return { label, allowed: false };
+    if (label === "Read knowledge base") return { label, allowed: true };
+    if (label === "Spend budget") return { label, allowed: false }; // governed by the budget block
+    return { label, allowed: allowAll };
+  });
+}
+
 // Single unified flow — the AI interview is the default, open entry point.
 // The old Clone-vs-Scratch chooser and manual self-define form are gone; the
 // build track is inferred (clone if the clone toggle was used, else scratch).
-const WIZARD_STEPS = ["Define with AI", "Access & onboarding", "Examples", "Guardrails & budget", "Review & deploy"];
+// Six-step onboarding journey (spec v2) — bring a new unit onto the team.
+const WIZARD_STEPS = ["Identity", "Apprenticeship", "Access & grants", "Trust & guardrails", "Performance contract", "Review & deploy"];
 
 // What each connection teaches a clone (used to compile clone instructions).
 const LEARNS: Record<string, string> = {
@@ -222,24 +330,6 @@ function Field({ label, children, hint }: { label: string; children: React.React
   );
 }
 
-function Chip({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
-  return (
-    <button
-      onClick={onClick}
-      style={{
-        padding: "6px 12px",
-        borderRadius: "var(--r-pill)",
-        border: `1px solid ${active ? "var(--jv-border-cyan)" : "var(--jv-border)"}`,
-        background: active ? "var(--grad-cyan-soft)" : "var(--jv-void)",
-        color: active ? "var(--jv-cyan-300)" : "var(--jv-text-muted)",
-        font: `${active ? "var(--fw-semibold)" : "var(--fw-medium)"} 12px var(--font-mono)`,
-        cursor: "pointer",
-      }}
-    >
-      {children}
-    </button>
-  );
-}
 
 // Goals editor: a list of {objective, metric} rows.
 function GoalsEditor({ goals, setGoals }: { goals: AgentGoal[]; setGoals: (fn: (prev: AgentGoal[]) => AgentGoal[]) => void }) {
@@ -281,6 +371,38 @@ function GoalsEditor({ goals, setGoals }: { goals: AgentGoal[]; setGoals: (fn: (
   );
 }
 
+// Person picker — choose an accountable human (reports-to) or clone mentor from
+// the Company-screen people. Falls back to manual name/email when the directory
+// is empty or the person isn't listed.
+function PersonPicker({ people, name, email, onChange, placeholder }: {
+  people: Person[];
+  name?: string;
+  email?: string;
+  onChange: (v: { name?: string; email?: string }) => void;
+  placeholder?: string;
+}) {
+  const matched = people.find((p) => (email && p.email === email) || (name && p.name === name));
+  const [manual, setManual] = useState(!matched && (!!name || !!email));
+  if (people.length === 0 || manual) {
+    return (
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 8, alignItems: "center" }}>
+        <input value={name ?? ""} onChange={(e) => onChange({ name: e.target.value, email })} placeholder={placeholder ?? "Name"} style={inputStyle} />
+        <input value={email ?? ""} onChange={(e) => onChange({ name, email: e.target.value })} placeholder="Email" style={inputStyle} />
+        {people.length > 0 && <Button variant="ghost" size="sm" onClick={() => setManual(false)}>From team</Button>}
+      </div>
+    );
+  }
+  return (
+    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+      <select value={matched?.id ?? ""} onChange={(e) => { const p = people.find((x) => x.id === e.target.value); onChange(p ? { name: p.name, email: p.email } : {}); }} style={{ ...inputStyle, appearance: "none", cursor: "pointer" }}>
+        <option value="">{placeholder ?? "Select a person…"}</option>
+        {people.map((p) => <option key={p.id} value={p.id}>{p.name}{p.title ? ` · ${p.title}` : ""}</option>)}
+      </select>
+      <Button variant="ghost" size="sm" onClick={() => setManual(true)}>Not listed</Button>
+    </div>
+  );
+}
+
 // Compact reusable budget form (both tracks). Mirrors the original step-5 grid.
 function BudgetForm({ budget, setBudget }: { budget: BudgetConfig; setBudget: (fn: (prev: BudgetConfig) => BudgetConfig) => void }) {
   const numOf = (v: string): number | undefined => (v.trim() === "" ? undefined : Number(v));
@@ -298,15 +420,8 @@ function BudgetForm({ budget, setBudget }: { budget: BudgetConfig; setBudget: (f
         {cell("Per-action limit", <input type="number" value={budget.perActionLimit ?? ""} onChange={(e) => setBudget((b) => ({ ...b, perActionLimit: numOf(e.target.value) }))} placeholder="e.g. 50" style={inputStyle} />)}
         {cell("Approval threshold", <input type="number" value={budget.approvalThreshold ?? ""} onChange={(e) => setBudget((b) => ({ ...b, approvalThreshold: numOf(e.target.value) }))} placeholder="e.g. 100" style={inputStyle} />)}
       </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 14, padding: "11px 13px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-2)", border: `1px solid ${budget.allowPayments ? "color-mix(in srgb, var(--jv-amber) 45%, transparent)" : "var(--jv-border-soft)"}` }}>
-        <Icon name="wallet" size={16} color={budget.allowPayments ? "var(--jv-amber)" : "var(--jv-text-muted)"} />
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ font: "var(--fw-semibold) 12.5px var(--font-body)", color: "var(--jv-text)" }}>Allow payments</div>
-          <div style={{ font: "var(--fw-regular) 10.5px var(--font-body)", color: budget.allowPayments ? "var(--jv-amber)" : "var(--jv-text-faint)", marginTop: 2 }}>
-            {budget.allowPayments ? "Caution: this agent can move money (Stripe / back office)." : "Off — this agent cannot move money."}
-          </div>
-        </div>
-        <Switch checked={budget.allowPayments} onChange={(v) => setBudget((b) => ({ ...b, allowPayments: v }))} />
+      <div style={{ display: "flex", alignItems: "center", gap: 7, marginTop: 14, padding: "9px 12px", borderRadius: "var(--r-sm)", background: "var(--jv-void)", border: "1px dashed var(--jv-border)", font: "var(--fw-regular) 11px var(--font-body)", color: "var(--jv-text-faint)" }}>
+        <Icon name="ban" size={13} /> Payments are off by design — this agent can never move money. Financial systems need a separate finance requisition.
       </div>
     </div>
   );
@@ -1162,10 +1277,58 @@ function BreathingDiscovery({
 }
 
 // ---- Onboarding review editor (clone track) — access checklist, manager, meetings ----
-function OnboardingEditor({ onboarding, setOnboarding }: { onboarding: Onboarding; setOnboarding: (fn: (prev: Onboarding) => Onboarding) => void }) {
+// ---- Chain of command: who the agent reports to ----
+function ReportingLine({ onboarding, setOnboarding }: { onboarding: Onboarding; setOnboarding: (fn: (prev: Onboarding) => Onboarding) => void }) {
+  const manager: Manager = onboarding.reportsTo ?? {};
+  const setManager = (patch: Partial<Manager>) =>
+    setOnboarding((o) => {
+      const m = { ...(o.reportsTo ?? {}), ...patch };
+      const empty = !m.name?.trim() && !m.email?.trim();
+      return { ...o, reportsTo: empty ? undefined : m };
+    });
+  return (
+    <Field label="Reports to" hint="The human who owns this agent's work, reviews it, and takes its handoffs. Every unit answers to someone.">
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+        <input value={manager.name ?? ""} onChange={(e) => setManager({ name: e.target.value })} placeholder="Manager name" style={inputStyle} />
+        <input value={manager.email ?? ""} onChange={(e) => setManager({ email: e.target.value })} placeholder="Manager email" style={inputStyle} />
+      </div>
+    </Field>
+  );
+}
+
+// ---- Rules of engagement: when the agent must stop and hand off to a human ----
+function EscalationEditor({ escalation, setEscalation }: { escalation: EscalationConfig; setEscalation: (fn: (prev: EscalationConfig) => EscalationConfig) => void }) {
+  const toggle = (k: keyof EscalationConfig) => setEscalation((e) => ({ ...e, [k]: !e[k] }));
+  return (
+    <>
+      <Field label="Rules of engagement" hint="The moments this agent must stop and hand off to its manager instead of acting alone — the lines it should never cross by itself.">
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {ESCALATION_TRIGGERS.map((t) => {
+            const on = !!escalation[t.key];
+            return (
+              <div key={String(t.key)} style={{ display: "flex", alignItems: "center", gap: 12, padding: "9px 12px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: `1px solid ${on ? "var(--jv-border-cyan)" : "var(--jv-border-soft)"}` }}>
+                <Icon name="flag" size={15} color={on ? "var(--jv-cyan)" : "var(--jv-text-faint)"} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ font: "var(--fw-semibold) 12.5px var(--font-body)", color: "var(--jv-text)" }}>{t.label}</div>
+                  <div style={{ font: "var(--fw-regular) 10.5px var(--font-body)", color: "var(--jv-text-faint)", marginTop: 1 }}>{t.hint}</div>
+                </div>
+                <Switch checked={on} onChange={() => toggle(t.key)} />
+              </div>
+            );
+          })}
+        </div>
+      </Field>
+      <Field label="Escalate to" hint="Where a handoff lands — a person's email or a Slack channel. Set this before the agent takes real actions.">
+        <input value={escalation.contact ?? ""} onChange={(e) => setEscalation((c) => ({ ...c, contact: e.target.value || undefined }))} placeholder="e.g. maya@company.com or #cs-escalations" style={inputStyle} />
+      </Field>
+    </>
+  );
+}
+
+// ---- Identity & access: connections + day-one access checklist + meetings ----
+function AccessAndMeetings({ onboarding, setOnboarding }: { onboarding: Onboarding; setOnboarding: (fn: (prev: Onboarding) => Onboarding) => void }) {
   const access = onboarding.access ?? [];
   const meetings = onboarding.meetings ?? [];
-  const manager: Manager = onboarding.reportsTo ?? {};
   const [accessDraft, setAccessDraft] = useState("");
   const [mtgName, setMtgName] = useState("");
   const [mtgCadence, setMtgCadence] = useState("");
@@ -1207,13 +1370,6 @@ function OnboardingEditor({ onboarding, setOnboarding }: { onboarding: Onboardin
   const removeMeeting = (i: number) =>
     setOnboarding((o) => ({ ...o, meetings: (o.meetings ?? []).filter((_, j) => j !== i) }));
 
-  const setManager = (patch: Partial<Manager>) =>
-    setOnboarding((o) => {
-      const m = { ...(o.reportsTo ?? {}), ...patch };
-      const empty = !m.name?.trim() && !m.email?.trim();
-      return { ...o, reportsTo: empty ? undefined : m };
-    });
-
   return (
     <div>
       <Field label="Access checklist" hint="What this agent needs on day one. Hit Connect for step-by-step guidance, or click a status pill to cycle needed → pending → granted.">
@@ -1236,13 +1392,6 @@ function OnboardingEditor({ onboarding, setOnboarding }: { onboarding: Onboardin
         <div style={{ display: "flex", gap: 8 }}>
           <input value={accessDraft} onChange={(e) => setAccessDraft(e.target.value)} onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), addAccess())} placeholder="Add access item — e.g. Slack, Demo environment…" style={{ ...inputStyle, height: 34 }} />
           <Button variant="ghost" size="sm" icon={<Icon name="plus" size={13} />} disabled={!accessDraft.trim()} onClick={addAccess}>Add</Button>
-        </div>
-      </Field>
-
-      <Field label="Reports to" hint="Which manager this agent reports to.">
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-          <input value={manager.name ?? ""} onChange={(e) => setManager({ name: e.target.value })} placeholder="Manager name" style={inputStyle} />
-          <input value={manager.email ?? ""} onChange={(e) => setManager({ email: e.target.value })} placeholder="Manager email" style={inputStyle} />
         </div>
       </Field>
 
@@ -1280,8 +1429,164 @@ function OnboardingEditor({ onboarding, setOnboarding }: { onboarding: Onboardin
   );
 }
 
+// ---- Step 5: meetings this agent joins (as itself) ----
+function MeetingsEditor({ onboarding, setOnboarding }: { onboarding: Onboarding; setOnboarding: (fn: (prev: Onboarding) => Onboarding) => void }) {
+  const meetings = onboarding.meetings ?? [];
+  const [mName, setMName] = useState("");
+  const [mCad, setMCad] = useState("");
+  const add = () => { const n = mName.trim(); if (!n) return; setOnboarding((o) => ({ ...o, meetings: [...(o.meetings ?? []), { name: n, cadence: mCad.trim() || undefined }] })); setMName(""); setMCad(""); };
+  const remove = (i: number) => setOnboarding((o) => ({ ...o, meetings: (o.meetings ?? []).filter((_, j) => j !== i) }));
+  return (
+    <Field label="Meetings to join" hint="Standups, QBRs and reviews this agent attends — as itself.">
+      {meetings.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 10 }}>
+          {meetings.map((m, i) => (
+            <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)" }}>
+              <Icon name="calendar" size={15} color="var(--jv-cyan)" />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ font: "var(--fw-semibold) 12.5px var(--font-body)", color: "var(--jv-text)" }}>{m.name}</div>
+                {m.cadence && <div style={{ font: "var(--fw-regular) 11px var(--font-body)", color: "var(--jv-text-muted)" }}>{m.cadence}</div>}
+              </div>
+              <button onClick={() => remove(i)} title="Remove" style={{ background: "none", border: "none", color: "var(--jv-text-faint)", cursor: "pointer", display: "grid", placeItems: "center" }}><Icon name="x" size={14} /></button>
+            </div>
+          ))}
+        </div>
+      )}
+      <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr auto", gap: 8, alignItems: "center" }}>
+        <input value={mName} onChange={(e) => setMName(e.target.value)} placeholder="Meeting — e.g. CS weekly pipeline review" style={{ ...inputStyle, height: 34 }} />
+        <input value={mCad} onChange={(e) => setMCad(e.target.value)} onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), add())} placeholder="Cadence — e.g. Tue 10:00" style={{ ...inputStyle, height: 34 }} />
+        <Button variant="ghost" size="sm" icon={<Icon name="plus" size={13} />} disabled={!mName.trim()} onClick={add}>Add</Button>
+      </div>
+    </Field>
+  );
+}
+
+// ---- Step 2 (clone path): consent-gated apprenticeship ----
+function ApprenticeshipEditor({ apprenticeship, setApprenticeship, mentorName }: {
+  apprenticeship: Apprenticeship;
+  setApprenticeship: (fn: (p: Apprenticeship) => Apprenticeship) => void;
+  mentorName: string;
+}) {
+  const a = apprenticeship;
+  const approved = a.consentStatus === "approved";
+  const [exDraft, setExDraft] = useState("");
+  const mentor = mentorName || "this employee";
+  const setSrc = (patch: Partial<Apprenticeship["sources"]>) => setApprenticeship((p) => ({ ...p, sources: { ...p.sources, ...patch } }));
+  const toggleChannel = (ch: string) => setApprenticeship((p) => ({ ...p, sources: { ...p.sources, slackChannels: p.sources.slackChannels.includes(ch) ? p.sources.slackChannels.filter((c) => c !== ch) : [...p.sources.slackChannels, ch] } }));
+  const addExclusion = (v: string) => { const t = v.trim(); if (!t) return; setApprenticeship((p) => (p.exclusions.includes(t) ? p : { ...p, exclusions: [...p.exclusions, t] })); setExDraft(""); };
+  const removeExclusion = (t: string) => setApprenticeship((p) => ({ ...p, exclusions: p.exclusions.filter((x) => x !== t) }));
+  const statusTone = a.consentStatus === "approved" ? "var(--jv-green)" : a.consentStatus === "pending" ? "var(--jv-amber)" : "var(--jv-text-muted)";
+  const statusLabel = { not_sent: "Not sent", pending: "Pending", approved: "Approved", declined: "Declined" }[a.consentStatus];
+  const disabledStyle: CSSProperties = approved ? {} : { opacity: 0.55, pointerEvents: "none", filter: "grayscale(0.3)" };
+
+  const SOURCES: { key: keyof Apprenticeship["sources"]; label: string }[] = [
+    { key: "meetings", label: "Meetings / notetaker recordings" },
+    { key: "email", label: "Email threads" },
+    { key: "calendar", label: "Calendar" },
+    { key: "crmHistory", label: "CRM activity history" },
+    { key: "supportConvos", label: "Support conversations" },
+  ];
+  return (
+    <div>
+      {/* Consent card — blocking until approved */}
+      <div style={{ marginBottom: 16, padding: "14px 16px", borderRadius: "var(--r-md)", background: "var(--jv-surface-2)", border: `1px solid ${approved ? "color-mix(in srgb, var(--jv-green) 40%, transparent)" : "var(--jv-border-cyan)"}` }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+          <Icon name={approved ? "shield-check" : "lock"} size={16} color={approved ? "var(--jv-green)" : "var(--jv-cyan)"} />
+          <span style={{ flex: 1, font: "var(--fw-bold) 13px var(--font-body)", color: "var(--jv-text)" }}>Mentor consent</span>
+          <span style={{ padding: "2px 9px", borderRadius: "var(--r-pill)", font: "var(--fw-semibold) 9px var(--font-hud)", letterSpacing: "0.08em", textTransform: "uppercase", color: statusTone, border: `1px solid color-mix(in srgb, ${statusTone} 45%, transparent)` }}>{statusLabel}</span>
+        </div>
+        <p style={{ margin: "0 0 10px", font: "var(--fw-regular) 12px/1.5 var(--font-body)", color: "var(--jv-text-muted)" }}>
+          Training an agent on {mentor}'s work requires their written consent. We'll send a Slack DM + email with the exact scope below.
+        </p>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {a.consentStatus === "not_sent" && (
+            <Button variant="primary" size="sm" icon={<Icon name="send" size={13} />} onClick={() => setApprenticeship((p) => ({ ...p, consentStatus: "pending" }))}>Send consent request</Button>
+          )}
+          {a.consentStatus === "pending" && (
+            <>
+              <span style={{ font: "var(--fw-medium) 11.5px var(--font-body)", color: "var(--jv-amber)" }}>Awaiting {mentor}'s approval…</span>
+              <button onClick={() => setApprenticeship((p) => ({ ...p, consentStatus: "approved" }))} title="Demo only — simulate the mentor approving" style={{ background: "none", border: "1px dashed var(--jv-border)", borderRadius: "var(--r-pill)", padding: "3px 10px", cursor: "pointer", font: "var(--fw-semibold) 9px var(--font-hud)", letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--jv-text-faint)" }}>Simulate approval</button>
+            </>
+          )}
+          {approved && <span style={{ font: "var(--fw-medium) 11.5px var(--font-body)", color: "var(--jv-green)" }}>Consent granted — ingest can run.</span>}
+          {a.consentStatus === "declined" && (
+            <Button variant="ghost" size="sm" onClick={() => setApprenticeship((p) => ({ ...p, consentStatus: "not_sent" }))}>Re-send</Button>
+          )}
+        </div>
+      </div>
+
+      <div style={disabledStyle}>
+        <Field label="Training sources" hint="What the agent learns from. Slack is an explicit channel picker — never 'all channels'.">
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {SOURCES.map((s) => (
+              <div key={String(s.key)} style={{ display: "flex", alignItems: "center", gap: 12, padding: "9px 12px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)" }}>
+                <Icon name="graduation-cap" size={15} color="var(--jv-cyan)" />
+                <span style={{ flex: 1, font: "var(--fw-medium) 12.5px var(--font-body)", color: "var(--jv-text-soft)" }}>{s.label}</span>
+                <Switch checked={!!a.sources[s.key]} onChange={() => setSrc({ [s.key]: !a.sources[s.key] } as Partial<Apprenticeship["sources"]>)} />
+              </div>
+            ))}
+          </div>
+          <div style={{ marginTop: 10 }}>
+            <div style={{ font: "var(--fw-semibold) 9px var(--font-hud)", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--jv-text-muted)", marginBottom: 6 }}>Slack channels</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {DEMO_SLACK_CHANNELS.map((ch) => {
+                const on = a.sources.slackChannels.includes(ch);
+                return (
+                  <button key={ch} onClick={() => toggleChannel(ch)} style={{ padding: "5px 10px", borderRadius: "var(--r-pill)", cursor: "pointer", font: "var(--fw-semibold) 11px var(--font-mono)", color: on ? "var(--jv-cyan-300)" : "var(--jv-text-muted)", background: on ? "var(--grad-cyan-soft)" : "var(--jv-surface-3)", border: `1px solid ${on ? "var(--jv-border-cyan)" : "var(--jv-border-soft)"}` }}>{ch}</button>
+                );
+              })}
+            </div>
+          </div>
+        </Field>
+
+        <Field label="Exclusions" hint="Never learn from these. Defaults are one-click; add your own.">
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+            {a.exclusions.map((x) => (
+              <span key={x} style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "4px 10px", borderRadius: "var(--r-pill)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)", font: "var(--fw-medium) 11px var(--font-body)", color: "var(--jv-text-soft)" }}>
+                {x}<button onClick={() => removeExclusion(x)} style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: "var(--jv-text-faint)", display: "grid", placeItems: "center" }}><Icon name="x" size={11} /></button>
+              </span>
+            ))}
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+            {DEFAULT_EXCLUSIONS.filter((d) => !a.exclusions.includes(d)).map((d) => (
+              <button key={d} onClick={() => addExclusion(d)} style={{ padding: "4px 10px", borderRadius: "var(--r-pill)", cursor: "pointer", font: "var(--fw-medium) 11px var(--font-body)", color: "var(--jv-text-muted)", background: "var(--jv-void)", border: "1px dashed var(--jv-border)" }}>+ {d}</button>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <input value={exDraft} onChange={(e) => setExDraft(e.target.value)} onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), addExclusion(exDraft))} placeholder="Add an exclusion…" style={{ ...inputStyle, height: 34 }} />
+            <Button variant="ghost" size="sm" icon={<Icon name="plus" size={13} />} disabled={!exDraft.trim()} onClick={() => addExclusion(exDraft)}>Add</Button>
+          </div>
+        </Field>
+
+        <Field label="Observation window" hint="How long the agent shadows before it's ready to be reviewed for promotion.">
+          <div style={{ display: "flex", gap: 8 }}>
+            {[2, 4, 6].map((w) => {
+              const on = a.observationWeeks === w;
+              return (
+                <button key={w} onClick={() => setApprenticeship((p) => ({ ...p, observationWeeks: w as 2 | 4 | 6 }))} style={{ flex: 1, padding: "9px 0", borderRadius: "var(--r-sm)", cursor: "pointer", font: `${on ? "var(--fw-bold)" : "var(--fw-medium)"} 12.5px var(--font-body)`, color: on ? "var(--jv-cyan-300)" : "var(--jv-text-soft)", background: on ? "var(--grad-cyan-soft)" : "var(--jv-surface-3)", border: `1px solid ${on ? "var(--jv-border-cyan)" : "var(--jv-border-soft)"}` }}>{w} weeks</button>
+              );
+            })}
+          </div>
+        </Field>
+
+        <Field label="Understanding" hint="Fills as the ingest pipeline reads the approved sources (your AI Core model).">
+          <div style={{ padding: "12px 14px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-2)", border: "1px solid var(--jv-border-soft)" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+              <span style={{ font: "var(--fw-semibold) 10px var(--font-hud)", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--jv-cyan-300)" }}>{approved ? (a.understandingPct >= 100 ? "Ingest complete" : "Ingesting") : "Waiting for consent"}</span>
+              <span style={{ font: "var(--fw-bold) 13px var(--font-mono)", color: a.understandingPct >= 100 ? "var(--jv-green)" : "var(--jv-amber)" }}>{a.understandingPct}%</span>
+            </div>
+            <div style={{ height: 8, borderRadius: "var(--r-pill)", background: "var(--jv-void)", overflow: "hidden", border: "1px solid var(--jv-border-soft)" }}>
+              <div style={{ width: `${a.understandingPct}%`, height: "100%", background: a.understandingPct >= 100 ? "var(--jv-green)" : "var(--grad-cyan)", transition: "width var(--t)" }} />
+            </div>
+          </div>
+        </Field>
+      </div>
+    </div>
+  );
+}
+
 export function AgentWizard({
-  submitLabel = "Deploy Agent",
+  submitLabel = "Deploy to Shadow",
   onSubmit,
   onCancel,
   resetOnSubmit = false,
@@ -1298,6 +1603,10 @@ export function AgentWizard({
 
   const { data: catalogData } = useApi<ConnectionCatalogItem[]>("/api/agents/connection-catalog");
   const catalog = catalogData ?? [];
+
+  // Company people — powers the clone-mentor + reports-to pickers (Step 1).
+  const { data: peopleData } = useApi<Person[]>("/api/company/people");
+  const people = peopleData ?? [];
 
   // ---- Company context — the AI researches this to tailor its recommendations ----
   const { data: companyData, reload: reloadCompany } = useApi<CompanyProfile>("/api/company");
@@ -1345,7 +1654,37 @@ export function AgentWizard({
   const [icon, setIcon] = useState("bot");
   const [model, setModel] = useState("");
   const [autonomy, setAutonomy] = useState(AUTONOMY_CHOICES[0]);
+  const [autonomyTier, setAutonomyTier] = useState<AutonomyTier>(1);
+  const [advancedPerms, setAdvancedPerms] = useState(false); // reveal the raw derived toggles
+  const [dutyCycle, setDutyCycle] = useState<DutyCycle>("balanced");
   const [overview, setOverview] = useState("");
+  // ---- Step 1 identity extras (spec v2) ----
+  const [department, setDepartment] = useState("");
+  const [startDate, setStartDate] = useState<string>(nextMondayISO());
+  // ---- Chain of command + mission ----
+  const [escalation, setEscalation] = useState<EscalationConfig>({});
+  const [reviewCadence, setReviewCadence] = useState<ReviewCadence>("daily_2w_then_weekly");
+  // ---- Step 2 apprenticeship (clone path) ----
+  const [apprenticeship, setApprenticeship] = useState<Apprenticeship>({
+    consentStatus: "not_sent",
+    sources: { meetings: true, email: true, slackChannels: [], calendar: true, crmHistory: false, supportConvos: false },
+    exclusions: [],
+    observationWeeks: 4,
+    understandingPct: 0,
+  });
+  // ---- Step 3 grants + runtime ----
+  const [grantScope, setGrantScope] = useState<Record<string, string>>({});
+  const [grantTransport, setGrantTransport] = useState<Record<string, "api" | "vm">>({});
+  const [caps, setCaps] = useState<RuntimeCapabilities>(DEFAULT_CAPS);
+  // ---- Step 4 trust extras ----
+  const [promotionCriteria, setPromotionCriteria] = useState("");
+  const [disclosurePolicy, setDisclosurePolicy] = useState<DisclosurePolicy>("always");
+  const [showT3Confirm, setShowT3Confirm] = useState(false);
+  // ---- Step 5/6 owners ----
+  const [reviewOwner, setReviewOwner] = useState<Manager>({});
+  const [killSwitchOwner, setKillSwitchOwner] = useState<Manager>({});
+  // ---- Deploy confirmation moment ----
+  const [deployed, setDeployed] = useState<null | { name: string; role: string; email: string; reportsTo?: string; channel: string; firstTask: string }>(null);
 
   // ---- Common: goals / permissions / connections / tools / budget ----
   const [goals, setGoals] = useState<AgentGoal[]>([]);
@@ -1356,8 +1695,25 @@ export function AgentWizard({
   const [tools, setTools] = useState<string[]>(["web_search"]);
   const [budget, setBudget] = useState<BudgetConfig>({ currency: "USD", allowPayments: false });
 
+  // Choosing a trust tier sets autonomy + derives the permission toggles.
+  const applyTier = (tier: AutonomyTier) => {
+    setAutonomyTier(tier);
+    const t = TRUST_TIERS.find((x) => x.tier === tier);
+    if (t) setAutonomy(t.autonomy);
+    setPermissions(tierPermissions(tier));
+    setAdvancedPerms(false);
+  };
+
   // ---- Clone track ----
   const [clone, setClone] = useState<CloneSource>({});
+
+  // ---- Clone-from-calls (AE/CS): the apprenticeship becomes "learn from >=4 real calls" ----
+  const [callSources, setCallSources] = useState<CallSource[]>([]);
+  const [callPlaybook, setCallPlaybook] = useState<CallPlaybook | null>(null);
+  const [cloneJobId, setCloneJobId] = useState<string | null>(null);
+  const [cloneCallsOptOut, setCloneCallsOptOut] = useState(false);
+  const cloneRoleText = cloneMode ? (clone.title?.trim() || role.trim()) : role.trim();
+  const cloneFromCalls = cloneMode && !cloneCallsOptOut && roleCategoryOf(cloneRoleText) !== "other";
 
   // ---- Onboarding (living artifact: manager, meetings, access checklist) ----
   const [onboarding, setOnboarding] = useState<Onboarding>({});
@@ -1387,6 +1743,16 @@ export function AgentWizard({
     if (!model && activeModel) setModel(activeModel);
   }, [activeModel, model]);
 
+  // Simulate apprenticeship ingest once consent is approved (real ingest pipeline
+  // is out of scope — this animates understanding so the flow is demoable).
+  useEffect(() => {
+    if (apprenticeship.consentStatus !== "approved" || apprenticeship.understandingPct >= 100) return;
+    const t = setInterval(() => {
+      setApprenticeship((a) => (a.understandingPct >= 100 ? a : { ...a, understandingPct: Math.min(100, a.understandingPct + 7) }));
+    }, 350);
+    return () => clearInterval(t);
+  }, [apprenticeship.consentStatus, apprenticeship.understandingPct]);
+
   // ---- Draft persistence — every completed step is saved server-side so the
   // wizard survives a refresh / navigation and resumes exactly where you left off.
   const [draftStatus, setDraftStatus] = useState<"idle" | "saving" | "saved">("idle");
@@ -1415,6 +1781,23 @@ export function AgentWizard({
           if (typeof d.icon === "string") setIcon(d.icon);
           if (typeof d.model === "string") setModel(d.model);
           if (typeof d.autonomy === "string") setAutonomy(d.autonomy);
+          if (typeof d.autonomyTier === "number") setAutonomyTier(d.autonomyTier as AutonomyTier);
+          if (typeof d.dutyCycle === "string") setDutyCycle(d.dutyCycle as DutyCycle);
+          if (typeof d.department === "string") setDepartment(d.department);
+          if (typeof d.startDate === "string") setStartDate(d.startDate);
+          if (d.escalation && typeof d.escalation === "object") setEscalation(d.escalation as EscalationConfig);
+          if (typeof d.reviewCadence === "string") setReviewCadence(d.reviewCadence as ReviewCadence);
+          if (d.apprenticeship && typeof d.apprenticeship === "object") setApprenticeship(d.apprenticeship as Apprenticeship);
+          if (Array.isArray(d.callSources)) setCallSources(d.callSources as CallSource[]);
+          if (d.callPlaybook && typeof d.callPlaybook === "object") setCallPlaybook(d.callPlaybook as CallPlaybook);
+          if (typeof d.cloneCallsOptOut === "boolean") setCloneCallsOptOut(d.cloneCallsOptOut);
+          if (d.grantScope && typeof d.grantScope === "object") setGrantScope(d.grantScope as Record<string, string>);
+          if (d.grantTransport && typeof d.grantTransport === "object") setGrantTransport(d.grantTransport as Record<string, "api" | "vm">);
+          if (d.caps && typeof d.caps === "object") setCaps(d.caps as RuntimeCapabilities);
+          if (typeof d.promotionCriteria === "string") setPromotionCriteria(d.promotionCriteria);
+          if (typeof d.disclosurePolicy === "string") setDisclosurePolicy(d.disclosurePolicy as DisclosurePolicy);
+          if (d.reviewOwner && typeof d.reviewOwner === "object") setReviewOwner(d.reviewOwner as Manager);
+          if (d.killSwitchOwner && typeof d.killSwitchOwner === "object") setKillSwitchOwner(d.killSwitchOwner as Manager);
           if (typeof d.overview === "string") setOverview(d.overview);
           if (Array.isArray(d.goals)) setGoals(d.goals as AgentGoal[]);
           if (Array.isArray(d.permissions)) setPermissions(d.permissions as AgentPermission[]);
@@ -1443,7 +1826,10 @@ export function AgentWizard({
   // step is persisted. Empty snapshots delete the draft instead of storing blanks.
   useEffect(() => {
     if (!hydratedRef.current) return;
-    const snap: Record<string, unknown> = { v: 1, step, cloneMode, name, role, icon, model, autonomy, overview, goals, permissions, connections, tools, budget, clone, onboarding, templateKey, evidence, stashPlan, stashRoutine, stashInstr, profileApplied };
+    // Call sources are persisted WITHOUT the pasted transcripts (keeps the draft
+    // row small); the generated playbook + opt-out are kept.
+    const callSourcesLite = callSources.map(({ transcript, ...rest }) => ({ ...rest, transcript: "", status: "empty" as const }));
+    const snap: Record<string, unknown> = { v: 1, step, cloneMode, name, role, icon, model, autonomy, autonomyTier, dutyCycle, department, startDate, escalation, reviewCadence, apprenticeship, grantScope, grantTransport, caps, promotionCriteria, disclosurePolicy, reviewOwner, killSwitchOwner, overview, goals, permissions, connections, tools, budget, clone, onboarding, templateKey, evidence, stashPlan, stashRoutine, stashInstr, profileApplied, callSources: callSourcesLite, callPlaybook, cloneCallsOptOut };
     const s = JSON.stringify(snap);
     if (s === lastSavedRef.current) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
@@ -1459,7 +1845,7 @@ export function AgentWizard({
     }, 600);
     return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step, cloneMode, name, role, icon, model, autonomy, overview, goals, permissions, connections, tools, budget, clone, onboarding, templateKey, evidence, stashPlan, stashRoutine, stashInstr, profileApplied]);
+  }, [step, cloneMode, name, role, icon, model, autonomy, autonomyTier, dutyCycle, department, startDate, escalation, reviewCadence, apprenticeship, grantScope, grantTransport, caps, promotionCriteria, disclosurePolicy, reviewOwner, killSwitchOwner, overview, goals, permissions, connections, tools, budget, clone, onboarding, templateKey, evidence, stashPlan, stashRoutine, stashInstr, profileApplied, callSources, callPlaybook, cloneCallsOptOut]);
 
   // Explicitly discard the saved draft and reset the wizard to a clean slate.
   const discardDraft = () => {
@@ -1640,6 +2026,21 @@ export function AgentWizard({
     : name.trim();
   const deployRoleOk = cloneMode ? (clone.title?.trim() || role.trim()) : role.trim();
   const isValid = deployName !== "" && !!deployRoleOk;
+  // Step 1 (Identity) is complete when name + role + reports-to + duty cycle are set.
+  const step0Ready = !!name.trim()
+    && !!(cloneMode ? clone.name?.trim() : role.trim())
+    && !!(onboarding.reportsTo?.name?.trim() || onboarding.reportsTo?.email?.trim());
+
+  // Deploy gate (spec §6) — required before an agent can go to Shadow.
+  const deployBlockers: string[] = [];
+  if (!name.trim()) deployBlockers.push("Give the agent a name (Identity)");
+  if (!deployRoleOk) deployBlockers.push("Set a role (Identity)");
+  if (!(onboarding.reportsTo?.name?.trim() || onboarding.reportsTo?.email?.trim())) deployBlockers.push("Set who it reports to (Identity)");
+  if (!escalation.contact?.trim()) deployBlockers.push("Set an escalation contact (Trust & guardrails)");
+  if (dutyCycle !== "backstage" && !disclosurePolicy) deployBlockers.push("Choose a disclosure policy (Trust & guardrails)");
+  if (cloneMode && apprenticeship.consentStatus !== "approved") deployBlockers.push("Get mentor consent approved (Apprenticeship)");
+  if (cloneFromCalls && !callPlaybook?.approved) deployBlockers.push("Approve the call playbook (Apprenticeship)");
+  const canDeploy = isValid && deployBlockers.length === 0;
 
   const reset = () => {
     setStep(0);
@@ -1649,6 +2050,25 @@ export function AgentWizard({
     setIcon("bot");
     setModel(activeModel);
     setAutonomy(AUTONOMY_CHOICES[0]);
+    setAutonomyTier(1);
+    setDutyCycle("balanced");
+    setDepartment("");
+    setStartDate(nextMondayISO());
+    setEscalation({});
+    setReviewCadence("daily_2w_then_weekly");
+    setApprenticeship({ consentStatus: "not_sent", sources: { meetings: true, email: true, slackChannels: [], calendar: true, crmHistory: false, supportConvos: false }, exclusions: [], observationWeeks: 4, understandingPct: 0 });
+    setCallSources([]);
+    setCallPlaybook(null);
+    setCloneJobId(null);
+    setCloneCallsOptOut(false);
+    setGrantScope({});
+    setGrantTransport({});
+    setCaps(DEFAULT_CAPS);
+    setPromotionCriteria("");
+    setDisclosurePolicy("always");
+    setReviewOwner({});
+    setKillSwitchOwner({});
+    setShowT3Confirm(false);
     setOverview("");
     setGoals([]);
     setPermissions(PERMISSION_LABELS.map((label) => ({ label, allowed: label === "Read knowledge base" })));
@@ -1737,12 +2157,32 @@ export function AgentWizard({
       tools,
       collaborators: [],
       autonomy,
+      autonomyTier,
+      dutyCycle,
+      escalation: Object.values(escalation).some(Boolean) ? escalation : undefined,
+      reviewCadence,
+      department: department.trim() || undefined,
+      startDate: startDate || undefined,
+      identity: name.trim() ? (() => {
+        const dom = (company?.domain || "").replace(/^https?:\/\//, "").replace(/\/.*$/, "") || "company.com";
+        const local = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "agent";
+        return { email: `${local}-ai@${dom}`, slackHandle: `@${local}-ai`, zoomDisplayName: `${name.trim()} (After Human)`, reserved: true } as AgentIdentity;
+      })() : undefined,
       connections,
       permissions,
       budgetConfig: budget,
       goals: goals.length ? goals : undefined,
+      kpis: goals.length ? goals.map((g) => ({ name: g.objective, target: g.metric || "" })) : undefined,
+      disclosurePolicy: dutyCycle !== "backstage" ? disclosurePolicy : undefined,
+      promotionCriteria: promotionCriteria.trim() || undefined,
+      reviewOwner: (reviewOwner.name || reviewOwner.email) ? reviewOwner : onboarding.reportsTo,
+      killSwitchOwner: (killSwitchOwner.name || killSwitchOwner.email) ? killSwitchOwner : onboarding.reportsTo,
+      apprenticeship: cloneMode ? apprenticeship : undefined,
+      grants: connections.length ? connections.map((id) => ({ system: id, granted: true, scope: grantScope[id] || undefined, transport: grantTransport[id] ?? "api" as const })) : undefined,
+      runtimeCapabilities: caps,
       buildTrack: track,
       cloneSource: track === "clone" ? clone : undefined,
+      callPlaybook: cloneFromCalls && callPlaybook ? callPlaybook : undefined,
       onboarding: (onboarding.reportsTo || onboarding.meetings?.length || onboarding.access?.length) ? onboarding : undefined,
       evidence: track === "scratch" && evidence.length ? evidence : undefined,
       overview: finalOverview || undefined,
@@ -1756,7 +2196,18 @@ export function AgentWizard({
     lastSavedRef.current = "";
     void api.del("/api/agents/draft").catch(() => { /* ignore */ });
     setDraftStatus("idle");
-    if (resetOnSubmit) reset();
+    // Show the full-screen confirmation moment (spec §6) instead of a toast.
+    const dom = (company?.domain || "").replace(/^https?:\/\//, "").replace(/\/.*$/, "") || "company.com";
+    const local = finalName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "agent";
+    const firstMtg = onboarding.meetings?.[0];
+    setDeployed({
+      name: finalName || "Agent",
+      role: finalRole || "—",
+      email: `${local}-ai@${dom}`,
+      reportsTo: onboarding.reportsTo?.name || onboarding.reportsTo?.email,
+      channel: department.trim() ? `#${department.trim().toLowerCase()}-team` : "#team",
+      firstTask: firstMtg?.name ? `Observing: ${firstMtg.name}${firstMtg.cadence ? ` — ${firstMtg.cadence}` : ""}` : "Observing team activity in Shadow",
+    });
   };
 
   // ---- Start-from picker collapse state ----
@@ -1769,8 +2220,37 @@ export function AgentWizard({
   const startIcon = cloneMode ? "user-round" : (startTemplate?.icon ?? "rocket");
 
   // ============================================================
-  // RENDER — single unified flow. The AI interview is step 1 (default + open).
+  // RENDER
   // ============================================================
+  // Deploy confirmation — a full-screen moment, not a toast (spec §6).
+  if (deployed) {
+    return (
+      <div style={{ padding: "24px 8px", textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", gap: 14 }}>
+        <div style={{ width: 72, height: 72, borderRadius: "50%", display: "grid", placeItems: "center", background: "var(--grad-cyan-soft)", border: "1px solid var(--jv-border-cyan)" }}>
+          <Icon name={icon} size={34} color="var(--jv-cyan)" />
+        </div>
+        <div>
+          <div style={{ font: "var(--fw-bold) 20px var(--font-body)", color: "var(--jv-text)" }}>{deployed.name} has joined {deployed.channel}</div>
+          <div style={{ font: "var(--fw-regular) 12.5px/1.5 var(--font-body)", color: "var(--jv-text-muted)", marginTop: 4 }}>Deployed to Shadow — observing only. It can't send anything until {deployed.reportsTo || "its manager"} promotes it.</div>
+        </div>
+        <div style={{ width: "min(420px, 92%)", padding: "14px 16px", borderRadius: "var(--r-md)", background: "var(--jv-surface-2)", border: "1px solid var(--jv-border-soft)", textAlign: "left", display: "flex", flexDirection: "column", gap: 7 }}>
+          {[["user", deployed.name], ["briefcase", deployed.role], ["mail", deployed.email], ["shield-check", `Reports to ${deployed.reportsTo || "—"}`]].map(([ic, v]) => (
+            <div key={String(v)} style={{ display: "flex", alignItems: "center", gap: 9, font: "var(--fw-medium) 12.5px var(--font-body)", color: "var(--jv-text-soft)" }}>
+              <Icon name={ic} size={13} color="var(--jv-cyan)" />{v}
+            </div>
+          ))}
+          <div style={{ display: "flex", alignItems: "center", gap: 9, marginTop: 4, paddingTop: 8, borderTop: "1px solid var(--jv-hairline)", font: "var(--fw-medium) 12px var(--font-body)", color: "var(--jv-text-muted)" }}>
+            <Icon name="eye" size={13} color="var(--jv-amber)" />{deployed.firstTask}
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
+          <Button variant="primary" icon={<Icon name="arrow-right" size={14} />} onClick={() => { setDeployed(null); if (resetOnSubmit) reset(); onCancel?.(); }}>View agent</Button>
+          <Button variant="ghost" icon={<Icon name="plus" size={14} />} onClick={() => { setDeployed(null); reset(); }}>Create another</Button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div>
       {/* Progress header */}
@@ -1816,11 +2296,34 @@ export function AgentWizard({
         </div>
       </div>
 
-      {/* ================= STEP 1 · DEFINE WITH AI ================= */}
+      {/* Live draft summary — follows you through every step (spec Step 1 rail). */}
+      {(name.trim() || role.trim() || cloneMode) && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 16, padding: "8px 10px", borderRadius: "var(--r-md)", background: "var(--jv-surface-2)", border: "1px solid var(--jv-border-soft)" }}>
+          {[
+            name.trim() && ["user", name.trim()],
+            (cloneMode ? clone.title?.trim() : role.trim()) && ["briefcase", (cloneMode ? clone.title?.trim() : role.trim())],
+            department.trim() && ["building-2", department.trim()],
+            (onboarding.reportsTo?.name || onboarding.reportsTo?.email) && ["shield-check", `↳ ${onboarding.reportsTo?.name || onboarding.reportsTo?.email}`],
+            ["gauge", `T${autonomyTier} ${TRUST_TIERS.find((t) => t.tier === autonomyTier)?.name ?? ""}`],
+            ["activity", DUTY_CYCLES.find((d) => d.key === dutyCycle)?.name ?? ""],
+            goals.length > 0 && ["target", `${goals.length} KPI${goals.length === 1 ? "" : "s"}`],
+            cloneMode && ["graduation-cap", `consent ${apprenticeship.consentStatus}`],
+          ].filter(Boolean).map((c) => {
+            const [ic, label] = c as [string, string];
+            return (
+              <span key={label} style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "3px 9px", borderRadius: "var(--r-pill)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)", font: "var(--fw-medium) 10.5px var(--font-body)", color: "var(--jv-text-soft)" }}>
+                <Icon name={ic} size={11} color="var(--jv-cyan)" />{label}
+              </span>
+            );
+          })}
+        </div>
+      )}
+
+      {/* ================= STEP 1 · IDENTITY ================= */}
       {step === 0 && (
         <div>
           <p style={{ margin: "0 0 14px", font: "var(--fw-regular) 12.5px/1.55 var(--font-body)", color: "var(--jv-text-muted)" }}>
-            The AI researches {companyName || "your company"} and drafts a complete recommendation below — role, access checklist, manager, meetings and goals. Edit anything inline, or accept it as-is. Optionally start from a template or clone an existing employee to jump ahead.
+            This is where you bring a new unit onto the team. The AI researches {companyName || "your company"} and drafts the role below — mission, access, chain of command and goals — then walks you through onboarding, stage by stage, the way you'd onboard a person. Edit anything inline, or start from a template or clone an existing employee to jump ahead.
           </p>
 
           {/* Company context — slim strip when idle; expands to a form on Edit. */}
@@ -1909,14 +2412,110 @@ export function AgentWizard({
             </div>
           )}
 
-          {/* Who to clone — always shown while cloning (needed by the interview) */}
+          {/* Who to clone — the mentor whose work the agent mirrors (Company people) */}
           {cloneMode && (
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 14 }}>
-              <input value={clone.name ?? ""} onChange={(e) => setClonePatch({ name: e.target.value })} placeholder="Full name — e.g. Dana Rivera" style={inputStyle} />
-              <input value={clone.title ?? ""} onChange={(e) => { const v = e.target.value; setClonePatch({ title: v }); if (!role.trim()) setRole(v); }} placeholder="Title — e.g. Senior AE" style={inputStyle} />
-              <input value={clone.email ?? ""} onChange={(e) => setClonePatch({ email: e.target.value })} placeholder="Work email" style={inputStyle} />
+            <Field label="Clone which employee?" hint="Pick the mentor whose role, systems and style this agent mirrors. The interview then confirms what it inferred.">
+              <PersonPicker
+                people={people}
+                name={clone.name}
+                email={clone.email}
+                placeholder="Full name — e.g. Dana Rivera"
+                onChange={(v) => {
+                  const picked = people.find((p) => (v.email && p.email === v.email) || (v.name && p.name === v.name));
+                  setClonePatch({ name: v.name, email: v.email, title: picked?.title ?? clone.title });
+                  if (picked?.title && !role.trim()) setRole(picked.title);
+                  if (picked?.department && !department.trim()) setDepartment(picked.department);
+                }}
+              />
+            </Field>
+          )}
+
+          {/* AE/CS clone -> the Apprenticeship step becomes "clone from real calls". */}
+          {cloneMode && roleCategoryOf(cloneRoleText) !== "other" && (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, margin: "0 0 16px", padding: "10px 12px", borderRadius: "var(--r-sm)", background: "var(--grad-cyan-soft)", border: "1px solid var(--jv-border-cyan)" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <Icon name="phone-call" size={16} color="var(--jv-cyan)" />
+                <div>
+                  <div style={{ font: "var(--fw-semibold) 12.5px var(--font-body)", color: "var(--jv-cyan-100)" }}>
+                    {roleCategoryOf(cloneRoleText) === "ae" ? "Account Executive" : "Customer Success"} role detected
+                  </div>
+                  <div style={{ font: "var(--fw-regular) 10.5px var(--font-body)", color: "var(--jv-text-soft)", marginTop: 1 }}>
+                    The Apprenticeship step becomes “Clone from real calls” — paste 4+ call transcripts to learn the flow.
+                  </div>
+                </div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flex: "0 0 auto" }}>
+                <span style={{ font: "var(--fw-semibold) 9px var(--font-hud)", letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--jv-text-faint)" }}>Use calls</span>
+                <Switch checked={!cloneCallsOptOut} onChange={(v) => setCloneCallsOptOut(!v)} />
+              </div>
             </div>
           )}
+
+          {/* ---- Identity fields (spec Step 1) ---- */}
+          <Field label={cloneMode ? "Agent name" : "Name & role"} hint="Name this unit — its reserved accounts generate from this.">
+            <div style={{ display: "grid", gridTemplateColumns: cloneMode ? "1fr" : "1fr 1fr", gap: 12 }}>
+              <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Maya-2" style={inputStyle} />
+              {!cloneMode && <input value={role} onChange={(e) => setRole(e.target.value)} placeholder="Role — e.g. Customer Success Manager" style={inputStyle} />}
+            </div>
+          </Field>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+            <Field label="Department" hint="Which team this unit joins.">
+              <select value={department} onChange={(e) => setDepartment(e.target.value)} style={{ ...inputStyle, appearance: "none", cursor: "pointer" }}>
+                <option value="">Select…</option>
+                {DEPARTMENTS.map((d) => <option key={d} value={d}>{d}</option>)}
+              </select>
+            </Field>
+            <Field label="Start date" hint="First day. Defaults to next Monday.">
+              <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} style={inputStyle} />
+            </Field>
+          </div>
+
+          <Field label="Reports to" hint="The accountable human. Reviews work, approves promotions, owns the kill switch by default.">
+            <PersonPicker
+              people={people}
+              name={onboarding.reportsTo?.name}
+              email={onboarding.reportsTo?.email}
+              placeholder="Manager name"
+              onChange={(v) => setOnboarding((o) => ({ ...o, reportsTo: (v.name || v.email) ? { name: v.name, email: v.email } : undefined }))}
+            />
+          </Field>
+
+          <Field label="Duty cycle" hint="How present this teammate is. Front-stage gets a live computer + voice; backstage runs on API workers.">
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {DUTY_CYCLES.map((dc) => {
+                const on = dutyCycle === dc.key;
+                return (
+                  <button key={dc.key} type="button" onClick={() => setDutyCycle(dc.key)} style={{ textAlign: "left", padding: "11px 14px", borderRadius: "var(--r-md)", cursor: "pointer", background: on ? "var(--grad-cyan-soft)" : "var(--jv-surface-3)", border: `1px solid ${on ? "var(--jv-border-cyan)" : "var(--jv-border-soft)"}` }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 2 }}>
+                      <span style={{ font: "var(--fw-bold) 13px var(--font-body)", color: "var(--jv-text)" }}>{dc.name}</span>
+                      <span style={{ font: "var(--fw-semibold) 11px var(--font-mono)", color: on ? "var(--jv-cyan-300)" : "var(--jv-text-muted)" }}>{dc.cost}</span>
+                    </div>
+                    <div style={{ font: "var(--fw-regular) 12px/1.5 var(--font-body)", color: "var(--jv-text-soft)" }}>{dc.detail}</div>
+                  </button>
+                );
+              })}
+            </div>
+          </Field>
+
+          {name.trim() && (() => {
+            const dom = (company?.domain || "").replace(/^https?:\/\//, "").replace(/\/.*$/, "") || "company.com";
+            const local = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "agent";
+            const taken = people.some((p) => (p.email || "").toLowerCase() === `${local}-ai@${dom}`.toLowerCase());
+            return (
+              <Field label="Reserved identity" hint="Reserved now — the real Workspace / Slack / Zoom accounts are created only when you deploy.">
+                <div style={{ padding: "12px 14px", borderRadius: "var(--r-md)", background: "var(--jv-surface-2)", border: "1px solid var(--jv-border-soft)", display: "flex", flexDirection: "column", gap: 7 }}>
+                  {[["mail", `${local}-ai@${dom}`], ["message-square", `@${local}-ai`], ["video", `${name.trim()} (After Human)`]].map(([ic, val]) => (
+                    <div key={val} style={{ display: "flex", alignItems: "center", gap: 9, font: "var(--fw-medium) 12.5px var(--font-mono)", color: "var(--jv-text-soft)" }}>
+                      <Icon name={ic} size={13} color="var(--jv-cyan)" />{val}
+                    </div>
+                  ))}
+                  <span style={{ alignSelf: "flex-start", marginTop: 2, font: "var(--fw-semibold) 8.5px var(--font-hud)", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--jv-amber)", padding: "2px 7px", borderRadius: "var(--r-pill)", background: "color-mix(in srgb, var(--jv-amber) 12%, transparent)" }}>Reserved · created at deploy</span>
+                  {taken && <span style={{ font: "var(--fw-medium) 10.5px var(--font-body)", color: "var(--jv-amber)" }}>That email is already taken — tweak the name.</span>}
+                </div>
+              </Field>
+            );
+          })()}
 
           {/* The breathing interview — DEFAULT, always mounted/open */}
           <BreathingDiscovery
@@ -1933,11 +2532,11 @@ export function AgentWizard({
         </div>
       )}
 
-      {/* ================= STEP 2 · ACCESS & ONBOARDING ================= */}
-      {step === 1 && (
+      {/* ================= STEP 3 · ACCESS & GRANTS ================= */}
+      {step === 2 && (
         <div>
           <p style={{ margin: "0 0 16px", font: "var(--fw-regular) 12.5px/1.55 var(--font-body)", color: "var(--jv-text-muted)" }}>
-            Pre-filled from the interview — refine as needed. Connect the systems this agent should reach, then set who they report to, the access checklist and which meetings to join.
+            What this agent can touch. Grants are scoped to the agent's own identity — connect the systems it should reach, then set what it needs granted on day one. Financial systems require a separate finance requisition.
           </p>
 
           <Field label="Connections" hint="Systems this agent can reach. Live are wired now; pending are configured but not yet active.">
@@ -1969,49 +2568,72 @@ export function AgentWizard({
             )}
           </Field>
 
-          <div style={{ marginTop: 4 }}>
-            <OnboardingEditor onboarding={onboarding} setOnboarding={setOnboarding} />
-          </div>
-        </div>
-      )}
-
-      {/* ================= STEP 3 · EXAMPLES (optional grounding) ================= */}
-      {step === 2 && (
-        <div>
-          <div style={{ display: "flex", alignItems: "baseline", gap: 8, margin: "0 0 6px" }}>
-            <span style={{ font: "var(--fw-bold) 13px var(--font-body)", color: "var(--jv-text)" }}>
-              {cloneMode ? "What it learns from" : "Teach it by example"}
-            </span>
-            <span style={{ padding: "1px 8px", borderRadius: "var(--r-pill)", font: "var(--fw-semibold) 9px var(--font-hud)", letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--jv-text-muted)", border: "1px solid var(--jv-border-soft)" }}>Optional</span>
-          </div>
-
-          {cloneMode ? (
-            <>
-              <p style={{ margin: "0 0 14px", font: "var(--fw-regular) 12.5px/1.55 var(--font-body)", color: "var(--jv-text-muted)" }}>
-                A clone learns from the real person's data. Connect the tools below and the agent picks up how they run calls, write, and follow process — no manual examples needed. Manage connections on the Access step.
-              </p>
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {connections.length === 0 && (
-                  <div style={{ padding: "12px 14px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-2)", border: "1px solid var(--jv-border-soft)", font: "var(--fw-regular) 12px var(--font-body)", color: "var(--jv-text-faint)" }}>
-                    No sources connected yet — go back to the Access step and connect their calendar, email, notetaker, Slack or CRM.
-                  </div>
-                )}
+          {/* Grant scope + transport per selected system */}
+          {connections.length > 0 && (
+            <Field label="Grant scope & transport" hint="Scope each grant to the agent's own identity. API = direct integration; VM = runs through the agent's browser, every action logged.">
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                 {connections.map((id) => {
                   const c = catalog.find((x) => x.id === id);
-                  const teaches = LEARNS[id] ?? ASSET_ORDER.map((t) => ASSET_TYPES[t]).find((m) => m.connection === id)?.hint ?? "reference material";
+                  const transport = grantTransport[id] ?? "api";
                   return (
-                    <div key={id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 14px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-2)", border: "1px solid var(--jv-border-cyan)" }}>
-                      <Icon name="graduation-cap" size={16} color="var(--jv-cyan)" />
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ font: "var(--fw-semibold) 12.5px var(--font-body)", color: "var(--jv-text)" }}>{c?.label ?? id}</div>
-                        <div style={{ font: "var(--fw-regular) 11px var(--font-body)", color: "var(--jv-text-muted)" }}>Learns {teaches}</div>
-                      </div>
-                      <span style={{ font: "var(--fw-semibold) 9px var(--font-hud)", letterSpacing: "0.1em", textTransform: "uppercase", color: c?.live ? "var(--jv-green)" : "var(--jv-amber)" }}>{c?.live ? "Live" : "Pending"}</span>
+                    <div key={id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)" }}>
+                      <Icon name="key-round" size={14} color="var(--jv-cyan)" />
+                      <span style={{ flex: "0 0 120px", font: "var(--fw-semibold) 12px var(--font-body)", color: "var(--jv-text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c?.label ?? id}</span>
+                      <input value={grantScope[id] ?? ""} onChange={(e) => setGrantScope((m) => ({ ...m, [id]: e.target.value }))} placeholder="scope — e.g. own mailbox, #cs-team" style={{ ...inputStyle, height: 30, flex: 1 }} />
+                      <button onClick={() => setGrantTransport((m) => ({ ...m, [id]: transport === "api" ? "vm" : "api" }))} title="Toggle transport" style={{ padding: "3px 10px", borderRadius: "var(--r-pill)", cursor: "pointer", font: "var(--fw-semibold) 9px var(--font-hud)", letterSpacing: "0.08em", textTransform: "uppercase", color: transport === "api" ? "var(--jv-cyan-300)" : "var(--jv-amber)", background: "var(--jv-void)", border: `1px solid ${transport === "api" ? "var(--jv-border-cyan)" : "color-mix(in srgb, var(--jv-amber) 45%, transparent)"}` }}>{transport}</button>
                     </div>
                   );
                 })}
               </div>
-            </>
+            </Field>
+          )}
+
+          {/* Runtime capabilities */}
+          <Field label="Runtime capabilities" hint="What the agent's runtime can do. Defaults follow its duty cycle and department.">
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {CAP_LABELS.map((cap) => (
+                <div key={cap.key} style={{ display: "flex", alignItems: "center", gap: 12, padding: "9px 12px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)" }}>
+                  <Icon name="cpu" size={15} color={caps[cap.key] ? "var(--jv-cyan)" : "var(--jv-text-faint)"} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ font: "var(--fw-medium) 12.5px var(--font-body)", color: "var(--jv-text-soft)" }}>{cap.label}</div>
+                    <div style={{ font: "var(--fw-regular) 10.5px var(--font-body)", color: "var(--jv-text-faint)" }}>{cap.hint}</div>
+                  </div>
+                  <Switch checked={caps[cap.key]} onChange={() => setCaps((c) => ({ ...c, [cap.key]: !c[cap.key] }))} />
+                </div>
+              ))}
+            </div>
+          </Field>
+
+          <div style={{ display: "flex", alignItems: "center", gap: 7, padding: "9px 12px", borderRadius: "var(--r-sm)", background: "var(--jv-void)", border: "1px dashed var(--jv-border)", font: "var(--fw-regular) 11px var(--font-body)", color: "var(--jv-text-faint)" }}>
+            <Icon name="ban" size={13} /> Financial systems (Stripe, payments, payroll) require a separate finance requisition — never granted here.
+          </div>
+        </div>
+      )}
+
+      {/* ================= STEP 2 · APPRENTICESHIP / TEACH BY EXAMPLE ================= */}
+      {step === 1 && (
+        <div>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 8, margin: "0 0 6px" }}>
+            <span style={{ font: "var(--fw-bold) 13px var(--font-body)", color: "var(--jv-text)" }}>
+              {cloneFromCalls ? "Clone from real calls" : cloneMode ? "Apprenticeship" : "Teach it by example"}
+            </span>
+            {!cloneMode && <span style={{ padding: "1px 8px", borderRadius: "var(--r-pill)", font: "var(--fw-semibold) 9px var(--font-hud)", letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--jv-text-muted)", border: "1px solid var(--jv-border-soft)" }}>Optional</span>}
+          </div>
+
+          {cloneFromCalls ? (
+            <CloneFromCallsStep
+              sources={callSources}
+              onSources={setCallSources}
+              playbook={callPlaybook}
+              onPlaybook={setCallPlaybook}
+              jobId={cloneJobId}
+              onJobId={setCloneJobId}
+              agentName={clone.name?.trim() || name.trim()}
+              role={cloneRoleText}
+              mentorName={clone.name?.trim() || ""}
+            />
+          ) : cloneMode ? (
+            <ApprenticeshipEditor apprenticeship={apprenticeship} setApprenticeship={setApprenticeship} mentorName={clone.name?.trim() || ""} />
           ) : (
             <>
               <p style={{ margin: "0 0 14px", font: "var(--fw-regular) 12.5px/1.55 var(--font-body)", color: "var(--jv-text-muted)" }}>
@@ -2057,31 +2679,115 @@ export function AgentWizard({
         </div>
       )}
 
-      {/* ================= STEP 4 · GUARDRAILS & BUDGET ================= */}
+      {/* ================= STEP 4 · TRUST & GUARDRAILS ================= */}
       {step === 3 && (
         <div>
           <p style={{ margin: "0 0 16px", font: "var(--fw-regular) 12.5px/1.55 var(--font-body)", color: "var(--jv-text-muted)" }}>
             Set the operating guardrails. Sensible defaults are applied — grant only the permissions this agent needs and cap what it may spend.
           </p>
 
-          <Field label="Permissions" hint="What this agent is allowed to do. Denied by default — grant only what it needs.">
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {permissions.map((p) => (
-                <div key={p.label} style={{ display: "flex", alignItems: "center", gap: 12, padding: "9px 12px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)" }}>
-                  <Icon name="shield-check" size={15} color={p.allowed ? "var(--jv-green)" : "var(--jv-text-faint)"} />
-                  <span style={{ flex: 1, font: "var(--fw-medium) 12.5px var(--font-body)", color: "var(--jv-text-soft)" }}>{p.label}</span>
-                  <span style={{ font: "var(--fw-semibold) 9px var(--font-hud)", letterSpacing: "0.1em", textTransform: "uppercase", color: p.allowed ? "var(--jv-green)" : "var(--jv-text-faint)" }}>{p.allowed ? "Allowed" : "Denied"}</span>
-                  <Switch checked={p.allowed} onChange={() => togglePermission(p.label)} />
-                </div>
-              ))}
+          {/* Trust tier — the primary control. Permissions DERIVE from it; you
+              promote an agent up the tiers the way a hire earns autonomy. */}
+          <Field label="Trust tier" hint="How much this agent may do on its own. It earns higher tiers through review — start in Shadow.">
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {TRUST_TIERS.map((t) => {
+                const on = autonomyTier === t.tier;
+                return (
+                  <button key={t.tier} type="button" onClick={() => { if (t.tier === 3 && autonomyTier !== 3) setShowT3Confirm(true); else applyTier(t.tier); }} style={{ textAlign: "left", padding: "12px 14px", borderRadius: "var(--r-md)", cursor: "pointer", background: on ? "var(--grad-cyan-soft)" : "var(--jv-surface-3)", border: `1px solid ${on ? "var(--jv-border-cyan)" : "var(--jv-border-soft)"}` }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3, flexWrap: "wrap" }}>
+                      <span style={{ font: "var(--fw-semibold) 9px var(--font-hud)", letterSpacing: "0.1em", color: on ? "var(--jv-cyan-300)" : "var(--jv-text-muted)" }}>T{t.tier}</span>
+                      <span style={{ font: "var(--fw-bold) 13.5px var(--font-body)", color: "var(--jv-text)" }}>{t.name}</span>
+                      <span style={{ font: "var(--fw-medium) 12px var(--font-body)", color: "var(--jv-text-muted)" }}>— {t.tagline}</span>
+                    </div>
+                    <div style={{ font: "var(--fw-regular) 12px/1.5 var(--font-body)", color: "var(--jv-text-soft)" }}>{t.detail}</div>
+                  </button>
+                );
+              })}
+            </div>
+            {autonomyTier === 3 && (
+              <div style={{ marginTop: 8, display: "flex", gap: 7, alignItems: "flex-start", padding: "9px 12px", borderRadius: "var(--r-sm)", background: "color-mix(in srgb, var(--jv-amber) 12%, transparent)", border: "1px solid color-mix(in srgb, var(--jv-amber) 30%, transparent)", font: "var(--fw-medium) 11.5px/1.5 var(--font-body)", color: "var(--jv-amber)" }}>
+                <Icon name="alert-triangle" size={13} /><span>Autonomous at creation is unusual — agents normally earn it through Shadow → Supervised review cycles. Irreversible actions still verify first.</span>
+              </div>
+            )}
+          </Field>
+
+          <Field label="Permissions" hint="Derived from the trust tier above. Edit only if you need a custom set.">
+            <button type="button" onClick={() => setAdvancedPerms((v) => !v)} style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 10px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)", color: "var(--jv-text-soft)", font: "var(--fw-medium) 11.5px var(--font-body)", cursor: "pointer" }}>
+              <Icon name={advancedPerms ? "chevron-down" : "chevron-right"} size={13} /> Advanced: edit derived permissions
+              <span style={{ font: "var(--fw-semibold) 9px var(--font-hud)", letterSpacing: "0.1em", color: "var(--jv-text-muted)" }}>({permissions.filter((p) => p.allowed).length} allowed)</span>
+            </button>
+            {advancedPerms && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 10 }}>
+                {permissions.map((p) => (
+                  <div key={p.label} style={{ display: "flex", alignItems: "center", gap: 12, padding: "9px 12px", borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-soft)" }}>
+                    <Icon name="shield-check" size={15} color={p.allowed ? "var(--jv-green)" : "var(--jv-text-faint)"} />
+                    <span style={{ flex: 1, font: "var(--fw-medium) 12.5px var(--font-body)", color: "var(--jv-text-soft)" }}>{p.label}</span>
+                    <span style={{ font: "var(--fw-semibold) 9px var(--font-hud)", letterSpacing: "0.1em", textTransform: "uppercase", color: p.allowed ? "var(--jv-green)" : "var(--jv-text-faint)" }}>{p.allowed ? "Allowed" : "Denied"}</span>
+                    <Switch checked={p.allowed} onChange={() => togglePermission(p.label)} />
+                  </div>
+                ))}
+              </div>
+            )}
+          </Field>
+
+          <Field label="Promotion criteria" hint="What earns a promotion out of Shadow — the bar its manager checks before granting more autonomy.">
+            <input value={promotionCriteria} onChange={(e) => setPromotionCriteria(e.target.value)} placeholder="e.g. 20 approved drafts with <2 corrections" style={inputStyle} />
+          </Field>
+
+          <Field label="Review cadence" hint="How often its manager reviews the work — close at first, lighter as it earns trust.">
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {REVIEW_CADENCES.map((rc) => {
+                const on = reviewCadence === rc.key;
+                return (
+                  <button key={rc.key} type="button" onClick={() => setReviewCadence(rc.key)} style={{ textAlign: "left", padding: "10px 14px", borderRadius: "var(--r-md)", cursor: "pointer", background: on ? "var(--grad-cyan-soft)" : "var(--jv-surface-3)", border: `1px solid ${on ? "var(--jv-border-cyan)" : "var(--jv-border-soft)"}` }}>
+                    <div style={{ font: "var(--fw-bold) 12.5px var(--font-body)", color: "var(--jv-text)" }}>{rc.name}</div>
+                    <div style={{ font: "var(--fw-regular) 11.5px/1.45 var(--font-body)", color: "var(--jv-text-soft)" }}>{rc.detail}</div>
+                  </button>
+                );
+              })}
             </div>
           </Field>
+
+          <EscalationEditor escalation={escalation} setEscalation={setEscalation} />
+
+          {dutyCycle !== "backstage" && (
+            <Field label="Disclosure policy" hint="Required for an agent that takes calls — how it tells people it's an AI.">
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {DISCLOSURE_OPTIONS.map((d) => {
+                  const on = disclosurePolicy === d.key;
+                  return (
+                    <button key={d.key} type="button" onClick={() => setDisclosurePolicy(d.key)} style={{ textAlign: "left", padding: "10px 14px", borderRadius: "var(--r-md)", cursor: "pointer", background: on ? "var(--grad-cyan-soft)" : "var(--jv-surface-3)", border: `1px solid ${on ? "var(--jv-border-cyan)" : "var(--jv-border-soft)"}` }}>
+                      <div style={{ font: "var(--fw-bold) 12.5px var(--font-body)", color: "var(--jv-text)" }}>{d.label}</div>
+                      <div style={{ font: "var(--fw-regular) 11.5px/1.45 var(--font-body)", color: "var(--jv-text-soft)" }}>{d.detail}</div>
+                    </button>
+                  );
+                })}
+              </div>
+            </Field>
+          )}
+
+          {showT3Confirm && (
+            <div onClick={() => setShowT3Confirm(false)} style={{ position: "fixed", inset: 0, background: "color-mix(in srgb, var(--jv-void) 72%, transparent)", display: "grid", placeItems: "center", zIndex: 60 }}>
+              <div onClick={(e) => e.stopPropagation()} style={{ width: "min(440px, 92vw)", padding: 20, borderRadius: "var(--r-md)", background: "var(--jv-surface-2)", border: "1px solid color-mix(in srgb, var(--jv-amber) 45%, transparent)" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                  <Icon name="alert-triangle" size={18} color="var(--jv-amber)" />
+                  <span style={{ font: "var(--fw-bold) 15px var(--font-body)", color: "var(--jv-text)" }}>Autonomous at creation?</span>
+                </div>
+                <p style={{ margin: "0 0 16px", font: "var(--fw-regular) 12.5px/1.6 var(--font-body)", color: "var(--jv-text-muted)" }}>
+                  T3 at start is unusual — agents normally earn autonomy through T1→T2 review cycles. It requires org-admin sign-off and is logged. Irreversible actions still verify first.
+                </p>
+                <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+                  <Button variant="ghost" size="sm" onClick={() => setShowT3Confirm(false)}>Cancel</Button>
+                  <Button variant="primary" size="sm" icon={<Icon name="shield-check" size={13} />} onClick={() => { applyTier(3); setShowT3Confirm(false); }}>Confirm T3</Button>
+                </div>
+              </div>
+            </div>
+          )}
 
           <Field label="Budget & authority" hint="Hard limits on what this agent may spend and do.">
             <BudgetForm budget={budget} setBudget={setBudget} />
           </Field>
 
-          {/* Operational settings — model + autonomy (defaults applied, edit if needed) */}
           <Field label="Reasoning model" hint="Defaults to your active AI Core provider. Comes from the providers you connected.">
             {models.length ? (
               <select value={model} onChange={(e) => setModel(e.target.value)} style={{ ...inputStyle, appearance: "none", cursor: "pointer", maxWidth: 360 }}>
@@ -2096,28 +2802,53 @@ export function AgentWizard({
               </div>
             )}
           </Field>
+        </div>
+      )}
 
-          <Field label="Autonomy" hint="How much this agent may do on its own. Defaults to Ask before acting.">
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              {AUTONOMY_CHOICES.map((a) => (
-                <Chip key={a} active={autonomy === a} onClick={() => setAutonomy(a)}>{a}</Chip>
-              ))}
-            </div>
+      {/* ================= STEP 5 · PERFORMANCE CONTRACT ================= */}
+      {step === 4 && (
+        <div>
+          <p style={{ margin: "0 0 16px", font: "var(--fw-regular) 12.5px/1.55 var(--font-body)", color: "var(--jv-text-muted)" }}>
+            The performance contract — what success looks like and how often its manager reviews it. Deploy never waits on this; it gates promotion out of Shadow.
+          </p>
+
+          <Field label="KPIs" hint="What this agent is measured on. Start from the role presets, then tune the targets.">
+            {KPI_PRESETS[templateKey] && (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+                {KPI_PRESETS[templateKey].map((k) => {
+                  const present = goals.some((g) => g.objective === k.name);
+                  return (
+                    <button key={k.name} disabled={present} onClick={() => setGoals((prev) => [...prev, { objective: k.name, metric: k.target }])} style={{ padding: "5px 10px", borderRadius: "var(--r-pill)", cursor: present ? "default" : "pointer", opacity: present ? 0.45 : 1, font: "var(--fw-medium) 11px var(--font-body)", color: "var(--jv-cyan-300)", background: "var(--grad-cyan-soft)", border: "1px solid var(--jv-border-cyan)" }}>+ {k.name} {k.target}</button>
+                  );
+                })}
+              </div>
+            )}
+            <GoalsEditor goals={goals} setGoals={setGoals} />
+            {goals.length === 0 && (
+              <div style={{ marginTop: 8, font: "var(--fw-regular) 11px var(--font-body)", color: "var(--jv-amber)" }}>No KPIs means no promotion criteria — this agent stays in Shadow. (You can still deploy.)</div>
+            )}
+          </Field>
+
+          <MeetingsEditor onboarding={onboarding} setOnboarding={setOnboarding} />
+
+          <Field label="Review owner" hint="Who reviews the work and signs off on promotions. Defaults to the manager it reports to.">
+            <PersonPicker
+              people={people}
+              name={reviewOwner.name ?? onboarding.reportsTo?.name}
+              email={reviewOwner.email ?? onboarding.reportsTo?.email}
+              placeholder="Review owner name"
+              onChange={(v) => setReviewOwner({ name: v.name, email: v.email })}
+            />
           </Field>
         </div>
       )}
 
-      {/* ================= STEP 5 · REVIEW & DEPLOY ================= */}
-      {step === 4 && (
+      {/* ================= STEP 6 · REVIEW & DEPLOY TO SHADOW ================= */}
+      {step === 5 && (
         <div>
-          {!cloneMode && (
-            <Field label="Agent name" hint="Give this teammate a name — required before you can deploy.">
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-                <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Finance Agent" style={inputStyle} />
-                <input value={role} onChange={(e) => setRole(e.target.value)} placeholder="Role — e.g. Tracks spend & budgets" style={inputStyle} />
-              </div>
-            </Field>
-          )}
+          <p style={{ margin: "0 0 16px", font: "var(--fw-regular) 12.5px/1.55 var(--font-body)", color: "var(--jv-text-muted)" }}>
+            Review the full picture, then deploy into Shadow. {deployName || "This agent"} starts observing — it can't send anything until {onboarding.reportsTo?.name || "its manager"} promotes it.
+          </p>
 
           <Field label="Review & deploy">
             <div style={{ padding: "14px 16px", borderRadius: "var(--r-md)", background: "var(--jv-surface-2)", border: "1px solid var(--jv-border-cyan)" }}>
@@ -2135,14 +2866,23 @@ export function AgentWizard({
                   ? ["Cloning", clone.name?.trim() ? `${clone.name.trim()}${clone.email?.trim() ? ` · ${clone.email.trim()}` : ""}` : "—"]
                   : ["Template", ROLE_TEMPLATES.find((t) => t.key === templateKey)?.label ?? "—"],
                 ["Overview", overview.trim() ? overview.trim() : "—"],
-                ["Connected systems", `${liveCount} live · ${pendingCount} pending`],
                 ["Reports to", onboarding.reportsTo?.name || onboarding.reportsTo?.email || "—"],
+                ["Escalates to", escalation.contact || "—"],
+                ["Rules of engagement", `${Object.entries(escalation).filter(([k2, v2]) => k2 !== "contact" && v2).length} trigger(s)`],
+                ["Connected systems", `${liveCount} live · ${pendingCount} pending`],
                 ["Access checklist", onboarding.access?.length ? `${onboarding.access.length} item${onboarding.access.length === 1 ? "" : "s"}` : "—"],
                 ["Meetings to join", onboarding.meetings?.length ? String(onboarding.meetings.length) : "—"],
                 ["Readiness", cloneMode ? "—" : `${readiness}% · ${groundedCount}/${behaviorCount || 0} behaviors grounded`],
-                ["Goals", goals.length ? goals.map((g) => g.objective).join("; ") : "—"],
+                ["Trust tier", `T${autonomyTier} · ${TRUST_TIERS.find((t) => t.tier === autonomyTier)?.name ?? ""}`],
+                ["Mission", goals.length ? goals.map((g) => g.objective).join("; ") : "—"],
+                ["Review cadence", REVIEW_CADENCES.find((r) => r.key === reviewCadence)?.name ?? "—"],
+                ["Duty cycle", DUTY_CYCLES.find((d) => d.key === dutyCycle)?.name ?? "—"],
+                ...(dutyCycle !== "backstage" ? [["Disclosure", DISCLOSURE_OPTIONS.find((d) => d.key === disclosurePolicy)?.label ?? "—"]] : []),
+                ...(cloneMode ? [["Apprenticeship", `Consent ${apprenticeship.consentStatus} · understanding ${apprenticeship.understandingPct}%`]] : []),
+                ["Review owner", reviewOwner.name || reviewOwner.email || onboarding.reportsTo?.name || onboarding.reportsTo?.email || "—"],
+                ["Kill switch", killSwitchOwner.name || killSwitchOwner.email || onboarding.reportsTo?.name || onboarding.reportsTo?.email || "—"],
                 ["Granted permissions", `${grantedCount} of ${permissions.length}`],
-                ["Budget", budget.monthlyCap != null ? `${budget.currency} ${budget.monthlyCap}/mo${budget.allowPayments ? " · payments on" : ""}` : "No cap set"],
+                ["Budget", budget.monthlyCap != null ? `${budget.currency} ${budget.monthlyCap}/mo` : "No cap set"],
               ].map(([k, v]) => (
                 <div key={k} style={{ display: "flex", gap: 12, padding: "6px 0", borderTop: "1px solid var(--jv-hairline)" }}>
                   <span style={{ flex: "0 0 150px", font: "var(--fw-semibold) 10px var(--font-hud)", letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--jv-text-muted)" }}>{k}</span>
@@ -2150,11 +2890,26 @@ export function AgentWizard({
                 </div>
               ))}
             </div>
-            {!isValid && (
-              <div style={{ font: "var(--fw-regular) 11px var(--font-body)", color: "var(--jv-amber)", marginTop: 8 }}>
-                {cloneMode ? "Add the employee's name to deploy." : "Add a name and role to deploy."}
+            {deployBlockers.length > 0 && (
+              <div style={{ marginTop: 10, padding: "10px 12px", borderRadius: "var(--r-sm)", background: "color-mix(in srgb, var(--jv-amber) 10%, transparent)", border: "1px solid color-mix(in srgb, var(--jv-amber) 30%, transparent)" }}>
+                <div style={{ font: "var(--fw-semibold) 9px var(--font-hud)", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--jv-amber)", marginBottom: 6 }}>Before you can deploy</div>
+                {deployBlockers.map((b) => (
+                  <div key={b} style={{ display: "flex", alignItems: "center", gap: 7, font: "var(--fw-regular) 11.5px var(--font-body)", color: "var(--jv-amber)", padding: "2px 0" }}>
+                    <Icon name="alert-circle" size={12} /> {b}
+                  </div>
+                ))}
               </div>
             )}
+          </Field>
+
+          <Field label="Kill switch owner" hint="Can suspend the agent and revoke all its access instantly. Defaults to the manager it reports to.">
+            <PersonPicker
+              people={people}
+              name={killSwitchOwner.name ?? onboarding.reportsTo?.name}
+              email={killSwitchOwner.email ?? onboarding.reportsTo?.email}
+              placeholder="Kill switch owner name"
+              onChange={(v) => setKillSwitchOwner({ name: v.name, email: v.email })}
+            />
           </Field>
         </div>
       )}
@@ -2172,17 +2927,16 @@ export function AgentWizard({
         </div>
         <div style={{ display: "flex", gap: 10 }}>
           {step === 0 ? (
-            // The interview drives step 1 via its own "Build from this" / "Skip"
-            // controls; expose a plain Continue too for when it's already applied.
-            <Button variant="secondary" iconRight={<Icon name="chevron-right" size={14} />} onClick={skipInterview}>
-              {profileApplied ? "Continue" : "Skip interview"}
+            // Step 1 gate (spec): name + role + reports-to required before advancing.
+            <Button variant="primary" iconRight={<Icon name="chevron-right" size={14} />} disabled={!step0Ready} onClick={skipInterview}>
+              Continue
             </Button>
           ) : step < stepTitles.length - 1 ? (
             <Button variant="primary" iconRight={<Icon name="chevron-right" size={14} />} onClick={() => setStep((s) => s + 1)}>
               Next
             </Button>
           ) : (
-            <Button variant="primary" icon={<Icon name="rocket" size={14} />} disabled={!isValid} onClick={submit}>
+            <Button variant="primary" icon={<Icon name="rocket" size={14} />} disabled={!canDeploy} onClick={submit}>
               {submitLabel}
             </Button>
           )}

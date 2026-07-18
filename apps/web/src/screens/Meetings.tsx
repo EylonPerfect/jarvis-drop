@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { Panel, Button, Input, Icon, Badge, EmptyState, IconButton, ConfirmDialog } from "../ds";
 import { useApi } from "../api/hooks";
 import { api } from "../api/client";
-import type { Meeting } from "@jarvis/shared";
+import type { Meeting, Agent } from "@jarvis/shared";
 
 // Loosely map a meeting's backend status string onto a DS Badge Tone.
 type Tone = "optimal" | "info" | "warn" | "critical" | "standby" | "neutral" | "live";
@@ -37,10 +37,13 @@ const fmtWhen = (iso: string) => {
 // Send-a-bot form
 // ---------------------------------------------------------------------------
 function SendBotForm({ onSent }: { onSent: (m: Meeting) => void }) {
+  const { data: agentData } = useApi<Agent[]>("/api/agents");
+  const agents = agentData ?? [];
   const [meetingUrl, setMeetingUrl] = useState("");
   const [botName, setBotName] = useState("");
   const [topic, setTopic] = useState("");
-  const [mode, setMode] = useState<"record" | "present">("present");
+  const [agentId, setAgentId] = useState("");
+  const [mode, setMode] = useState<"record" | "present" | "live">("live");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -50,18 +53,23 @@ function SendBotForm({ onSent }: { onSent: (m: Meeting) => void }) {
     setSending(true);
     setError(null);
     const name = botName.trim();
+    const presenter = agents.find((a) => a.id === agentId);
     try {
-      if (mode === "present") {
-        const r = await api.post<{ botId?: string }>("/api/meetings/present", { meetingUrl: url, topic: topic.trim() || undefined, botName: name || undefined });
+      if (mode === "live") {
+        const r = await api.post<{ botId?: string }>("/api/meetings/live", { meetingUrl: url, botName: name || presenter?.name || undefined, agentId: agentId || undefined });
+        setMeetingUrl("");
+        onSent({ id: r.botId || "", meetingUrl: url, botName: name || presenter?.name || "Live agent", agentId: agentId || undefined, status: "presenting", createdAt: new Date().toISOString() });
+      } else if (mode === "present") {
+        const r = await api.post<{ botId?: string }>("/api/meetings/present", { meetingUrl: url, topic: topic.trim() || undefined, botName: name || presenter?.name || undefined, agentId: agentId || undefined });
         setMeetingUrl(""); setTopic("");
-        onSent({ id: r.botId || "", meetingUrl: url, botName: name || "After Human AI", status: "presenting", createdAt: new Date().toISOString() });
+        onSent({ id: r.botId || "", meetingUrl: url, botName: name || presenter?.name || "After Human AI", agentId: agentId || undefined, status: "presenting", createdAt: new Date().toISOString() });
       } else {
-        const m = await api.post<Meeting>("/api/meetings/join", { meetingUrl: url, botName: name || undefined });
+        const m = await api.post<Meeting>("/api/meetings/join", { meetingUrl: url, botName: name || undefined, agentId: agentId || undefined });
         setMeetingUrl(""); setBotName("");
         onSent(m);
       }
     } catch {
-      setError(mode === "present" ? "Couldn't start the presentation. Check the link and try again." : "Couldn't send the bot. Check the meeting link and try again.");
+      setError(mode === "record" ? "Couldn't send the bot. Check the meeting link and try again." : "Couldn't start the agent. Check the link and try again.");
     } finally {
       setSending(false);
     }
@@ -73,9 +81,9 @@ function SendBotForm({ onSent }: { onSent: (m: Meeting) => void }) {
       brackets
       bodyStyle={{ display: "flex", flexDirection: "column", gap: 12 }}
     >
-      {/* Mode: Present (bot speaks + shares the product) vs Record (join + transcribe) */}
+      {/* Mode: Live agent (real-time voice) · Present (scripted narration) · Record */}
       <div style={{ display: "flex", gap: 4, padding: 3, borderRadius: "var(--r-pill)", background: "var(--jv-void)", border: "1px solid var(--jv-border-soft)", alignSelf: "flex-start" }}>
-        {([["present", "presentation", "Present live demo"], ["record", "captions", "Just record"]] as const).map(([m, ic, label]) => {
+        {([["live", "mic", "Live agent"], ["present", "presentation", "Scripted demo"], ["record", "captions", "Just record"]] as const).map(([m, ic, label]) => {
           const on = mode === m;
           return (
             <button key={m} onClick={() => setMode(m)} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 12px", borderRadius: "var(--r-pill)", cursor: "pointer", border: "none", background: on ? "var(--grad-cyan)" : "transparent", color: on ? "var(--accent-contrast)" : "var(--jv-text-muted)", font: `${on ? "var(--fw-semibold)" : "var(--fw-medium)"} 11px var(--font-hud)`, letterSpacing: "0.06em", textTransform: "uppercase" }}>
@@ -85,10 +93,32 @@ function SendBotForm({ onSent }: { onSent: (m: Meeting) => void }) {
         })}
       </div>
       <p style={{ margin: 0, font: "var(--fw-regular) 13px/1.6 var(--font-body)", color: "var(--jv-text-soft)" }}>
-        {mode === "present"
-          ? "The AI joins the call, shares the live product on screen, and narrates a demo in your voice. Paste a Zoom / Meet / Teams link."
+        {mode === "live"
+          ? "A real-time voice agent joins the call, shares the product on screen, and holds a natural, interruptible conversation — talk over it and it stops to listen. Paste a Zoom / Meet / Teams link."
+          : mode === "present"
+          ? "An agent joins the call, shares the live product on screen, and narrates a scripted demo driven by its own instructions. Paste a Zoom / Meet / Teams link."
           : "Send an AI bot into a live call to record + transcribe it. Paste a Zoom / Meet / Teams link."}
       </p>
+      {/* Which agent runs the call — its role/instructions drive the conversation */}
+      <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        <span style={{ font: "var(--fw-semibold) 10px var(--font-hud)", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--jv-text-muted)" }}>
+          {mode === "record" ? "Speak as" : "Run as"} agent
+        </span>
+        <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
+          <span style={{ position: "absolute", left: 12, pointerEvents: "none", color: "var(--jv-cyan)" }}><Icon name="bot" size={15} /></span>
+          <select
+            value={agentId}
+            onChange={(e) => setAgentId(e.target.value)}
+            style={{ width: "100%", appearance: "none", padding: "10px 34px 10px 36px", borderRadius: "var(--r-sm)", background: "var(--jv-void)", border: "1px solid var(--jv-border-soft)", color: agentId ? "var(--jv-text)" : "var(--jv-text-muted)", font: "var(--fw-medium) 13px var(--font-body)", cursor: "pointer" }}
+          >
+            <option value="">Company presenter (generic — GoPerfect)</option>
+            {agents.map((a) => (
+              <option key={a.id} value={a.id}>{a.name}{a.role ? ` — ${a.role}` : ""}</option>
+            ))}
+          </select>
+          <span style={{ position: "absolute", right: 12, pointerEvents: "none", color: "var(--jv-text-muted)" }}><Icon name="chevron-down" size={15} /></span>
+        </div>
+      </label>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 220px", gap: 12 }}>
         <Input
           icon={<Icon name="link" size={15} />}
@@ -119,11 +149,11 @@ function SendBotForm({ onSent }: { onSent: (m: Meeting) => void }) {
         <Button
           size="md"
           variant="primary"
-          icon={<Icon name={sending ? "loader" : mode === "present" ? "presentation" : "video"} size={14} />}
+          icon={<Icon name={sending ? "loader" : mode === "live" ? "mic" : mode === "present" ? "presentation" : "video"} size={14} />}
           disabled={sending || meetingUrl.trim().length === 0}
           onClick={send}
         >
-          {sending ? (mode === "present" ? "Starting…" : "Sending…") : mode === "present" ? "Send AI presenter" : "Send bot"}
+          {sending ? (mode === "record" ? "Sending…" : "Starting…") : mode === "live" ? "Send live agent" : mode === "present" ? "Send AI presenter" : "Send bot"}
         </Button>
       </div>
       {error && (

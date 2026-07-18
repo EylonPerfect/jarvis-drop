@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { api, getAccessKey } from "../api/client";
+import ReportCallModal from "../components/ReportCallModal";
 import "../pds.css";
 
 // ============================================================
@@ -181,6 +182,7 @@ export default function RehearsalRoom() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [agentId, setAgentId] = useState("");
   const [call, setCall] = useState<LiveCallInfo | null>(null);
+  const [reportOpen, setReportOpen] = useState(false);
   const [statusLoaded, setStatusLoaded] = useState(false);
   const [joining, setJoining] = useState(false);
   const [joinErr, setJoinErr] = useState<string | null>(null);
@@ -260,11 +262,13 @@ export default function RehearsalRoom() {
   // ---- rehearsal turn-review: per-turn approve/coach grades (backend intact) ----
   // keyed `${turnSeq}|${part}` → the verdict written to /api/rehearsal/grade
   const [grades, setGrades] = useState<Record<string, { verdict: "approve" | "coach"; coachRef?: string }>>({});
+  const [continuedSeq, setContinuedSeq] = useState<number | null>(null); // turn just advanced via Continue -> collapse it + show a "waiting" status
   const [turnCoachOpen, setTurnCoachOpen] = useState<string | null>(null);
   const [turnCoachText, setTurnCoachText] = useState("");
   const stepmodeSessionRef = useRef<string | null>(null);
 
   const feedRef = useRef<HTMLDivElement | null>(null);
+  const stickBottomRef = useRef(true); // chat-style: stay pinned to newest turn unless the operator scrolls up
   const spokenRef = useRef<number | null>(null);
   const hearRef = useRef(true);
   const audioQ = useRef<HTMLAudioElement[]>([]);
@@ -339,9 +343,16 @@ export default function RehearsalRoom() {
   // ---- session status ----
   async function refreshStatus() {
     const r = await api.get<{ call: LiveCallInfo | null }>("/api/live/status").catch(() => null);
-    if (r) setCall(r.call);
+    // Scope the live call to the clone whose space is open. /api/live/status is
+    // GLOBAL, so a call belonging to a DIFFERENT clone would otherwise surface here
+    // and (via liveInit) hijack agentId + the stage — "open Hadar, get Elie". Read
+    // pds_agent live so the 3s poll closure can never go stale.
+    const mine = (() => { try { return localStorage.getItem("pds_agent"); } catch { return null; } })();
+    const c = r?.call ?? null;
+    const scoped = (c && c.agent_id && mine && c.agent_id !== mine) ? null : c;
+    if (r) setCall(scoped);
     setStatusLoaded(true);
-    return r?.call ?? null;
+    return scoped;
   }
   useEffect(() => { void refreshStatus(); }, []);
 
@@ -671,6 +682,14 @@ export default function RehearsalRoom() {
     if (ending) return;
     const wasZoom = isZoom;
     setEnding(true);
+    // silence = approval: settle every un-coached turn before we close out.
+    if (!isZoom) {
+      for (const t of rehearsalTurns) {
+        if (t.turnSeq <= 0) continue;
+        if (t.speech && !grades[`${t.turnSeq}|speech`]) await gradePart(t.turnSeq, "speech", "approve");
+        if (t.screen && !grades[`${t.turnSeq}|screen`]) await gradePart(t.turnSeq, "screen", "approve");
+      }
+    }
     stopVoice();
     try { await api.post("/api/live/end"); } catch { /* ignore */ }
     setEvents([]); setPending([]); spokenRef.current = null; setFix(null);
@@ -909,6 +928,15 @@ export default function RehearsalRoom() {
   async function sendGuest(text: string) {
     const clean = text.trim();
     if (!clean || !bound) return;
+    // silence = approval: moving on settles the clone's current turn to approved
+    // right away (unless you coached it).
+    if (!isZoom) {
+      const cur = rehearsalTurns[rehearsalTurns.length - 1];
+      if (cur && cur.turnSeq > 0) {
+        if (cur.speech && !grades[`${cur.turnSeq}|speech`]) void gradePart(cur.turnSeq, "speech", "approve");
+        if (cur.screen && !grades[`${cur.turnSeq}|screen`]) void gradePart(cur.turnSeq, "screen", "approve");
+      }
+    }
     setInput("");
     setPending((p) => [...p, clean]);
     try { await api.post("/api/live/nudge", { kind: "guest", text: clean }); } catch { /* shows on next poll if it landed */ }
@@ -1248,9 +1276,9 @@ export default function RehearsalRoom() {
   useEffect(() => {
     const el = feedRef.current;
     if (!el) return;
-    // auto-scroll to the newest reply ONLY if you're already near the bottom —
-    // don't yank you away while you've scrolled up to review an earlier turn
-    if (el.scrollHeight - el.scrollTop - el.clientHeight < 140) el.scrollTop = el.scrollHeight;
+    // chat-style: stay pinned to the newest turn (including first load) unless the
+    // operator has scrolled up to review history (tracked by stickBottomRef).
+    if (stickBottomRef.current) requestAnimationFrame(() => { const e2 = feedRef.current; if (e2) e2.scrollTop = e2.scrollHeight; });
   }, [items.length]);
 
   const lastTool = useMemo(() => {
@@ -1451,6 +1479,14 @@ export default function RehearsalRoom() {
     // which duplicated the "Reply N" label AND made their grade keys (`${turnSeq}|part`) clash.
     return turns.map((t, i) => ({ ...t, turnSeq: i + 1 }));
   }, [events, stages]);
+  // chat-style: pin the rehearsal feed to the newest turn as turns arrive (unless
+  // the operator scrolled up). rehearsalTurns is declared just above, so this lives
+  // here rather than with the items-feed effect (which runs earlier in the body).
+  useEffect(() => {
+    const el = feedRef.current;
+    if (!el || isZoom) return;
+    if (stickBottomRef.current) requestAnimationFrame(() => { const e2 = feedRef.current; if (e2) e2.scrollTop = e2.scrollHeight; });
+  }, [rehearsalTurns.length]); // eslint-disable-line react-hooks/exhaustive-deps
   const rehTotal = Math.max(stages.length, rehearsalTurns.length, 1);
   const rehCurrentIdx = rehearsalTurns.length - 1;
   const rehProg = `Reply ${Math.min(Math.max(rehearsalTurns.length, 1), rehTotal)} of ${rehTotal}`;
@@ -1520,15 +1556,29 @@ export default function RehearsalRoom() {
     if (!callId || !live || isZoom) { setGrades({}); return; }
     void refreshGrades(callId);
   }, [call?.id, live, isZoom]); // eslint-disable-line react-hooks/exhaustive-deps
-  // turn gating: put the bridge in step-and-wait mode once the rehearsal review
-  // is active (once per session); best-effort "off" on leaving/teardown.
+  // Guest moved on to a new turn -> the clone's earlier reply was good enough:
+  // auto-approve any still-ungraded parts of every turn BEFORE the current one.
+  // Parts you coached already carry a verdict, so they are skipped (never overridden).
+  useEffect(() => {
+    if (!bound || !live || isZoom) return;
+    setContinuedSeq(null); // a new turn arrived -> clear the post-Continue "waiting" state
+    const cur = rehearsalTurns.length - 1;
+    rehearsalTurns.forEach((t, i) => {
+      if (i >= cur || t.turnSeq <= 0) return;
+      if (t.speech && !grades[`${t.turnSeq}|speech`]) void gradePart(t.turnSeq, "speech", "approve");
+      if (t.screen && !grades[`${t.turnSeq}|screen`]) void gradePart(t.turnSeq, "screen", "approve");
+    });
+  }, [rehearsalTurns.length, bound, live, isZoom]); // eslint-disable-line react-hooks/exhaustive-deps
+  // AUTO-REPLY: Elie responds the moment the guest speaks (no per-turn gate);
+  // review/coach happen after the fact. Assert "off" on bind so a stale step-mode
+  // (e.g. from an older build) can't re-gate this session; teardown clears it too.
   useEffect(() => {
     if (!(bound && live) || isZoom) return;
     const callId = call?.id ?? null;
     if (!callId) return;
     if (stepmodeSessionRef.current !== callId) {
       stepmodeSessionRef.current = callId;
-      void api.post("/api/live/nudge", { kind: "stepmode", text: "on" }).catch(() => { /* review still renders */ });
+      void api.post("/api/live/nudge", { kind: "stepmode", text: "off" }).catch(() => { /* default is auto-reply anyway */ });
     }
     return () => { void api.post("/api/live/nudge", { kind: "stepmode", text: "off" }).catch(() => { /* teardown best-effort */ }); };
   }, [bound, live, isZoom, call?.id]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -1540,6 +1590,9 @@ export default function RehearsalRoom() {
         @keyframes rrBlink { 0%,100%{opacity:.25} 50%{opacity:1} }
         @keyframes rrSpin { to { transform: rotate(360deg) } }
         @media (prefers-reduced-motion: reduce){ .rr-dot{animation:none} .rr-typing span{animation:none} .rr-spin{animation:none} }
+        .rr-press{ transition: transform .08s ease, filter .08s ease; }
+        .rr-press:active{ transform: scale(.94); filter: brightness(.9); }
+        @media (prefers-reduced-motion: reduce){ .rr-press{transition:none} .rr-press:active{transform:none} }
       `}</style>
 
       {/* ---------- top bar ---------- */}
@@ -1641,6 +1694,11 @@ export default function RehearsalRoom() {
         <button onClick={() => setHear((h) => { if (h) stopVoice(); return !h; })} title={hear ? `Hearing ${firstName} out loud — click to silence` : `${firstName} is silent — click to hear the lines out loud`} style={{ width: 36, height: 36, borderRadius: "50%", border: hear ? "1.5px solid var(--purple)" : "1px solid var(--border)", background: "transparent", color: hear ? "var(--purple-ink)" : "var(--ink2)", display: "grid", placeItems: "center", ...btnFont }}>
           <span className="material-symbols-rounded" style={{ fontSize: 18 }}>{hear ? "volume_up" : "volume_off"}</span>
         </button>
+        {isZoom && call && (
+          <button onClick={() => setReportOpen(true)} title="Something went wrong on this call? Flag it for the team." style={{ height: 38, padding: "0 14px", borderRadius: 9999, fontSize: 12.5, fontWeight: 700, border: "1px solid var(--border)", background: "transparent", color: "var(--ink1)", display: "inline-flex", alignItems: "center", gap: 6, ...btnFont }}>
+            <span className="material-symbols-rounded" style={{ fontSize: 17, color: "var(--warning-ink)" }}>flag</span>Report this call
+          </button>
+        )}
         {bound && (
           <button onClick={endRehearsal} disabled={ending} style={{ height: 38, padding: "0 16px", borderRadius: 9999, fontSize: 12.5, fontWeight: 700, border: "none", background: "var(--accent)", color: "#fff", boxShadow: "0 8px 24px rgba(255,6,96,.3)", opacity: ending ? 0.6 : 1, ...btnFont }}>
             {ending ? "Ending…" : isZoom ? "End call" : "End rehearsal"}
@@ -1648,15 +1706,17 @@ export default function RehearsalRoom() {
         )}
       </header>
 
-      {/* ---------- page title (mode toggle now lives in the header row) ---------- */}
-      {statusLoaded && (
-        <div style={{ flexShrink: 0, padding: "14px 18px 0" }}>
-          <div className="page-h" style={{ padding: "0 0 10px" }}>
-            <h1 style={{ fontSize: 26, fontWeight: 800, letterSpacing: "-.02em" }}>Calibration Room</h1>
-            <p style={{ margin: "6px 0 0", fontSize: 14, color: "var(--ink2)" }}>Rehearse with voice and the real screen, then run the call.</p>
-          </div>
-        </div>
+      {reportOpen && call && (
+        <ReportCallModal
+          callId={call.id}
+          agentId={call.agent_id ?? agentId}
+          context={`Live call${agent ? ` — ${agent.name}` : ""}`}
+          onClose={() => setReportOpen(false)}
+        />
       )}
+
+
+      {/* page title removed — the header row already names the clone + context; reclaims vertical space */}
 
       {/* ---------- one-click teach: demonstrated steps → beat actions ---------- */}
       {teachSteps !== null && (
@@ -2059,7 +2119,7 @@ export default function RehearsalRoom() {
           stage shows a quiet loading state (below) and the composer is inert
           until `bound`, so it reads as "I'm in the room, the screen's coming up". */}
       {((bound && live) || rehearsalWarming) && (
-        <div style={{ flex: 1, minHeight: 0, display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,0.82fr)", gridTemplateRows: "minmax(0, 1fr)" }}>
+        <div style={{ flex: 1, minHeight: 0, display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,0.82fr)", gridTemplateRows: "minmax(0, 1fr) auto" }}>
           {/* conversation rail */}
           <section style={{ display: "flex", flexDirection: "column", borderRight: "1px solid var(--divider)", minHeight: 0 }}>
             <div className={`ctxbar ${isZoom ? "live" : "rehearse"}`} style={{ margin: "10px 12px 4px", flexWrap: "wrap" }}>
@@ -2087,11 +2147,11 @@ export default function RehearsalRoom() {
                 </>
               )}
             </div>
-            <div ref={feedRef} className="pds-scroll" style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "6px 16px 12px", display: "flex", flexDirection: "column", gap: 10 }}>
+            <div ref={feedRef} className="pds-scroll rr-feed" onScroll={(e) => { const el = e.currentTarget; stickBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 140; }} style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "6px 16px 12px", display: "flex", flexDirection: "column", gap: 10 }}>
               {/* REHEARSAL: turn-by-turn approve / coach cards. Zoom keeps the transcript feed (below, isZoom branch). */}
               {!isZoom && rehCurrentIdx > 1 && (
                 <button
-                  onClick={() => { const next = !showAllTurns; setShowAllTurns(next); if (next) requestAnimationFrame(() => feedRef.current?.scrollTo({ top: 0, behavior: "smooth" })); }}
+                  onClick={() => { const next = !showAllTurns; setShowAllTurns(next); requestAnimationFrame(() => { const el = feedRef.current; if (!el) return; if (next) el.scrollTo({ top: 0, behavior: "smooth" }); else { stickBottomRef.current = true; el.scrollTop = el.scrollHeight; } }); }}
                   title={showAllTurns ? "Hide the earlier replies" : "Show the earlier replies"}
                   style={{ position: "sticky", top: 0, zIndex: 3, alignSelf: "center", display: "inline-flex", alignItems: "center", gap: 5, height: 26, padding: "0 12px", borderRadius: 9999, border: "1px solid var(--border)", background: "var(--card)", color: "var(--ink2)", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", boxShadow: "var(--shadow)" }}>
                   <span className="material-symbols-rounded" style={{ fontSize: 14 }}>{showAllTurns ? "expand_less" : "expand_more"}</span>
@@ -2109,8 +2169,8 @@ export default function RehearsalRoom() {
                   rehearsalTurns.map((t, i) => {
                     const sp = grades[`${t.turnSeq}|speech`];
                     const sc = grades[`${t.turnSeq}|screen`];
-                    const isCurrent = i === rehCurrentIdx;
-                    if (!showAllTurns && i < rehCurrentIdx - 1) return null; // older turns hidden until the chip expands them
+                    const isCurrent = i === rehCurrentIdx && continuedSeq !== t.turnSeq;
+                    if (!showAllTurns && i < rehCurrentIdx - 1) return null; // collapsed by the "N earlier replies" chip; expand to see + scroll all
                     if (!isCurrent) {
                       const coached = sp?.verdict === "coach" || sc?.verdict === "coach";
                       return (
@@ -2146,11 +2206,13 @@ export default function RehearsalRoom() {
                                 <span className="lbl">What he says</span>
                                 <span className="spacer" />
                                 <div className="acts">
-                                  <button className={`mini-btn approve${sp?.verdict === "approve" ? " done" : ""}`} onClick={() => void gradePart(t.turnSeq, "speech", "approve")}>
-                                    <span className="material-symbols-rounded" style={{ fontSize: 15 }}>check</span>{sp?.verdict === "approve" ? "Approved" : "Approve"}
-                                  </button>
+                                  {sp?.verdict === "approve" && (
+                                    <span className="mini-btn approve done" style={{ pointerEvents: "none" }}>
+                                      <span className="material-symbols-rounded" style={{ fontSize: 15 }}>check</span>Approved
+                                    </span>
+                                  )}
                                   <button className={`mini-btn coach${sp?.verdict === "coach" ? " done" : ""}`} onClick={() => toggleTurnCoach(speechKey)}>
-                                    <span className="material-symbols-rounded" style={{ fontSize: 15 }}>edit</span>Coach
+                                    <span className="material-symbols-rounded" style={{ fontSize: 15 }}>edit</span>{sp?.verdict === "coach" ? "Coached" : "Coach"}
                                   </button>
                                 </div>
                               </div>
@@ -2170,11 +2232,13 @@ export default function RehearsalRoom() {
                                 <span className="lbl">What he shows</span>
                                 <span className="spacer" />
                                 <div className="acts">
-                                  <button className={`mini-btn approve${sc?.verdict === "approve" ? " done" : ""}`} onClick={() => void gradePart(t.turnSeq, "screen", "approve")}>
-                                    <span className="material-symbols-rounded" style={{ fontSize: 15 }}>check</span>{sc?.verdict === "approve" ? "Approved" : "Approve"}
-                                  </button>
+                                  {sc?.verdict === "approve" && (
+                                    <span className="mini-btn approve done" style={{ pointerEvents: "none" }}>
+                                      <span className="material-symbols-rounded" style={{ fontSize: 15 }}>check</span>Approved
+                                    </span>
+                                  )}
                                   <button className={`mini-btn coach${sc?.verdict === "coach" ? " done" : ""}`} onClick={() => toggleTurnCoach(screenKey)}>
-                                    <span className="material-symbols-rounded" style={{ fontSize: 15 }}>edit</span>Coach
+                                    <span className="material-symbols-rounded" style={{ fontSize: 15 }}>edit</span>{sc?.verdict === "coach" ? "Coached" : "Coach"}
                                   </button>
                                 </div>
                               </div>
@@ -2196,24 +2260,34 @@ export default function RehearsalRoom() {
                             </div>
                           )}
                           {!t.speech && !t.screen && (
-                            <div style={{ fontSize: 12.5, color: "var(--ink3)", padding: "10px 0" }}>Waiting for {firstName} to reply…</div>
+                            <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 5, padding: "6px 0 2px" }}>
+                              <div className="rr-typing" style={{ borderRadius: 14, padding: "11px 13px", background: "var(--purple-soft)", display: "inline-flex", gap: 3 }}>
+                                {[0, 1, 2].map((i) => <span key={i} style={{ width: 5, height: 5, borderRadius: "50%", background: "var(--ink3)", animation: `rrBlink 1s infinite`, animationDelay: `${i * 0.18}s` }} />)}
+                              </div>
+                              <span style={{ fontSize: 11, color: "var(--ink3)", fontWeight: 600 }}>{firstName} is replying…</span>
+                            </div>
                           )}
                         </div>
-                        <div className="tfoot">
-                          <div className="status">
-                            {t.speech && <span>Speech <b style={{ color: sp ? "var(--success-ink)" : "var(--ink3)" }}>{stStatus(sp)}</b></span>}
-                            {t.screen && <span>Screen <b style={{ color: sc ? "var(--success-ink)" : "var(--ink3)" }}>{stStatus(sc)}</b></span>}
-                          </div>
-                          <div className="spacer" />
-                          <button onClick={() => void approveTurnBoth(t)} style={{ ...ghostBtn, height: 34, padding: "0 14px", fontSize: 12.5 }}>Approve both</button>
-                          <button onClick={() => void advanceTurn(t)} style={{ height: 34, padding: "0 16px", borderRadius: 9999, border: "none", background: "var(--success)", color: "#04231a", fontSize: 12.5, display: "inline-flex", alignItems: "center", gap: 6, ...btnFont, fontWeight: 700 }}>
-                            Continue<span className="material-symbols-rounded" style={{ fontSize: 15 }}>arrow_forward</span>
-                          </button>
+                        {(t.speech || t.screen) && (
+                        <div className="tfoot" style={{ justifyContent: "flex-start", gap: 7 }}>
+                          <span className="material-symbols-rounded" style={{ fontSize: 15, color: "var(--ink3)", flexShrink: 0 }}>keyboard_return</span>
+                          <span style={{ fontSize: 11.5, color: "var(--ink3)", fontWeight: 600, lineHeight: 1.45 }}>
+                            Reply as the guest to keep going — {firstName}'s turn is approved automatically. Or <b style={{ color: "var(--purple-ink)" }}>Coach</b> a line to fix it.
+                          </span>
                         </div>
+                        )}
                       </div>
                     );
                   })
                 )
+              )}
+              {!isZoom && continuedSeq !== null && rehearsalTurns.length > 0 && rehearsalTurns[rehearsalTurns.length - 1].turnSeq === continuedSeq && (
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 5, padding: "6px 2px 2px" }}>
+                  <div className="rr-typing" style={{ borderRadius: 14, padding: "11px 13px", background: "var(--purple-soft)", display: "inline-flex", gap: 3 }}>
+                    {[0, 1, 2].map((i) => <span key={i} style={{ width: 5, height: 5, borderRadius: "50%", background: "var(--ink3)", animation: `rrBlink 1s infinite`, animationDelay: `${i * 0.18}s` }} />)}
+                  </div>
+                  <span style={{ fontSize: 11, color: "var(--ink3)", fontWeight: 600 }}>Continued ✓ — waiting for {firstName}’s next move, or say your next line as the guest.</span>
+                </div>
               )}
               {isZoom && (<>
               {items.length === 0 && (
@@ -2328,9 +2402,6 @@ export default function RehearsalRoom() {
                 </div>
               )}
               <div style={{ display: "flex", gap: 8 }}>
-                <button onClick={() => openStep("")} title="Insert a prescriptive step into the beat sheet" style={{ height: 42, padding: "0 13px", borderRadius: 9999, border: "1px dashed var(--purple)", background: "transparent", color: "var(--purple-ink)", fontSize: 11.5, fontWeight: 800, display: "inline-flex", alignItems: "center", gap: 4, flexShrink: 0, ...btnFont }}>
-                  <span className="material-symbols-rounded" style={{ fontSize: 15 }}>add</span>Step
-                </button>
                 <input
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
@@ -2354,21 +2425,20 @@ export default function RehearsalRoom() {
             <div style={{ display: "flex", alignItems: "center", gap: 10, position: "sticky", top: -16, zIndex: 10, background: "var(--bg)", paddingTop: 16, marginTop: -16, paddingBottom: 8, marginBottom: -8 }}>
               {bound ? (
                 <>
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 8, height: 30, padding: "0 14px", borderRadius: 9999, background: controlling ? "rgba(0,187,255,.15)" : "rgba(255,6,96,.14)", color: controlling ? "var(--decor)" : "var(--accent)", fontSize: 11.5, fontWeight: 800 }}>
+                  <div style={{ display: "inline-flex", alignItems: "center", gap: 8, height: 30, paddingLeft: 12, paddingRight: 5, borderRadius: 9999, background: controlling ? "rgba(0,187,255,.15)" : "rgba(255,6,96,.14)", color: controlling ? "var(--decor)" : "var(--accent)", fontSize: 11.5, fontWeight: 800 }}>
                     <span className="rr-dot" style={{ width: 8, height: 8, borderRadius: "50%", background: controlling ? "var(--decor)" : "var(--accent)", animation: "rrPulse 1.6s ease-in-out infinite" }} />
-                    {controlling ? "YOU are driving — show him how it's done" : `${firstName} is driving`}
-                  </span>
-                  <button onClick={() => void (controlling ? handBack() : takeControl())} title={controlling ? "Give the screen back and turn what you showed into a fix" : isZoom ? "Freeze him and drive the screen yourself — the prospect SEES everything you do" : "Freeze him and drive the screen yourself — click inside the stream"} style={{ ...ghostBtn, height: 30, display: "inline-flex", alignItems: "center", gap: 6, borderColor: controlling ? "var(--decor)" : "var(--border)", color: controlling ? "var(--decor)" : "var(--ink1)" }}>
-                    <span className="material-symbols-rounded" style={{ fontSize: 15 }}>{controlling ? "keyboard_return" : "back_hand"}</span>
-                    {controlling ? "Hand back + teach" : "Take control"}
-                  </button>
+                    {controlling ? "You're driving" : `${firstName} is driving`}
+                    <button onClick={() => void (controlling ? handBack() : takeControl())} title={controlling ? "Give the screen back and turn what you showed into a fix" : isZoom ? "Freeze him and drive the screen yourself — the prospect SEES everything you do" : "Freeze him and drive the screen yourself — click inside the stream"} style={{ display: "inline-flex", alignItems: "center", gap: 5, height: 22, padding: "0 11px", borderRadius: 9999, border: "none", background: controlling ? "var(--decor)" : "var(--card)", color: controlling ? "#04231a" : "var(--ink1)", fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit", boxShadow: controlling ? "none" : "var(--shadow)" }}>
+                      <span className="material-symbols-rounded" style={{ fontSize: 14 }}>{controlling ? "keyboard_return" : "back_hand"}</span>
+                      {controlling ? "Hand back & teach" : "Take control"}
+                    </button>
+                  </div>
                   {stages.length > 0 && (currentBeat !== null || coverage.length > 0) && (
                     <span style={{ display: "inline-flex", alignItems: "center", gap: 6, height: 30, padding: "0 12px", borderRadius: 9999, background: "var(--purple-soft)", color: "var(--purple-ink)", fontSize: 11.5, fontWeight: 800 }}>
-                      {currentBeat !== null ? `beat ${Math.min(currentBeat, stages.length)}/${stages.length} · ${(stages[Math.min(currentBeat, stages.length) - 1]?.name ?? "").replace(/^[\d:—\-.\s]+/, "").slice(0, 22)}` : `flow`}
-                      {coverage.length > 0 && <span style={{ opacity: 0.75 }}>· {coverage.filter((b) => b.state === "covered").length} covered</span>}
+                      {currentBeat !== null ? `Beat ${Math.min(currentBeat, stages.length)}/${stages.length} · ${(stages[Math.min(currentBeat, stages.length) - 1]?.name ?? "").replace(/^[\d:—\-.\s]+/, "").slice(0, 34)}` : `flow`}
                     </span>
                   )}
-                  <span style={{ fontSize: 12, color: "var(--ink2)", fontWeight: 600 }}>{lastTool ?? "waiting for the first move"}</span>
+                  {lastTool && <span style={{ fontSize: 12, color: "var(--ink3)", fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 260 }} title={lastTool}><span style={{ fontWeight: 800, color: "var(--ink2)" }}>Now</span> · {lastTool}</span>}
                 </>
               ) : (
                 <span style={{ display: "inline-flex", alignItems: "center", gap: 8, height: 30, padding: "0 14px", borderRadius: 9999, background: "var(--purple-soft)", color: "var(--purple-ink)", fontSize: 11.5, fontWeight: 800 }}>
@@ -2381,11 +2451,6 @@ export default function RehearsalRoom() {
               )}
             </div>
 
-            {!isZoom && (
-              <div className="th" style={{ marginBottom: 10 }}>
-                Beat: {currentBeat !== null && stages[Math.min(currentBeat, stages.length) - 1] ? cleanBeat(stages[Math.min(currentBeat, stages.length) - 1].name) : "warming up"}
-              </div>
-            )}
             <div className="browser" style={{ boxShadow: "var(--shadow)", flexShrink: 0 }}>
               <div className="bar">
                 {[0, 1, 2].map((i) => <span key={i} className="d" />)}
@@ -2431,8 +2496,9 @@ export default function RehearsalRoom() {
               <span className="mut" style={{ marginLeft: "auto", fontSize: 12 }}>{firstName}, real voice</span>
             </div>
 
+          </section>
             {/* script beat strip */}
-            <div style={{ background: "var(--card)", borderRadius: 18, boxShadow: "var(--shadow)", padding: "14px 16px" }}>
+            <div style={{ gridColumn: "1 / -1", background: "var(--card)", borderRadius: 18, boxShadow: "var(--shadow)", padding: "14px 16px", marginTop: 10 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
                 <span style={{ fontSize: 12.5, fontWeight: 800 }}>Script</span>
                 <span style={{ fontSize: 10.5, fontWeight: 700, color: "var(--ink3)" }}>
@@ -2474,7 +2540,6 @@ export default function RehearsalRoom() {
                 </div>
               )}
             </div>
-          </section>
         </div>
       )}
 

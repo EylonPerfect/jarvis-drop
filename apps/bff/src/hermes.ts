@@ -290,7 +290,8 @@ export async function diagnose(): Promise<Record<string, unknown>> {
   // The chat actually prefers an operator-configured provider (AI Core). Report
   // whether one is active and whether it passes an end-to-end test — this is
   // usually the real reason a reply falls back.
-  const active = await getActiveProvider();
+  // Diagnostic probe of the default (legacy) org's provider.
+  const active = await getActiveProvider(config.legacyOrgId);
   out.activeProvider = active ? { name: active.name, model: active.model, baseUrl: active.base_url } : null;
   if (active) out.probe_provider = await testConnection(active);
 

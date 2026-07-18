@@ -1,0 +1,88 @@
+/* ============================================================
+   After Human — PUBLIC MARKETING SITE styles.
+   Fully scoped: every rule is namespaced under .ah-public,
+   @font-face uses a private family ("AHGilroy") only referenced
+   inside .ah-public, and every keyframe is ahp-prefixed. This
+   file is safe to bundle globally — it cannot restyle any
+   product/operator screen. Do not add product selectors here.
+   ============================================================ */
+
+/* Gilroy — private family so it can never collide with the
+   product's own "Gilroy" @font-face in pds.css. Only used inside
+   .ah-public, so the browser never downloads it for product views. */
+@font-face { font-family: "AHGilroy"; font-weight: 300; src: url("/fonts/Gilroy-Light.otf") format("opentype"); font-display: swap; }
+@font-face { font-family: "AHGilroy"; font-weight: 400; src: url("/fonts/Gilroy-Regular.otf") format("opentype"); font-display: swap; }
+@font-face { font-family: "AHGilroy"; font-weight: 500; src: url("/fonts/Gilroy-Medium.otf") format("opentype"); font-display: swap; }
+@font-face { font-family: "AHGilroy"; font-weight: 600; src: url("/fonts/Gilroy-Semibold.otf") format("opentype"); font-display: swap; }
+@font-face { font-family: "AHGilroy"; font-weight: 700; src: url("/fonts/Gilroy-Bold.otf") format("opentype"); font-display: swap; }
+@font-face { font-family: "AHGilroy"; font-weight: 800; src: url("/fonts/Gilroy-Extrabold.otf") format("opentype"); font-display: swap; }
+
+/* Design tokens — light default, dark override. Brand colors stay
+   constant across themes (blue/purple/pink/decor); only surfaces/
+   ink/borders adapt. Public site defaults to dark (set on wrapper). */
+.ah-public {
+  --bg:#FFFEFE; --panel:#F5F5F7; --card:#FFFFFF;
+  --ink1:#000040; --ink2:rgba(0,0,64,.6); --ink3:rgba(0,0,64,.34);
+  --border:rgba(0,0,64,.12); --divider:rgba(1,10,20,.06);
+  --nav-bg:rgba(255,255,255,.7); --nav-border:rgba(255,255,255,.7);
+  font-family:"AHGilroy", system-ui, -apple-system, sans-serif;
+  color:var(--ink1); background:var(--bg);
+  -webkit-font-smoothing:antialiased;
+}
+.ah-public[data-theme="dark"] {
+  --bg:#04042A; --panel:#0B0B33; --card:#101046;
+  --ink1:#FFFFFF; --ink2:rgba(255,255,255,.66); --ink3:rgba(255,255,255,.42);
+  --border:rgba(255,255,255,.12); --divider:rgba(255,255,255,.08);
+  --nav-bg:rgba(16,16,60,.72); --nav-border:rgba(255,255,255,.1);
+}
+.ah-public, .ah-public *, .ah-public *::before, .ah-public *::after { box-sizing:border-box; }
+.ah-public a { text-decoration:none; color:inherit; }
+.ah-public button { font-family:inherit; }
+.ah-public input { font-family:inherit; }
+.ah-public input::placeholder { color:var(--ink3); }
+.ah-public ::selection { background:#FF0660; color:#fff; }
+.ah-public .material-symbols-rounded {
+  font-family:"Material Symbols Rounded";
+  font-weight:normal; font-style:normal; line-height:1;
+  letter-spacing:normal; text-transform:none; display:inline-block;
+  white-space:nowrap; word-wrap:normal; direction:ltr;
+  font-variation-settings:'opsz' 24,'wght' 400,'FILL' 0,'GRAD' 0;
+}
+
+.ahp-scroll::-webkit-scrollbar { width:10px; }
+.ahp-scroll::-webkit-scrollbar-thumb { background:#dcdce2; border-radius:20px; border:3px solid transparent; background-clip:content-box; }
+
+@keyframes ahpFloatA { 0%,100% { transform: translate(0,0); } 50% { transform: translate(28px,20px); } }
+@keyframes ahpFloatB { 0%,100% { transform: translate(0,0); } 50% { transform: translate(-24px,26px); } }
+@keyframes ahpFloatC { 0%,100% { transform: translate(0,0); } 50% { transform: translate(22px,-22px); } }
+@keyframes ahpCard { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-9px); } }
+@keyframes ahpDot { 0%,100% { opacity: 1; } 50% { opacity: .25; } }
+@keyframes ahpRise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes ahpRing { 0%,100% { box-shadow: 0 0 0 0 rgba(46,211,125,.55); } 50% { box-shadow: 0 0 0 9px rgba(46,211,125,0); } }
+@keyframes ahpSpin { to { transform: rotate(360deg); } }
+@keyframes ahpWave { 0%,100% { transform: scaleY(.35); } 50% { transform: scaleY(1); } }
+@keyframes ahpScreenScroll { 0%,8% { transform: translateY(0); } 46%,54% { transform: translateY(-142px); } 92%,100% { transform: translateY(0); } }
+@keyframes ahpCursorMove {
+  0%   { transform: translate(38px, 30px); }
+  12%  { transform: translate(150px, 60px); }
+  22%  { transform: translate(150px, 60px); }
+  40%  { transform: translate(96px, 128px); }
+  55%  { transform: translate(210px, 150px); }
+  70%  { transform: translate(120px, 96px); }
+  85%  { transform: translate(60px, 44px); }
+  100% { transform: translate(38px, 30px); }
+}
+@keyframes ahpCursorClick { 0%,90%,100% { transform: scale(1); } 20%,24% { transform: scale(.7); } }
+@keyframes ahpBlob { 0%,100% { transform: translate(0,0); } 50% { transform: translate(24px,20px); } }
+
+@media (max-width: 900px) {
+  .ahp-hero-grid { grid-template-columns: 1fr !important; }
+  .ahp-feat-grid { grid-template-columns: 1fr !important; }
+  .ahp-tier-grid { grid-template-columns: 1fr !important; }
+  .ahp-inc-grid  { grid-template-columns: 1fr 1fr !important; }
+  .ahp-auth-brand { display: none !important; }
+  .ahp-auth-grid  { grid-template-columns: 1fr !important; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ah-public *, .ah-public *::before, .ah-public *::after { animation: none !important; }
+}

@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { query } from "../db/pool.js";
+import { orgId } from "../lib/auth.js";
 import type { Artifact, ArtifactKPI, ArtifactSection, AgentGoal } from "@jarvis/shared";
 
 // ============================================================
@@ -146,9 +147,10 @@ function categorize(role: string): Template {
 }
 
 export default async function artifactsRoutes(app: FastifyInstance) {
-  app.get("/api/artifacts", async (): Promise<Artifact[]> => {
+  app.get("/api/artifacts", async (req): Promise<Artifact[]> => {
     const rows = await query<{ id: string; name: string; role: string; icon: string; goals: unknown }>(
-      `SELECT id, name, role, icon, goals FROM agents ORDER BY sort, created_at`,
+      `SELECT id, name, role, icon, goals FROM agents WHERE org_id = $1 ORDER BY sort, created_at`,
+      [orgId(req)],
     );
     return rows.map((a) => {
       const t = categorize(a.role);

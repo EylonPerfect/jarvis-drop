@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { query, one } from "../db/pool.js";
+import { orgId } from "../lib/auth.js";
 
 // Real file store for evidence screenshots / uploaded docs. Bytes live in
 // Postgres (persist across restarts via the db volume) and are served back by
@@ -28,14 +29,14 @@ export default async function filesRoutes(app: FastifyInstance) {
     if (buf.length > MAX_BYTES) return reply.code(413).send({ error: `file too large (max ${MAX_BYTES} bytes)` });
     const id = `file_${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`;
     const filename = (b?.filename ?? "upload").slice(0, 200);
-    await query(`INSERT INTO files (id, filename, mime, size, data) VALUES ($1,$2,$3,$4,$5)`, [id, filename, mime, buf.length, buf]);
+    await query(`INSERT INTO files (id, filename, mime, size, data, org_id) VALUES ($1,$2,$3,$4,$5,$6)`, [id, filename, mime, buf.length, buf, orgId(req)]);
     return reply.code(201).send({ id, url: `/api/files/${id}`, mime, size: buf.length, filename });
   });
 
   // Serve raw bytes with the right content-type (used directly as an <img src>).
   app.get("/api/files/:id", async (req, reply) => {
     const { id } = req.params as { id: string };
-    const row = await one<{ mime: string; data: Buffer; filename: string }>(`SELECT mime, data, filename FROM files WHERE id = $1`, [id]);
+    const row = await one<{ mime: string; data: Buffer; filename: string }>(`SELECT mime, data, filename FROM files WHERE id = $1 AND org_id = $2`, [id, orgId(req)]);
     if (!row) return reply.code(404).send({ error: "not found" });
     return reply
       .header("Content-Type", row.mime)
@@ -45,7 +46,7 @@ export default async function filesRoutes(app: FastifyInstance) {
 
   app.delete("/api/files/:id", async (req) => {
     const { id } = req.params as { id: string };
-    await query(`DELETE FROM files WHERE id = $1`, [id]);
+    await query(`DELETE FROM files WHERE id = $1 AND org_id = $2`, [id, orgId(req)]);
     return { ok: true };
   });
 }

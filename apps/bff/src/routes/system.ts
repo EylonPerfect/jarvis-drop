@@ -1,6 +1,8 @@
 import type { FastifyInstance } from "fastify";
 import os from "node:os";
 import { one } from "../db/pool.js";
+import { orgId } from "../lib/auth.js";
+import { getSetting } from "../lib/settingsStore.js";
 import { hermes, hermesReachable } from "../hermes.js";
 import type { Gauges, LedgerEntry, SlowTurn, LogEntry, SystemHealth, StatusStripItem } from "@jarvis/shared";
 
@@ -30,32 +32,32 @@ export default async function systemRoutes(app: FastifyInstance) {
   });
 
   // Live Action Ledger — every tool call this session (retry/fallback/verify).
-  app.get("/api/system/ledger", async (): Promise<LedgerEntry[]> => {
-    return (await one<{ value: LedgerEntry[] }>(`SELECT value FROM settings WHERE key = 'ledger'`))?.value ?? [];
+  app.get("/api/system/ledger", async (req): Promise<LedgerEntry[]> => {
+    return (await getSetting<LedgerEntry[]>(orgId(req), "ledger")) ?? [];
   });
 
-  app.get("/api/system/slow-turns", async (): Promise<{ floor: string; turns: SlowTurn[] }> => {
+  app.get("/api/system/slow-turns", async (req): Promise<{ floor: string; turns: SlowTurn[] }> => {
     return (
-      (await one<{ value: { floor: string; turns: SlowTurn[] } }>(`SELECT value FROM settings WHERE key = 'slow_turns'`))?.value ?? {
+      (await getSetting<{ floor: string; turns: SlowTurn[] }>(orgId(req), "slow_turns")) ?? {
         floor: "",
         turns: [],
       }
     );
   });
 
-  app.get("/api/system/logs", async (): Promise<LogEntry[]> => {
-    return (await one<{ value: LogEntry[] }>(`SELECT value FROM settings WHERE key = 'logs'`))?.value ?? [];
+  app.get("/api/system/logs", async (req): Promise<LogEntry[]> => {
+    return (await getSetting<LogEntry[]>(orgId(req), "logs")) ?? [];
   });
 
   // Consolidated health for status strips (Command Center + top bar).
-  app.get("/api/system/health", async (): Promise<SystemHealth> => {
+  app.get("/api/system/health", async (req): Promise<SystemHealth> => {
     const reachable = await hermesReachable();
     // Real counts from the DB — no fabricated status.
-    const facts = (await one<{ n: number }>(`SELECT COUNT(*)::int AS n FROM memory_facts`))?.n ?? 0;
-    const running = (await one<{ n: number }>(`SELECT COUNT(*)::int AS n FROM agents WHERE status = 'optimal'`))?.n ?? 0;
-    const agentsTotal = (await one<{ n: number }>(`SELECT COUNT(*)::int AS n FROM agents`))?.n ?? 0;
-    const providers = (await one<{ n: number }>(`SELECT COUNT(*)::int AS n FROM ai_providers`))?.n ?? 0;
-    const activeProv = (await one<{ n: number }>(`SELECT COUNT(*)::int AS n FROM ai_providers WHERE active = true`))?.n ?? 0;
+    const facts = (await one<{ n: number }>(`SELECT COUNT(*)::int AS n FROM memory_facts WHERE org_id = $1`, [orgId(req)]))?.n ?? 0;
+    const running = (await one<{ n: number }>(`SELECT COUNT(*)::int AS n FROM agents WHERE org_id = $1 AND status = 'optimal'`, [orgId(req)]))?.n ?? 0;
+    const agentsTotal = (await one<{ n: number }>(`SELECT COUNT(*)::int AS n FROM agents WHERE org_id = $1`, [orgId(req)]))?.n ?? 0;
+    const providers = (await one<{ n: number }>(`SELECT COUNT(*)::int AS n FROM ai_providers WHERE org_id = $1`, [orgId(req)]))?.n ?? 0;
+    const activeProv = (await one<{ n: number }>(`SELECT COUNT(*)::int AS n FROM ai_providers WHERE org_id = $1 AND active = true`, [orgId(req)]))?.n ?? 0;
 
     const llmCount = providers + (reachable ? 1 : 0); // connected providers + hermes gateway
     const aiOnline = activeProv > 0 || reachable; // a chat backend is available

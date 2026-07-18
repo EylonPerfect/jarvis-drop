@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
-import { one, query } from "../db/pool.js";
+import { orgId } from "../lib/auth.js";
+import { getSetting, setSetting } from "../lib/settingsStore.js";
 import { hermes } from "../hermes.js";
 import type { Workflow, WorkflowRun } from "@jarvis/shared";
 
@@ -12,30 +13,24 @@ type StoredWorkflow = {
   steps: { icon: string; label: string }[];
 };
 
-async function readWorkflows(): Promise<StoredWorkflow[]> {
-  return (await one<{ value: StoredWorkflow[] }>(`SELECT value FROM settings WHERE key = 'workflows'`))?.value ?? [];
+async function readWorkflows(org: string): Promise<StoredWorkflow[]> {
+  return (await getSetting<StoredWorkflow[]>(org, "workflows")) ?? [];
 }
 
-async function writeWorkflows(flows: StoredWorkflow[]): Promise<void> {
-  await query(
-    `INSERT INTO settings (key, value) VALUES ('workflows', $1) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
-    [JSON.stringify(flows)],
-  );
+async function writeWorkflows(org: string, flows: StoredWorkflow[]): Promise<void> {
+  await setSetting(org, "workflows", flows);
 }
 
 // Stored runs are WorkflowRun (what the UI reads) plus an ISO `at` timestamp
 // used server-side to compute runsPerWeek. The extra field is ignored by the UI.
 type StoredRun = WorkflowRun & { at?: string };
 
-async function readRuns(): Promise<StoredRun[]> {
-  return (await one<{ value: StoredRun[] }>(`SELECT value FROM settings WHERE key = 'workflow_runs'`))?.value ?? [];
+async function readRuns(org: string): Promise<StoredRun[]> {
+  return (await getSetting<StoredRun[]>(org, "workflow_runs")) ?? [];
 }
 
-async function writeRuns(runs: StoredRun[]): Promise<void> {
-  await query(
-    `INSERT INTO settings (key, value) VALUES ('workflow_runs', $1) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
-    [JSON.stringify(runs)],
-  );
+async function writeRuns(org: string, runs: StoredRun[]): Promise<void> {
+  await setSetting(org, "workflow_runs", runs);
 }
 
 const RUNS_CAP = 50;
@@ -43,7 +38,7 @@ const RUNS_CAP = 50;
 // Workflows map to hermes scheduled jobs (/api/jobs). When the gateway is
 // reachable we surface live jobs; otherwise the seeded flows render.
 export default async function workflowsRoutes(app: FastifyInstance) {
-  app.get("/api/workflows", async () => {
+  app.get("/api/workflows", async (req) => {
     const live = await hermes.get<any>("/api/jobs");
     const jobs = Array.isArray(live.data) ? live.data : live.data?.jobs;
     if (live.ok && Array.isArray(jobs) && jobs.length) {
@@ -59,20 +54,20 @@ export default async function workflowsRoutes(app: FastifyInstance) {
       }));
       return flows;
     }
-    const seeded = (await one<{ value: Workflow[] }>(`SELECT value FROM settings WHERE key = 'workflows'`))?.value ?? [];
+    const seeded = (await getSetting<Workflow[]>(orgId(req), "workflows")) ?? [];
     return seeded;
   });
 
-  app.get("/api/workflows/runs", async (): Promise<WorkflowRun[]> => {
-    return readRuns();
+  app.get("/api/workflows/runs", async (req): Promise<WorkflowRun[]> => {
+    return readRuns(orgId(req));
   });
 
-  app.get("/api/workflows/stats", async () => {
-    const flows = (await one<{ value: Workflow[] }>(`SELECT value FROM settings WHERE key = 'workflows'`))?.value ?? [];
+  app.get("/api/workflows/stats", async (req) => {
+    const flows = (await getSetting<Workflow[]>(orgId(req), "workflows")) ?? [];
     const enabled = flows.filter((f) => f.status === "Enabled").length;
     // runsPerWeek = number of recorded runs in the last 7 days (from workflow_runs).
     const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-    const runs = await readRuns();
+    const runs = await readRuns(orgId(req));
     const runsPerWeek = runs.filter((r) => {
       const t = r.at ? Date.parse(r.at) : NaN;
       return Number.isFinite(t) && t >= weekAgo;
@@ -90,9 +85,9 @@ export default async function workflowsRoutes(app: FastifyInstance) {
       ? (body.steps as any[]).map((s) => ({ icon: String(s?.icon ?? "workflow"), label: String(s?.label ?? "step") }))
       : [];
     const created: StoredWorkflow = { id: `wf_${Date.now().toString(36)}`, name, trigger, status: "Enabled", steps };
-    const flows = await readWorkflows();
+    const flows = await readWorkflows(orgId(req));
     flows.push(created);
-    await writeWorkflows(flows);
+    await writeWorkflows(orgId(req), flows);
     return reply.code(201).send(created);
   });
 
@@ -101,11 +96,11 @@ export default async function workflowsRoutes(app: FastifyInstance) {
     const { id } = req.params as { id: string };
     if (!/^[A-Za-z0-9_-]+$/.test(id)) return reply.code(400).send({ error: "invalid id" });
     const body = (req.body ?? {}) as { status?: unknown };
-    const flows = await readWorkflows();
+    const flows = await readWorkflows(orgId(req));
     const wf = flows.find((f) => f.id === id);
     if (!wf) return reply.code(404).send({ error: "not found" });
     if (body.status === "Enabled" || body.status === "Paused") wf.status = body.status;
-    await writeWorkflows(flows);
+    await writeWorkflows(orgId(req), flows);
     return wf;
   });
 
@@ -113,14 +108,14 @@ export default async function workflowsRoutes(app: FastifyInstance) {
   app.delete("/api/workflows/:id", async (req, reply) => {
     const { id } = req.params as { id: string };
     if (!/^[A-Za-z0-9_-]+$/.test(id)) return reply.code(400).send({ error: "invalid id" });
-    const flows = await readWorkflows();
-    await writeWorkflows(flows.filter((f) => f.id !== id));
+    const flows = await readWorkflows(orgId(req));
+    await writeWorkflows(orgId(req), flows.filter((f) => f.id !== id));
     return { ok: true };
   });
 
   // Clear all locally-authored workflows.
-  app.delete("/api/workflows", async () => {
-    await writeWorkflows([]);
+  app.delete("/api/workflows", async (req) => {
+    await writeWorkflows(orgId(req), []);
     return { ok: true };
   });
 
@@ -139,7 +134,7 @@ export default async function workflowsRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: "invalid id" });
     }
 
-    const flows = await readWorkflows();
+    const flows = await readWorkflows(orgId(req));
     const wf = flows.find((f) => f.id === id);
 
     if (action === "run") {
@@ -151,9 +146,9 @@ export default async function workflowsRoutes(app: FastifyInstance) {
         tone: "optimal",
         at: now.toISOString(),
       };
-      const runs = await readRuns();
+      const runs = await readRuns(orgId(req));
       runs.unshift(run);
-      await writeRuns(runs.slice(0, RUNS_CAP));
+      await writeRuns(orgId(req), runs.slice(0, RUNS_CAP));
       return { ok: true, action, run };
     }
 

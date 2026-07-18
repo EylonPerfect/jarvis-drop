@@ -3,9 +3,9 @@
 // Center chat routes through. Advanced routing toggles live below.
 import { useEffect, useState } from "react";
 import { Panel, Badge, Button, Switch, Icon, EmptyState, IconButton, ConfirmDialog } from "../ds";
-import type { AICoreState, AiProvider } from "@jarvis/shared";
+import type { AICoreState, AiProvider, Integration } from "@jarvis/shared";
 import { useApi } from "../api/hooks";
-import { api } from "../api/client";
+import { api, getAccessKey } from "../api/client";
 
 const EMPTY: AICoreState = {
   activeModel: "None",
@@ -94,11 +94,120 @@ function ProviderRow({ p, onActivate, onTest, onDelete, onEdit, editing, test }:
   );
 }
 
+// ---- AI service connector (voice, meetings, …) — managed here in AI Core, but
+// backed by the same /api/integrations credential vault (single source of truth).
+function AIServiceCard({ svc, onChanged }: { svc: Integration; onChanged: () => void }) {
+  const [vals, setVals] = useState<Record<string, string>>({});
+  const [editing, setEditing] = useState(!svc.connected);
+  const [busy, setBusy] = useState<"connect" | "test" | "disconnect" | null>(null);
+  const [result, setResult] = useState<{ ok: boolean; detail: string } | null>(null);
+  const [error, setError] = useState("");
+  const [previewing, setPreviewing] = useState(false);
+
+  // Play a short sample so the operator can hear the actual voice (voice services).
+  const preview = async () => {
+    setPreviewing(true); setResult(null);
+    try {
+      const res = await fetch(`/api/voice/speak`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-API-Key": getAccessKey() },
+        body: JSON.stringify({ text: "Hi, I'm your Go Perfect customer success agent. This is the voice I'll use on live demos and calls." }),
+      });
+      if (!res.ok) throw new Error(String(res.status));
+      const audio = new Audio(URL.createObjectURL(await res.blob()));
+      await audio.play();
+    } catch { setResult({ ok: false, detail: "Couldn't play a preview — try Test connection." }); }
+    finally { setPreviewing(false); }
+  };
+
+  const connect = async () => {
+    setError("");
+    const missing = svc.fields.filter((f) => !f.optional && !vals[f.key]?.trim());
+    if (missing.length) { setError(`Fill in: ${missing.map((m) => m.label).join(", ")}`); return; }
+    setBusy("connect");
+    try {
+      await api.post(`/api/integrations/${svc.id}/connect`, { values: vals });
+      setVals({}); setEditing(false); setResult(null);
+      onChanged();
+    } catch (e) { setError(String(e)); } finally { setBusy(null); }
+  };
+  const test = async () => {
+    setBusy("test"); setResult(null);
+    try {
+      const r = await api.post<{ ok: boolean; detail: string }>(`/api/integrations/${svc.id}/test`);
+      setResult(r);
+    } catch (e) { setResult({ ok: false, detail: String(e) }); } finally { setBusy(null); }
+  };
+  const disconnect = async () => {
+    setBusy("disconnect");
+    try { await api.del(`/api/integrations/${svc.id}`); setResult(null); onChanged(); }
+    catch (e) { setError(String(e)); } finally { setBusy(null); }
+  };
+
+  return (
+    <div style={{ padding: 14, borderRadius: "var(--r-md)", background: "var(--jv-surface-2)", border: `1px solid ${svc.connected ? "var(--jv-border-cyan)" : "var(--jv-border-soft)"}`, display: "flex", flexDirection: "column", gap: 10 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <span style={{ width: 34, height: 34, flex: "0 0 34px", display: "grid", placeItems: "center", borderRadius: "var(--r-sm)", color: "var(--jv-cyan)", background: "var(--grad-cyan-soft)", border: "1px solid var(--jv-border-cyan)" }}><Icon name={svc.icon} size={16} /></span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ font: "var(--fw-bold) 14px var(--font-body)", color: "var(--jv-text)" }}>{svc.label}</span>
+            {svc.connected ? <Badge status="optimal">Connected</Badge> : <Badge status="standby">Not connected</Badge>}
+            {svc.recommended && !svc.connected && <Badge status="info" dot={false}>Recommended</Badge>}
+          </div>
+          <div style={{ font: "var(--fw-regular) 11.5px var(--font-body)", color: "var(--jv-text-muted)", marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            {svc.connected ? svc.detail || "credentials stored" : svc.note}
+          </div>
+        </div>
+        {svc.connected && <IconButton icon="trash-2" tone="danger" title="Disconnect" onClick={disconnect} />}
+      </div>
+
+      {editing && svc.fields.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10, padding: 12, borderRadius: "var(--r-sm)", background: "var(--jv-surface-3)", border: "1px solid var(--jv-border-cyan)" }}>
+          {svc.docsUrl && (
+            <a href={svc.docsUrl} target="_blank" rel="noopener noreferrer" style={{ display: "inline-flex", alignItems: "center", gap: 5, font: "var(--fw-medium) 11.5px var(--font-body)", color: "var(--jv-cyan-300)", textDecoration: "none" }}>
+              <Icon name="external-link" size={12} /> Where to get the credential
+            </a>
+          )}
+          {svc.fields.map((f) => (
+            <Labeled key={f.key} label={`${f.label}${f.optional ? "  ·  optional" : ""}`}>
+              <input style={fieldStyle} type={f.secret ? "password" : "text"} placeholder={f.placeholder} value={vals[f.key] ?? ""} onChange={(e) => setVals((v) => ({ ...v, [f.key]: e.target.value }))} />
+            </Labeled>
+          ))}
+          {error && <div style={{ font: "var(--fw-medium) 12px var(--font-body)", color: "var(--jv-red-400)" }}>{error}</div>}
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+            {svc.connected && <Button size="sm" variant="ghost" onClick={() => { setEditing(false); setError(""); }}>Cancel</Button>}
+            <Button size="sm" variant="primary" icon={<Icon name={busy === "connect" ? "loader" : "plug-zap"} size={13} />} onClick={connect} disabled={busy === "connect"}>
+              {svc.connected ? "Update credentials" : "Connect"}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {svc.connected && !editing && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <Button size="sm" variant="ghost" icon={<Icon name={busy === "test" ? "loader" : "plug-zap"} size={13} />} onClick={test} disabled={busy === "test"}>Test connection</Button>
+          {svc.id === "elevenlabs" && <Button size="sm" variant="ghost" icon={<Icon name={previewing ? "loader" : "volume-2"} size={13} />} onClick={preview} disabled={previewing}>Preview voice</Button>}
+          <Button size="sm" variant="ghost" icon={<Icon name="settings-2" size={13} />} onClick={() => { setEditing(true); setResult(null); }}>Update key</Button>
+          {result && (
+            <span style={{ display: "flex", alignItems: "center", gap: 5, font: "var(--fw-medium) 11.5px var(--font-body)", color: result.ok ? "var(--jv-green)" : "var(--jv-red-400)" }}>
+              <Icon name={result.ok ? "check-circle" : "alert-triangle"} size={13} /> {result.detail}
+            </span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function AICore() {
   const { data, reload } = useApi<AICoreState>("/api/aicore");
   const { data: provData, reload: reloadProviders } = useApi<AiProvider[]>("/api/aicore/providers");
+  const { data: intData, reload: reloadIntegrations } = useApi<Integration[]>("/api/integrations");
   const state = data ?? EMPTY;
   const providers = provData ?? [];
+  // AI-model/AI-API services (ElevenLabs voice, Recall meetings) — managed here.
+  const services = (intData ?? []).filter((i) => i.aiHub);
+  const voice = services.find((s) => s.id === "elevenlabs");
 
   const [routing, setRouting] = useState(state.routing);
   const [stream, setStream] = useState(state.streaming);
@@ -129,6 +238,7 @@ export default function AICore() {
   const refreshAll = () => {
     reload();
     reloadProviders();
+    reloadIntegrations();
   };
 
   const addProvider = async () => {
@@ -210,7 +320,7 @@ export default function AICore() {
             <Badge status="info" dot={false}><Icon name="shield" size={11} style={{ marginRight: 4 }} />keys stored server-side</Badge>
           </div>
           <div style={{ font: "var(--fw-semibold) 11px var(--font-hud)", letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--jv-cyan-300)", marginBottom: 8 }}>AI Control Center</div>
-          <p style={{ margin: "0 0 16px", maxWidth: 620, font: "var(--fw-regular) 13.5px/1.6 var(--font-body)", color: "var(--jv-text-soft)" }}>Connect any OpenAI-compatible provider — OpenAI, Groq, OpenRouter (for Claude), DeepSeek, Together, or a local Ollama. The active provider is what After Human speaks through in the Command Center. Keys never leave the server.</p>
+          <p style={{ margin: "0 0 16px", maxWidth: 640, font: "var(--fw-regular) 13.5px/1.6 var(--font-body)", color: "var(--jv-text-soft)" }}>The single hub for every AI API After Human uses. Connect a <b style={{ color: "var(--jv-text-soft)" }}>language model</b> (OpenAI, Groq, OpenRouter for Claude, DeepSeek, Together, Ollama), a <b style={{ color: "var(--jv-text-soft)" }}>voice</b> provider (ElevenLabs), and <b style={{ color: "var(--jv-text-soft)" }}>meeting</b> bots (Recall.ai) — all managed here, keys stored server-side.</p>
           <div style={{ display: "flex", gap: 10 }}>
             <Button variant="primary" icon={<Icon name="plus" size={14} />} onClick={() => setAdding((a) => !a)}>Connect a provider</Button>
             <Button variant="ghost" icon={<Icon name="refresh-cw" size={14} />} onClick={refreshAll}>Refresh</Button>
@@ -218,8 +328,8 @@ export default function AICore() {
         </Panel>
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           <MetaTile icon="cpu" label="Active model" value={state.activeModel} />
-          <MetaTile icon="plug" label="Connected providers" value={state.connectedProviders} />
-          <MetaTile icon="git-branch" label="Chat routes via" value={state.fallbacks} />
+          <MetaTile icon="mic" label="Voice" value={voice?.connected ? `ElevenLabs${voice.detail ? "" : " connected"}` : "OpenAI (fallback)"} />
+          <MetaTile icon="plug" label="AI services" value={`${providers.length} model${providers.length === 1 ? "" : "s"} · ${services.filter((s) => s.connected).length}/${services.length} services`} />
         </div>
       </div>
 
@@ -295,6 +405,25 @@ export default function AICore() {
                   </div>
                 )}
               </div>
+            ))}
+          </div>
+        )}
+      </Panel>
+
+      {/* AI services — voice, meetings & other AI APIs, managed in the same hub */}
+      <Panel
+        title="AI services"
+        action={<Button size="sm" variant="ghost" icon={<Icon name="refresh-cw" size={13} />} onClick={reloadIntegrations}>Refresh</Button>}
+      >
+        <p style={{ margin: "0 0 14px", font: "var(--fw-regular) 12.5px/1.6 var(--font-body)", color: "var(--jv-text-muted)" }}>
+          Voice and meeting AI APIs, managed here alongside your models. The presenter, in-call replies and Command Center voice use <b style={{ color: "var(--jv-text-soft)" }}>ElevenLabs</b> automatically once connected (falling back to your active model's built-in TTS). Recall.ai lets an agent join live calls.
+        </p>
+        {services.length === 0 ? (
+          <EmptyState compact icon="plug" title="No AI services in the catalog" hint="ElevenLabs and Recall.ai should appear here." />
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {services.map((s) => (
+              <AIServiceCard key={s.id} svc={s} onChanged={refreshAll} />
             ))}
           </div>
         )}

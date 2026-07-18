@@ -1,5 +1,7 @@
 import { request, type Dispatcher } from "undici";
 import { one } from "../db/pool.js";
+import { config } from "../config.js";
+import { recordLlmUsage, estimateTokens, type UsageContext } from "./metering.js";
 
 // A stored OpenAI-compatible provider (row shape). The api_key never leaves the
 // server except as a masked last-4 in the API layer.
@@ -12,12 +14,36 @@ export interface AiProviderRow {
   active: boolean;
 }
 
+// Options for the chat helpers (Phase 3):
+//   model — override the provider's model (used to route non-live work to a
+//           cheaper tier; see cheapModel()).
+//   ctx   — org/agent/call context so the LLM cost is metered against the org.
+//   kind  — free-form label recorded on the usage event (e.g. "extraction").
+export interface ChatOpts {
+  model?: string;
+  ctx?: UsageContext;
+  kind?: string;
+}
+
 const trimBase = (base: string) => base.replace(/\/+$/, "");
 const joinUrl = (base: string, path: string) => `${trimBase(base)}${path}`;
 
-/** The provider the Command Center chat should use, if the operator set one. */
-export async function getActiveProvider(): Promise<AiProviderRow | null> {
-  return (await one<AiProviderRow>(`SELECT * FROM ai_providers WHERE active = true ORDER BY created_at DESC LIMIT 1`)) ?? null;
+/**
+ * The model to use for NON-LIVE back-office work (extraction, persona-compile,
+ * verify, redteam, playbook analysis). Returns the configured cheap tier when
+ * set, else the provider's own model (no behavior change). The live realtime
+ * call never calls this — it keeps the high-quality model.
+ */
+export function cheapModel(p: AiProviderRow): string {
+  return config.models.cheapTier || p.model;
+}
+
+/**
+ * The provider the given org's Command Center chat should use, if its operator
+ * set one. Org-scoped so one tenant never spends another tenant's provider key.
+ */
+export async function getActiveProvider(org: string): Promise<AiProviderRow | null> {
+  return (await one<AiProviderRow>(`SELECT * FROM ai_providers WHERE org_id = $1 AND active = true ORDER BY created_at DESC LIMIT 1`, [org])) ?? null;
 }
 
 // Pull a human error message out of an OpenAI-style error body.
@@ -84,10 +110,15 @@ export async function testConnection(p: AiProviderRow): Promise<{ ok: boolean; s
  * Stream an OpenAI-compatible chat completion from the provider. Returns the
  * raw undici response so the caller can relay the SSE body byte-for-byte (the
  * browser's stream parser already understands the OpenAI chunk format).
+ *
+ * NOTE: token usage is NOT metered here — the body is relayed byte-for-byte and
+ * we must not perturb it. Callers that need the streamed reply metered can
+ * estimate tokens from the messages + accumulated text and call recordLlmUsage.
  */
 export async function streamProviderChat(
   p: AiProviderRow,
   messages: Array<{ role: string; content: string }>,
+  opts?: ChatOpts,
 ): Promise<Dispatcher.ResponseData> {
   return request(joinUrl(p.base_url, "/chat/completions"), {
     method: "POST",
@@ -96,23 +127,25 @@ export async function streamProviderChat(
       accept: "text/event-stream",
       authorization: `Bearer ${p.api_key}`,
     },
-    body: JSON.stringify({ model: p.model, messages, stream: true }),
+    body: JSON.stringify({ model: opts?.model || p.model, messages, stream: true }),
     headersTimeout: 120_000,
     bodyTimeout: 600_000,
     maxRedirections: 2,
   });
 }
 
-/** Non-streaming completion (single JSON reply). */
+/** Non-streaming completion (single JSON reply). Meters LLM token usage. */
 export async function completeProviderChat(
   p: AiProviderRow,
   messages: Array<{ role: string; content: string }>,
+  opts?: ChatOpts,
 ): Promise<{ ok: boolean; content: string }> {
+  const model = opts?.model || p.model;
   try {
     const res = await request(joinUrl(p.base_url, "/chat/completions"), {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${p.api_key}` },
-      body: JSON.stringify({ model: p.model, messages, stream: false }),
+      body: JSON.stringify({ model, messages, stream: false }),
       headersTimeout: 120_000,
       bodyTimeout: 300_000,
       maxRedirections: 2,
@@ -120,7 +153,14 @@ export async function completeProviderChat(
     const text = await res.body.text();
     if (res.statusCode >= 400) return { ok: false, content: "" };
     const j = JSON.parse(text);
-    return { ok: true, content: j?.choices?.[0]?.message?.content ?? "" };
+    const content = j?.choices?.[0]?.message?.content ?? "";
+    // Meter tokens (fail-open inside recordLlmUsage). Prefer provider-reported
+    // usage; fall back to a char/4 estimate when it is omitted.
+    const u = j?.usage ?? {};
+    const tokensIn = Number(u.prompt_tokens ?? u.input_tokens ?? estimateTokens(messages.map((m) => m.content).join("\n")));
+    const tokensOut = Number(u.completion_tokens ?? u.output_tokens ?? estimateTokens(content));
+    void recordLlmUsage(opts?.ctx ?? {}, tokensIn, tokensOut, { model, kind: opts?.kind, estimated: j?.usage == null });
+    return { ok: true, content };
   } catch {
     return { ok: false, content: "" };
   }

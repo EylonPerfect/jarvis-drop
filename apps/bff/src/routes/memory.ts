@@ -1,5 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { query, one } from "../db/pool.js";
+import { orgId } from "../lib/auth.js";
+import { getSetting } from "../lib/settingsStore.js";
 import { hermes } from "../hermes.js";
 import type { MemoryFact, StyleProfile, VectorStoreStatus, SessionCost, Conversation, ChatMessage } from "@jarvis/shared";
 
@@ -26,15 +28,16 @@ function toChatMessages(raw: unknown): ChatMessage[] {
 }
 
 export default async function memoryRoutes(app: FastifyInstance) {
-  app.get("/api/memory/vector-store", async (): Promise<VectorStoreStatus> => {
-    const s = await one<{ value: VectorStoreStatus }>(`SELECT value FROM settings WHERE key = 'vector_store'`);
-    return s?.value ?? { status: "Unknown", online: false, items: 0, detail: "" };
+  app.get("/api/memory/vector-store", async (req): Promise<VectorStoreStatus> => {
+    const s = await getSetting<VectorStoreStatus>(orgId(req), "vector_store");
+    return s ?? { status: "Unknown", online: false, items: 0, detail: "" };
   });
 
   // Session cost ledger — also feeds the top-bar "Team cost · today" chip.
-  app.get("/api/memory/cost", async (): Promise<SessionCost> => {
+  app.get("/api/memory/cost", async (req): Promise<SessionCost> => {
     const rows = await query<{ provider: string; cost: string; tokens: number }>(
-      `SELECT provider, cost, tokens FROM cost_entries ORDER BY sort`,
+      `SELECT provider, cost, tokens FROM cost_entries WHERE org_id = $1 ORDER BY sort`,
+      [orgId(req)],
     );
     const total = rows.reduce((n, r) => n + Number(r.cost), 0);
     return {
@@ -47,14 +50,15 @@ export default async function memoryRoutes(app: FastifyInstance) {
     };
   });
 
-  app.get("/api/memory/facts", async (): Promise<{ facts: MemoryFact[]; styles: StyleProfile[]; profile: any }> => {
-    const facts = (await query(`SELECT * FROM memory_facts ORDER BY sort`)).map((r: any) => ({
+  app.get("/api/memory/facts", async (req): Promise<{ facts: MemoryFact[]; styles: StyleProfile[]; profile: any }> => {
+    const org = orgId(req);
+    const facts = (await query(`SELECT * FROM memory_facts WHERE org_id = $1 ORDER BY sort`, [org])).map((r: any) => ({
       id: r.id, label: r.label, value: r.value, confidence: r.confidence,
     }));
-    const styles = (await query(`SELECT * FROM style_profiles ORDER BY sort`)).map((r: any) => ({
+    const styles = (await query(`SELECT * FROM style_profiles WHERE org_id = $1 ORDER BY sort`, [org])).map((r: any) => ({
       id: r.id, name: r.name, stats: r.stats, msgs: r.msgs,
     }));
-    const profile = (await one<{ value: any }>(`SELECT value FROM settings WHERE key = 'personal_intelligence'`))?.value ?? {};
+    const profile = (await getSetting<any>(org, "personal_intelligence")) ?? {};
     return { facts, styles, profile };
   });
 
@@ -65,29 +69,30 @@ export default async function memoryRoutes(app: FastifyInstance) {
     if (!label || !value) return reply.code(400).send({ error: "label and value required" });
     const id = `mf_${Date.now().toString(36)}`;
     const confidence = Math.max(0, Math.min(100, Math.round(Number(b.confidence ?? 90))));
-    const maxSort = await one<{ m: number }>(`SELECT COALESCE(MAX(sort), -1) + 1 AS m FROM memory_facts`);
+    const org = orgId(req);
+    const maxSort = await one<{ m: number }>(`SELECT COALESCE(MAX(sort), -1) + 1 AS m FROM memory_facts WHERE org_id = $1`, [org]);
     await query(
-      `INSERT INTO memory_facts (id, label, value, confidence, sort) VALUES ($1,$2,$3,$4,$5)`,
-      [id, label, value, confidence, maxSort?.m ?? 0],
+      `INSERT INTO memory_facts (id, label, value, confidence, sort, org_id) VALUES ($1,$2,$3,$4,$5,$6)`,
+      [id, label, value, confidence, maxSort?.m ?? 0, org],
     );
-    const r = await one<any>(`SELECT * FROM memory_facts WHERE id = $1`, [id]);
+    const r = await one<any>(`SELECT * FROM memory_facts WHERE id = $1 AND org_id = $2`, [id, org]);
     return reply.code(201).send({ id: r.id, label: r.label, value: r.value, confidence: r.confidence });
   });
 
   app.delete("/api/memory/facts/:id", async (req) => {
     const { id } = req.params as { id: string };
-    await query(`DELETE FROM memory_facts WHERE id = $1`, [id]);
+    await query(`DELETE FROM memory_facts WHERE id = $1 AND org_id = $2`, [id, orgId(req)]);
     return { ok: true };
   });
 
   // Clear all memory facts.
-  app.delete("/api/memory/facts", async () => {
-    await query(`DELETE FROM memory_facts`);
+  app.delete("/api/memory/facts", async (req) => {
+    await query(`DELETE FROM memory_facts WHERE org_id = $1`, [orgId(req)]);
     return { ok: true };
   });
 
   // Recent conversations: prefer live hermes sessions, else seeded fallback.
-  app.get("/api/memory/conversations", async (): Promise<Conversation[]> => {
+  app.get("/api/memory/conversations", async (req): Promise<Conversation[]> => {
     const live = await hermes.get<any>("/api/sessions");
     const list = Array.isArray(live.data) ? live.data : live.data?.sessions;
     if (live.ok && Array.isArray(list) && list.length) {
@@ -98,7 +103,7 @@ export default async function memoryRoutes(app: FastifyInstance) {
         sessionId: s.id,
       }));
     }
-    const seeded = (await one<{ value: Conversation[] }>(`SELECT value FROM settings WHERE key = 'conversations'`))?.value ?? [];
+    const seeded = (await getSetting<Conversation[]>(orgId(req), "conversations")) ?? [];
     // Give seeded rows a stable id AND sessionId so selection has something to fetch.
     return seeded.map((c, i) => {
       const id = c.id ?? `c_${i}`;
@@ -122,7 +127,7 @@ export default async function memoryRoutes(app: FastifyInstance) {
     }
 
     // 2. Fall back to any seeded per-conversation messages stored in settings.
-    const seeded = (await one<{ value: Conversation[] }>(`SELECT value FROM settings WHERE key = 'conversations'`))?.value ?? [];
+    const seeded = (await getSetting<Conversation[]>(orgId(req), "conversations")) ?? [];
     const hit = seeded.find((c, i) => (c.id ?? `c_${i}`) === id || c.sessionId === id);
     if (hit && (hit as any).messages) return toChatMessages((hit as any).messages);
 

@@ -31,3 +31,23 @@ export async function one<T extends pg.QueryResultRow = pg.QueryResultRow>(
   const rows = await query<T>(text, params);
   return rows[0] ?? null;
 }
+
+/**
+ * Run `fn` inside a single transaction on a dedicated pooled client. Commits on
+ * success, ROLLs BACK on any throw (so a partial multi-table purge never lands),
+ * and always releases the client. Used by the hard-purge path (lib/purge.ts).
+ */
+export async function withTx<T>(fn: (client: pg.PoolClient) => Promise<T>): Promise<T> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const out = await fn(client);
+    await client.query("COMMIT");
+    return out;
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}

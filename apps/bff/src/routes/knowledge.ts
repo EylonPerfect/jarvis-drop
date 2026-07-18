@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { request } from "undici";
 import { query, one } from "../db/pool.js";
+import { orgId } from "../lib/auth.js";
 import type { KnowledgeSource, Collection, IndexStatus } from "@jarvis/shared";
 
 function rowToSource(r: any): KnowledgeSource {
@@ -13,8 +14,8 @@ function chunksFor(content: string): number {
 }
 
 export default async function knowledgeRoutes(app: FastifyInstance) {
-  app.get("/api/knowledge/sources", async () => {
-    const rows = await query(`SELECT * FROM knowledge_sources ORDER BY sort, created_at`);
+  app.get("/api/knowledge/sources", async (req) => {
+    const rows = await query(`SELECT * FROM knowledge_sources WHERE org_id = $1 ORDER BY sort, created_at`, [orgId(req)]);
     return rows.map(rowToSource);
   });
 
@@ -22,16 +23,17 @@ export default async function knowledgeRoutes(app: FastifyInstance) {
     const b = req.body as Partial<KnowledgeSource> & { content?: string };
     if (!b?.title?.trim()) return reply.code(400).send({ error: "title required" });
     const id = `ks_${Date.now().toString(36)}`;
-    const maxSort = await one<{ m: number }>(`SELECT COALESCE(MAX(sort), -1) + 1 AS m FROM knowledge_sources`);
+    const org = orgId(req);
+    const maxSort = await one<{ m: number }>(`SELECT COALESCE(MAX(sort), -1) + 1 AS m FROM knowledge_sources WHERE org_id = $1`, [org]);
     // With content supplied we index it immediately; otherwise keep the manual defaults.
     const hasContent = typeof b.content === "string" && b.content.length > 0;
     const chunks = hasContent ? chunksFor(b.content!) : b.chunks ?? 0;
     const status: IndexStatus = hasContent ? "indexed" : (b.status as IndexStatus) ?? "indexing";
     await query(
-      `INSERT INTO knowledge_sources (id, icon, title, kind, chunks, status, sort, content) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-      [id, b.icon || "file-text", b.title.trim(), b.kind ?? "Doc", chunks, status, maxSort?.m ?? 0, hasContent ? b.content : null],
+      `INSERT INTO knowledge_sources (id, icon, title, kind, chunks, status, sort, content, org_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      [id, b.icon || "file-text", b.title.trim(), b.kind ?? "Doc", chunks, status, maxSort?.m ?? 0, hasContent ? b.content : null, org],
     );
-    return reply.code(201).send(rowToSource(await one(`SELECT * FROM knowledge_sources WHERE id = $1`, [id])));
+    return reply.code(201).send(rowToSource(await one(`SELECT * FROM knowledge_sources WHERE id = $1 AND org_id = $2`, [id, org])));
   });
 
   // Import a Notion page as a knowledge source. The integration token stays
@@ -83,12 +85,13 @@ export default async function knowledgeRoutes(app: FastifyInstance) {
       const content = lines.join("\n");
 
       const id = `ks_${Date.now().toString(36)}`;
-      const maxSort = await one<{ m: number }>(`SELECT COALESCE(MAX(sort), -1) + 1 AS m FROM knowledge_sources`);
+      const org = orgId(req);
+      const maxSort = await one<{ m: number }>(`SELECT COALESCE(MAX(sort), -1) + 1 AS m FROM knowledge_sources WHERE org_id = $1`, [org]);
       await query(
-        `INSERT INTO knowledge_sources (id, icon, title, kind, chunks, status, sort, content) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-        [id, "book-open", title, "Notion", chunksFor(content), "indexed", maxSort?.m ?? 0, content],
+        `INSERT INTO knowledge_sources (id, icon, title, kind, chunks, status, sort, content, org_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        [id, "book-open", title, "Notion", chunksFor(content), "indexed", maxSort?.m ?? 0, content, org],
       );
-      return reply.code(201).send(rowToSource(await one(`SELECT * FROM knowledge_sources WHERE id = $1`, [id])));
+      return reply.code(201).send(rowToSource(await one(`SELECT * FROM knowledge_sources WHERE id = $1 AND org_id = $2`, [id, org])));
     } catch (err: any) {
       return reply.code(502).send({ error: err?.message || "Notion request failed" });
     }
@@ -96,18 +99,18 @@ export default async function knowledgeRoutes(app: FastifyInstance) {
 
   app.delete("/api/knowledge/sources/:id", async (req) => {
     const { id } = req.params as { id: string };
-    await query(`DELETE FROM knowledge_sources WHERE id = $1`, [id]);
+    await query(`DELETE FROM knowledge_sources WHERE id = $1 AND org_id = $2`, [id, orgId(req)]);
     return { ok: true };
   });
 
   // Clear all knowledge sources.
-  app.delete("/api/knowledge/sources", async () => {
-    await query(`DELETE FROM knowledge_sources`);
+  app.delete("/api/knowledge/sources", async (req) => {
+    await query(`DELETE FROM knowledge_sources WHERE org_id = $1`, [orgId(req)]);
     return { ok: true };
   });
 
-  app.get("/api/knowledge/collections", async () => {
-    const rows = await query(`SELECT * FROM collections ORDER BY sort`);
+  app.get("/api/knowledge/collections", async (req) => {
+    const rows = await query(`SELECT * FROM collections WHERE org_id = $1 ORDER BY sort`, [orgId(req)]);
     return rows.map((r: any): Collection => ({ id: r.id, name: r.name, count: r.count, color: r.color }));
   });
 
@@ -119,33 +122,34 @@ export default async function knowledgeRoutes(app: FastifyInstance) {
     const name = b.name?.trim();
     if (!name) return reply.code(400).send({ error: "name required" });
     const id = `col_${Date.now().toString(36)}`;
-    const maxSort = await one<{ m: number }>(`SELECT COALESCE(MAX(sort), -1) + 1 AS m FROM collections`);
+    const org = orgId(req);
+    const maxSort = await one<{ m: number }>(`SELECT COALESCE(MAX(sort), -1) + 1 AS m FROM collections WHERE org_id = $1`, [org]);
     const sort = maxSort?.m ?? 0;
     const color = b.color?.trim() || COLLECTION_COLORS[sort % COLLECTION_COLORS.length];
     await query(
-      `INSERT INTO collections (id, name, count, color, sort) VALUES ($1,$2,$3,$4,$5)`,
-      [id, name, b.count ?? 0, color, sort],
+      `INSERT INTO collections (id, name, count, color, sort, org_id) VALUES ($1,$2,$3,$4,$5,$6)`,
+      [id, name, b.count ?? 0, color, sort, org],
     );
-    const r = await one<any>(`SELECT * FROM collections WHERE id = $1`, [id]);
+    const r = await one<any>(`SELECT * FROM collections WHERE id = $1 AND org_id = $2`, [id, org]);
     return reply.code(201).send({ id: r.id, name: r.name, count: r.count, color: r.color } as Collection);
   });
 
   app.delete("/api/knowledge/collections/:id", async (req) => {
     const { id } = req.params as { id: string };
-    await query(`DELETE FROM collections WHERE id = $1`, [id]);
+    await query(`DELETE FROM collections WHERE id = $1 AND org_id = $2`, [id, orgId(req)]);
     return { ok: true };
   });
 
   // Clear all collections.
-  app.delete("/api/knowledge/collections", async () => {
-    await query(`DELETE FROM collections`);
+  app.delete("/api/knowledge/collections", async (req) => {
+    await query(`DELETE FROM collections WHERE org_id = $1`, [orgId(req)]);
     return { ok: true };
   });
 
   // Index stat block.
-  app.get("/api/knowledge/stats", async () => {
-    const sources = await query<{ chunks: number; status: string }>(`SELECT chunks, status FROM knowledge_sources`);
-    const collections = await one<{ n: number }>(`SELECT COUNT(*)::int AS n FROM collections`);
+  app.get("/api/knowledge/stats", async (req) => {
+    const sources = await query<{ chunks: number; status: string }>(`SELECT chunks, status FROM knowledge_sources WHERE org_id = $1`, [orgId(req)]);
+    const collections = await one<{ n: number }>(`SELECT COUNT(*)::int AS n FROM collections WHERE org_id = $1`, [orgId(req)]);
     const totalChunks = sources.reduce((n, s) => n + Number(s.chunks), 0);
     const indexing = sources.filter((s) => s.status === "indexing").length;
     return {

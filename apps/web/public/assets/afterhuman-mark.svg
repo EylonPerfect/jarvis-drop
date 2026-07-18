@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48" role="img" aria-label="AfterHuman">
+  <defs>
+    <linearGradient id="ah" x1="4" y1="4" x2="44" y2="44" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FF0660"></stop>
+      <stop offset="0.5" stop-color="#A342FF"></stop>
+      <stop offset="1" stop-color="#00BBFF"></stop>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="48" height="48" rx="13" fill="url(#ah)"></rect>
+  <circle cx="17" cy="24" r="6.4" fill="#fff"></circle>
+  <path d="M26 16 A10 10 0 0 1 26 32" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round"></path>
+  <path d="M30.5 11 A15.5 15.5 0 0 1 30.5 37" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" opacity="0.5"></path>
+</svg>

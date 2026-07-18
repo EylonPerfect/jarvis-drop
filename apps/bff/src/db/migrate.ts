@@ -1,14 +1,40 @@
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { pool } from "./pool.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-/** Apply the schema (idempotent: CREATE TABLE IF NOT EXISTS). */
+/**
+ * Apply the base schema, then every incremental migration in `migrations/` in
+ * filename order. Everything is idempotent (CREATE ... IF NOT EXISTS /
+ * CREATE OR REPLACE VIEW / ALTER ... ADD COLUMN IF NOT EXISTS), so re-running is
+ * safe — this is applied on every boot.
+ */
 export async function runMigrations(): Promise<void> {
-  const sql = await readFile(resolve(__dirname, "schema.sql"), "utf8");
-  await pool.query(sql);
+  // 1) Base single-tenant schema (creates every tenant table).
+  const base = await readFile(resolve(__dirname, "schema.sql"), "utf8");
+  await pool.query(base);
+  // 2) Phase-2 multi-tenancy: orgs/users/memberships/sessions, org_id on every
+  //    tenant table, and the legacy backfill. Runs AFTER the base schema so all
+  //    tenant tables exist, and BEFORE the numbered migrations so their org_id
+  //    columns/FKs resolve. Idempotent, so it is safe on every boot.
+  const tenancy = await readFile(resolve(__dirname, "tenancy.sql"), "utf8");
+  await pool.query(tenancy);
+  // 3) Additive numbered migrations (usage ledger, etc.). Applied in filename
+  //    order after tenancy so anything referencing org_id resolves.
+  const migrationsDir = resolve(__dirname, "migrations");
+  let files: string[] = [];
+  try {
+    files = (await readdir(migrationsDir)).filter((f) => f.endsWith(".sql")).sort();
+  } catch {
+    // no migrations dir yet — base + tenancy schema is enough
+    return;
+  }
+  for (const f of files) {
+    const body = await readFile(resolve(migrationsDir, f), "utf8");
+    await pool.query(body);
+  }
 }
 
 /** Wait for Postgres to accept connections (for container start ordering). */

@@ -3,7 +3,9 @@ import { query, one } from "../db/pool.js";
 import { getIntegrationValues } from "./integrations.js";
 import { getActiveProvider, completeProviderChat } from "../lib/providers.js";
 import { ttsMp3 } from "../lib/tts.js";
+import { orgForAgent } from "../lib/metering.js";
 import { getCompany } from "./company.js";
+import { orgId } from "../lib/auth.js";
 import { config } from "../config.js";
 import type { Meeting, MeetingTranscriptLine } from "@jarvis/shared";
 
@@ -17,8 +19,8 @@ const convo = new Map<string, { busy: boolean; mutedUntil: number }>();
 // its status, and pull the transcript. Credentials come from the Integrations
 // store (recall: apiKey + region). Region-scoped base URL.
 
-async function recall(): Promise<{ base: string; key: string } | null> {
-  const v = await getIntegrationValues("recall");
+async function recall(org: string): Promise<{ base: string; key: string } | null> {
+  const v = await getIntegrationValues(org, "recall");
   const key = v?.apiKey?.trim();
   const region = (v?.region?.trim() || "us-east-1").replace(/[^a-z0-9-]/gi, "");
   if (!key) return null;
@@ -58,10 +60,12 @@ function realtimeConfig() {
 }
 
 // Make a bot say something out loud in the call (TTS → Recall output_audio).
-async function speakInCall(botId: string, text: string): Promise<boolean> {
-  const rc = await recall();
+async function speakInCall(org: string, botId: string, text: string): Promise<boolean> {
+  const rc = await recall(org);
   if (!rc) return false;
-  const mp3 = await ttsMp3(text);
+  const m = await one<{ agent_id: string | null }>(`SELECT agent_id FROM meetings WHERE id = $1`, [botId]).catch(() => null);
+  const ctx = { orgId: await orgForAgent(m?.agent_id), agentId: m?.agent_id ?? null };
+  const mp3 = await ttsMp3(org, text, ctx);
   if (!mp3) return false;
   try {
     const r = await fetch(`${rc.base}/api/v1/bot/${botId}/output_audio/`, {
@@ -74,8 +78,8 @@ async function speakInCall(botId: string, text: string): Promise<boolean> {
 }
 
 // Generate a short, spoken, grounded reply to something a participant said.
-async function replyTo(botId: string, said: string): Promise<string | null> {
-  const c = await getCompany();
+async function replyTo(org: string, botId: string, said: string): Promise<string | null> {
+  const c = await getCompany(org);
   const m = await one<{ agent_id: string | null }>(`SELECT agent_id FROM meetings WHERE id = $1`, [botId]);
   let persona = `You are ${c.name}'s AI on a live call.`;
   if (m?.agent_id) {
@@ -83,10 +87,10 @@ async function replyTo(botId: string, said: string): Promise<string | null> {
     if (a?.instructions) persona = a.instructions;
     else if (a?.name) persona = `You are ${a.name}${a.role ? `, ${a.role}` : ""} at ${c.name}.`;
   }
-  const active = await getActiveProvider();
+  const active = await getActiveProvider(org);
   if (!active) return null;
   const sys = `${persona}\nYou are speaking OUT LOUD in a live video call. A participant just said something — respond helpfully in 1-2 short spoken sentences (natural to hear, no markdown, no lists). If they didn't ask anything answerable, reply briefly and warmly. Company: ${c.name} — ${c.coreBusiness || c.industry}.`;
-  const r = await completeProviderChat(active, [ { role: "system", content: sys }, { role: "user", content: said } ]);
+  const r = await completeProviderChat(active, [ { role: "system", content: sys }, { role: "user", content: said } ], { ctx: { orgId: await orgForAgent(m?.agent_id), agentId: m?.agent_id ?? null }, kind: "meeting_reply" });
   return r.ok && r.content ? r.content.trim() : null;
 }
 
@@ -97,7 +101,7 @@ export default async function meetingsRoutes(app: FastifyInstance) {
     const meetingUrl = (b.meetingUrl ?? "").trim();
     const botName = (b.botName ?? "After Human").trim() || "After Human";
     if (!meetingUrl) return reply.code(400).send({ error: "meetingUrl required" });
-    const rc = await recall();
+    const rc = await recall(orgId(req));
     if (!rc) return reply.code(400).send({ error: "Recall.ai not connected — add the key in Integrations." });
     try {
       const r = await fetch(`${rc.base}/api/v1/bot/`, {
@@ -112,9 +116,9 @@ export default async function meetingsRoutes(app: FastifyInstance) {
       const status = raw === "unknown" ? "joining" : raw;
       if (!id) return reply.code(502).send({ error: "Recall did not return a bot id", detail: JSON.stringify(j).slice(0, 200) });
       await query(
-        `INSERT INTO meetings (id, meeting_url, bot_name, agent_id, status) VALUES ($1,$2,$3,$4,$5)
+        `INSERT INTO meetings (id, meeting_url, bot_name, agent_id, status, org_id) VALUES ($1,$2,$3,$4,$5,$6)
          ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status`,
-        [id, meetingUrl, botName, b.agentId ?? null, status],
+        [id, meetingUrl, botName, b.agentId ?? null, status, orgId(req)],
       ).catch(() => {});
       return { id, meetingUrl, botName, agentId: b.agentId, status, createdAt: new Date().toISOString() } as Meeting;
     } catch (e) {
@@ -123,9 +127,9 @@ export default async function meetingsRoutes(app: FastifyInstance) {
   });
 
   // List meetings (refreshes live status for still-active bots).
-  app.get("/api/meetings", async (): Promise<Meeting[]> => {
-    const rows = await query(`SELECT * FROM meetings ORDER BY created_at DESC LIMIT 30`);
-    const rc = await recall();
+  app.get("/api/meetings", async (req): Promise<Meeting[]> => {
+    const rows = await query(`SELECT * FROM meetings WHERE org_id = $1 ORDER BY created_at DESC LIMIT 30`, [orgId(req)]);
+    const rc = await recall(orgId(req));
     const meetings = rows.map(rowToMeeting);
     if (rc) {
       for (const m of meetings.filter((x) => !["done", "error", "left", "call_ended"].includes(x.status))) {
@@ -133,7 +137,7 @@ export default async function meetingsRoutes(app: FastifyInstance) {
           const r = await fetch(`${rc.base}/api/v1/bot/${m.id}/`, { headers: { authorization: `Token ${rc.key}` } });
           if (r.ok) {
             const st = statusOf(await r.json());
-            if (st !== m.status) { m.status = st; await query(`UPDATE meetings SET status = $1 WHERE id = $2`, [st, m.id]).catch(() => {}); }
+            if (st !== m.status) { m.status = st; await query(`UPDATE meetings SET status = $1 WHERE id = $2 AND org_id = $3`, [st, m.id, orgId(req)]).catch(() => {}); }
           }
         } catch { /* leave */ }
       }
@@ -144,16 +148,17 @@ export default async function meetingsRoutes(app: FastifyInstance) {
   // One meeting: live status + transcript.
   app.get("/api/meetings/:id", async (req, reply): Promise<Meeting> => {
     const { id } = req.params as { id: string };
-    const row = await one(`SELECT * FROM meetings WHERE id = $1`, [id]);
-    const rc = await recall();
-    const base: Meeting = row ? rowToMeeting(row) : { id, meetingUrl: "", botName: "", status: "unknown", createdAt: new Date().toISOString() };
+    const row = await one(`SELECT * FROM meetings WHERE id = $1 AND org_id = $2`, [id, orgId(req)]);
+    if (!row) { reply.code(404); return { id, meetingUrl: "", botName: "", status: "unknown", createdAt: new Date().toISOString() }; }
+    const rc = await recall(orgId(req));
+    const base: Meeting = rowToMeeting(row);
     if (!rc) { reply.code(400); return base; }
     try {
       const r = await fetch(`${rc.base}/api/v1/bot/${id}/`, { headers: { authorization: `Token ${rc.key}` } });
       if (r.ok) base.status = statusOf(await r.json());
       const t = await fetch(`${rc.base}/api/v1/bot/${id}/transcript/`, { headers: { authorization: `Token ${rc.key}` } });
       if (t.ok) base.transcript = normalizeTranscript(await t.json());
-      await query(`UPDATE meetings SET status = $1 WHERE id = $2`, [base.status, id]).catch(() => {});
+      await query(`UPDATE meetings SET status = $1 WHERE id = $2 AND org_id = $3`, [base.status, id, orgId(req)]).catch(() => {});
     } catch { /* return what we have */ }
     return base;
   });
@@ -161,11 +166,11 @@ export default async function meetingsRoutes(app: FastifyInstance) {
   // Remove the bot from the call.
   app.delete("/api/meetings/:id", async (req) => {
     const { id } = req.params as { id: string };
-    const rc = await recall();
+    const rc = await recall(orgId(req));
     if (rc) {
       try { await fetch(`${rc.base}/api/v1/bot/${id}/leave_call/`, { method: "POST", headers: { authorization: `Token ${rc.key}` } }); } catch { /* ignore */ }
     }
-    await query(`DELETE FROM meetings WHERE id = $1`, [id]).catch(() => {});
+    await query(`DELETE FROM meetings WHERE id = $1 AND org_id = $2`, [id, orgId(req)]).catch(() => {});
     return { ok: true };
   });
 
@@ -174,7 +179,10 @@ export default async function meetingsRoutes(app: FastifyInstance) {
     const { id } = req.params as { id: string };
     const text = ((req.body as { text?: string })?.text ?? "").toString().trim();
     if (!text) return reply.code(400).send({ error: "text required" });
-    const ok = await speakInCall(id, text);
+    // Gate the bot to the caller's org: only speak into a meeting this org owns.
+    const owned = await one<{ id: string }>(`SELECT id FROM meetings WHERE id = $1 AND org_id = $2`, [id, orgId(req)]);
+    if (!owned) return reply.code(404).send({ error: "not found" });
+    const ok = await speakInCall(orgId(req), id, text);
     return ok ? { ok: true } : reply.code(502).send({ error: "Could not speak (check Recall + a voice provider, and that the bot is in the call)." });
   });
 
@@ -199,9 +207,9 @@ export default async function meetingsRoutes(app: FastifyInstance) {
     if (!/[?]|\b(what|how|why|when|can you|could you|tell me|show|explain|do you|walk|price|cost|demo)\b/i.test(text)) return;
     state.busy = true; convo.set(botId, state);
     try {
-      const answer = await replyTo(botId, text);
+      const answer = await replyTo(orgId(req), botId, text);
       if (answer) {
-        await speakInCall(botId, answer);
+        await speakInCall(orgId(req), botId, answer);
         // Mute for ~ the spoken duration so we don't transcribe+answer ourselves.
         const secs = Math.min(30, Math.max(4, Math.round(answer.split(/\s+/).length / 2.5)));
         convo.set(botId, { busy: false, mutedUntil: Date.now() + secs * 1000 });

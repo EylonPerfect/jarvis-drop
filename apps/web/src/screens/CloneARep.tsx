@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { api, getAccessKey } from "../api/client";
-import type { PersonaSpec, PersonaStyle, NewAgent, CallPlaybook } from "@jarvis/shared";
+import type { PersonaSpec, PersonaStyle, NewAgent, CallPlaybook, PersonaAuthority, AuthorityLevel } from "@jarvis/shared";
+import { DEFAULT_AUTHORITY } from "@jarvis/shared";
 import "../pds.css";
 
 // ============================================================
@@ -33,7 +34,7 @@ const kChars = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(
 
 const STEP_DEFS = [
   { n: 1, label: "Identity" }, { n: 2, label: "Sources" }, { n: 3, label: "Extraction" },
-  { n: 4, label: "Voice" }, { n: 5, label: "Confirm" },
+  { n: 4, label: "Voice" }, { n: 5, label: "Demo system" }, { n: 6, label: "Confirm" },
 ] as const;
 
 // Style vector captions — thresholds match the design (under .4 / under .7 / above)
@@ -134,6 +135,24 @@ export default function CloneARep() {
   const [demoLoaded, setDemoLoaded] = useState(false);
   const [demoBusy, setDemoBusy] = useState(false);
   const [demoNote, setDemoNote] = useState<{ ok: boolean; text: string } | null>(null);
+  const [demoSystem, setDemoSystem] = useState("");
+  const [demoUrl, setDemoUrl] = useState("");
+  const [demoNotes, setDemoNotes] = useState("");
+
+  // The clone's OWN meeting/calendar account (Launch decision #1): a real
+  // dedicated account (e.g. maya-ai@theircompany.com). Invites to this inbox land
+  // on the clone's calendar; the calendar-watch scheduler joins each booking at
+  // its start time. Saved via PUT /api/clones/:agentId/meeting-account (password
+  // write-only + encrypted). calendarWatch/allowInstantJoins are per-clone toggles.
+  const [maEmail, setMaEmail] = useState("");
+  const [maUsername, setMaUsername] = useState("");
+  const [maProvider, setMaProvider] = useState("");
+  const [maPw, setMaPw] = useState("");
+  const [maHasPw, setMaHasPw] = useState(false);
+  const [maWatch, setMaWatch] = useState(false);
+  const [maInstant, setMaInstant] = useState(true);
+  const [maBusy, setMaBusy] = useState(false);
+  const [maNote, setMaNote] = useState<{ ok: boolean; text: string } | null>(null);
 
   // theme-conditional values for tokens that exist in the design but not in pds.css
   const T = theme === "dark"
@@ -166,7 +185,7 @@ export default function CloneARep() {
           if (found.persona.identity.company) setCompany(found.persona.identity.company);
         }
         void loadSources(found.id);
-        if (openReq?.step && openReq.step >= 1 && openReq.step <= 5) setStep(openReq.step);
+        if (openReq?.step && openReq.step >= 1 && openReq.step <= 6) setStep(openReq.step);
       } else if (!openReq) {
         try { localStorage.removeItem("clonerep_draft"); } catch { /* ignore */ }
       }
@@ -187,15 +206,44 @@ export default function CloneARep() {
     void api.get<{ playbook: CallPlaybook }>(`/api/clones/${agent.id}/playbook`).then((r) => setPlaybook(r.playbook)).catch(() => setPlaybook(null));
   }, [step, agent]);
 
-  // Pre-fill this clone's demo login on the confirm step (once the agent exists).
+  // Pre-fill this clone's demo system + login on the Demo system step (step 5),
+  // once the agent exists.
   useEffect(() => {
     if (step !== 5 || !agent) return;
     setDemoLoaded(false); setDemoNote(null);
-    void api.get<{ email: string; hasPassword: boolean; inherited: boolean }>(`/api/clones/${agent.id}/demo-login`)
-      .then((r) => { setDemoEmail(r.email || ""); setDemoHasPw(!!r.hasPassword); setDemoInherited(!!r.inherited); })
+    void api.get<{ system?: string; url?: string; notes?: string; email: string; hasPassword: boolean; inherited: boolean }>(`/api/clones/${agent.id}/demo-login`)
+      .then((r) => { setDemoSystem(r.system || ""); setDemoUrl(r.url || ""); setDemoNotes(r.notes || ""); setDemoEmail(r.email || ""); setDemoHasPw(!!r.hasPassword); setDemoInherited(!!r.inherited); })
       .catch(() => { /* leave empty — nothing set yet */ })
       .finally(() => setDemoLoaded(true));
   }, [step, agent]);
+
+  // Pre-fill this clone's meeting/calendar account on the Demo system step.
+  useEffect(() => {
+    if (step !== 5 || !agent) return;
+    void api.get<{ email: string; username: string; provider: string; hasPassword: boolean; calendarWatch: boolean; allowInstantJoins: boolean }>(`/api/clones/${agent.id}/meeting-account`)
+      .then((r) => { setMaEmail(r.email || ""); setMaUsername(r.username || ""); setMaProvider(r.provider || ""); setMaHasPw(!!r.hasPassword); setMaWatch(!!r.calendarWatch); setMaInstant(r.allowInstantJoins !== false); })
+      .catch(() => { /* nothing set yet */ });
+  }, [step, agent]);
+
+  // Save the clone's meeting account (password write-only; omit to keep it).
+  async function saveMeetingAccount() {
+    if (!agent || maBusy) return;
+    const e = maEmail.trim();
+    if (e && !e.includes("@")) { setMaNote({ ok: false, text: "That email doesn't look valid." }); return; }
+    if (e && !maHasPw && !maPw) { setMaNote({ ok: false, text: "Add the account password so the clone can watch its calendar and join." }); return; }
+    setMaBusy(true); setMaNote(null);
+    try {
+      await api.put(`/api/clones/${agent.id}/meeting-account`, {
+        email: e, username: maUsername.trim(), provider: maProvider.trim(),
+        ...(maPw ? { password: maPw } : {}), calendarWatch: maWatch, allowInstantJoins: maInstant,
+      });
+      setMaPw("");
+      const r = await api.get<{ email: string; username: string; provider: string; hasPassword: boolean; calendarWatch: boolean; allowInstantJoins: boolean }>(`/api/clones/${agent.id}/meeting-account`).catch(() => null);
+      if (r) { setMaEmail(r.email || ""); setMaUsername(r.username || ""); setMaProvider(r.provider || ""); setMaHasPw(!!r.hasPassword); setMaWatch(!!r.calendarWatch); setMaInstant(r.allowInstantJoins !== false); }
+      setMaNote({ ok: true, text: "Saved — this clone watches its own calendar." });
+    } catch (ex) { setMaNote({ ok: false, text: ex instanceof Error ? ex.message : String(ex) }); }
+    setMaBusy(false);
+  }
 
   // Save THIS clone's demo login. Send `password` only when a new one was typed,
   // so an email-only edit never wipes the stored password. Saving turns the
@@ -203,18 +251,38 @@ export default function CloneARep() {
   async function saveDemoLogin() {
     if (!agent || demoBusy) return;
     const e = demoEmail.trim();
-    if (!e || !e.includes("@")) { setDemoNote({ ok: false, text: "Enter a valid email." }); return; }
-    // An inherited clone has no OWN password yet, so the first override must set one.
-    if (!(demoHasPw && !demoInherited) && !demoPw) { setDemoNote({ ok: false, text: "Set a password — this clone has none yet." }); return; }
+    if (e && !e.includes("@")) { setDemoNote({ ok: false, text: "That email doesn't look valid." }); return; }
+    // Credentials are optional here ("if needed"): a clone can connect by session
+    // handoff or just demonstrate. But if a username is set, nudge for a password
+    // the first time so the clone can actually sign in.
+    if (e && !(demoHasPw && !demoInherited) && !demoPw) { setDemoNote({ ok: false, text: "Add a password so the clone can sign in — or clear the username to skip auto-login." }); return; }
     setDemoBusy(true); setDemoNote(null);
     try {
-      await api.put(`/api/clones/${agent.id}/demo-login`, { email: e, ...(demoPw ? { password: demoPw } : {}) });
+      await api.put(`/api/clones/${agent.id}/demo-login`, {
+        system: demoSystem.trim(), url: demoUrl.trim(), notes: demoNotes.trim(),
+        email: e, ...(demoPw ? { password: demoPw } : {}),
+      });
       setDemoPw("");
-      const r = await api.get<{ email: string; hasPassword: boolean; inherited: boolean }>(`/api/clones/${agent.id}/demo-login`).catch(() => null);
-      if (r) { setDemoEmail(r.email || ""); setDemoHasPw(!!r.hasPassword); setDemoInherited(!!r.inherited); }
-      setDemoNote({ ok: true, text: "Saved — this clone signs in with this account." });
+      const r = await api.get<{ system?: string; url?: string; notes?: string; email: string; hasPassword: boolean; inherited: boolean }>(`/api/clones/${agent.id}/demo-login`).catch(() => null);
+      if (r) { setDemoSystem(r.system || ""); setDemoUrl(r.url || ""); setDemoNotes(r.notes || ""); setDemoEmail(r.email || ""); setDemoHasPw(!!r.hasPassword); setDemoInherited(!!r.inherited); }
+      setDemoNote({ ok: true, text: "Saved — this clone's demo system is set." });
     } catch (ex) { setDemoNote({ ok: false, text: ex instanceof Error ? ex.message : String(ex) }); }
     setDemoBusy(false);
+  }
+
+  // Persist the demo system quietly when leaving the step via Continue/Finish,
+  // so typed values aren't lost if the user didn't press Save. Best-effort.
+  async function persistDemoQuiet() {
+    if (!agent) return;
+    const e = demoEmail.trim();
+    if (e && !e.includes("@")) return; // invalid email — the Save button surfaces it
+    if (!demoSystem.trim() && !demoUrl.trim() && !demoNotes.trim() && !e && !demoPw) return; // nothing entered — keep inheriting the default
+    try {
+      await api.put(`/api/clones/${agent.id}/demo-login`, {
+        system: demoSystem.trim(), url: demoUrl.trim(), notes: demoNotes.trim(),
+        email: e, ...(demoPw ? { password: demoPw } : {}),
+      });
+    } catch { /* the visible Save button reports errors */ }
   }
 
   async function loadSources(agentId: string) {
@@ -327,12 +395,11 @@ export default function CloneARep() {
       const r = await api.post<{ version: { id: string; number: number; spec: PersonaSpec } }>(`/api/clones/${ag.id}/persona/extract`, {});
       setSpec(r.version.spec); setVerNum(r.version.number); setDirty(false);
       if (finishAfter) {
-        // Quick clone: defaults are good enough — clear the draft marker, start
-        // the orchestrator (grounding, voice, rehearsal) and watch it on Readiness.
-        try { localStorage.removeItem("clonerep_draft"); localStorage.setItem("pds_agent", ag.id); } catch { /* ignore */ }
-        void api.post("/api/pipeline/start", { agentId: ag.id }).catch(() => { /* Readiness shows the story either way */ });
+        // Quick clone skips the review + confirm steps, but Voice is a REQUIRED
+        // creation step — land on it so a voice is chosen before the clone is used.
+        // The finish (pipeline start + Calibration Room) runs on leaving Voice.
         setExtracting(false);
-        nav("readiness");
+        setStep(4);
         return;
       }
       setStep(3);
@@ -450,6 +517,136 @@ export default function CloneARep() {
     setCloningVoice(false);
   }
 
+  // ============================================================
+  // CLONE AUTHORITY (#3) — authorized-facts sheet + authority dial.
+  // Loaded when entering the extraction step; saved as a persona edit.
+  // ============================================================
+  const [authority, setAuthority] = useState<PersonaAuthority>(() => ({ level: DEFAULT_AUTHORITY.level, facts: { ...DEFAULT_AUTHORITY.facts } }));
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authNote, setAuthNote] = useState<{ ok: boolean; text: string } | null>(null);
+  useEffect(() => {
+    if (step !== 3 || !agent) return;
+    void api.get<{ authority: PersonaAuthority }>(`/api/clones/${agent.id}/authority`)
+      .then((r) => { if (r.authority) setAuthority({ level: r.authority.level, facts: { ...DEFAULT_AUTHORITY.facts, ...r.authority.facts } }); })
+      .catch(() => { /* keep defaults */ });
+  }, [step, agent]);
+  async function saveAuthority() {
+    if (!agent || authBusy) return;
+    setAuthBusy(true); setAuthNote(null);
+    try {
+      const r = await api.put<{ version?: number }>(`/api/clones/${agent.id}/authority`, { authority });
+      if (spec) setSpec({ ...spec, authority });
+      if (typeof r.version === "number") setVerNum(r.version);
+      setAuthNote({ ok: true, text: "Saved — the clone asserts only from this sheet and defers otherwise." });
+    } catch (e) { setAuthNote({ ok: false, text: e instanceof Error ? e.message : String(e) }); }
+    setAuthBusy(false);
+  }
+  const AUTHORITY_META: { level: AuthorityLevel; label: string; blurb: string }[] = [
+    { level: "conservative", label: "Conservative", blurb: "Defers on all pricing and commitments." },
+    { level: "standard", label: "Standard", blurb: "Quotes list pricing + standard terms; defers on discounts." },
+    { level: "empowered", label: "Empowered", blurb: "Offers discounts within a set band; makes soft commitments." },
+  ];
+
+  // ============================================================
+  // ACTIVATION QUALITY (#4) — ingest quality check (guide, don't gate).
+  // ============================================================
+  type IngestSource = { id: string; title: string; repIsMainSpeaker: boolean | null; repTalkSharePct: number | null; callType: string; demoPresent: boolean | null; audioQuality: string; issues: string[]; guidance: string[] };
+  type IngestResult = { technicalFloorMet: boolean; checkedAt: string; sources: IngestSource[]; summary: string; addNext: string[]; audioQuality: "clean" | "choppy" | "unknown" };
+  const [ingest, setIngest] = useState<IngestResult | null>(null);
+  const [ingestBusy, setIngestBusy] = useState(false);
+  const [ingestErr, setIngestErr] = useState("");
+  useEffect(() => {
+    if (!agent) return;
+    void api.get<{ result: IngestResult | null }>(`/api/clones/${agent.id}/ingest-check`).then((r) => setIngest(r.result)).catch(() => { /* none yet */ });
+  }, [agent]);
+  async function runIngestCheck() {
+    if (!agent || ingestBusy) return;
+    setIngestBusy(true); setIngestErr("");
+    try {
+      const r = await api.post<IngestResult>(`/api/clones/${agent.id}/ingest-check`, {});
+      setIngest(r);
+    } catch (e) { setIngestErr(e instanceof Error ? e.message : String(e)); }
+    setIngestBusy(false);
+  }
+
+  // ============================================================
+  // VOICE SOURCE (feature 3) — clean-sample record/upload as the DEFAULT,
+  // fed to ElevenLabs instant cloning. Auto-extract-from-calls is the fallback.
+  // ============================================================
+  const [recording, setRecording] = useState(false);
+  const [recSecs, setRecSecs] = useState(0);
+  const [sampleBlob, setSampleBlob] = useState<Blob | null>(null);
+  const [sampleBusy, setSampleBusy] = useState(false);
+  const [sampleMsg, setSampleMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const recRef = useRef<MediaRecorder | null>(null);
+  const recChunks = useRef<Blob[]>([]);
+  const recTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  function stopRecTimer() { if (recTimer.current) { clearInterval(recTimer.current); recTimer.current = null; } }
+  async function startRecording() {
+    if (recording) return;
+    setSampleMsg(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mr = new MediaRecorder(stream);
+      recChunks.current = [];
+      mr.ondataavailable = (e) => { if (e.data.size) recChunks.current.push(e.data); };
+      mr.onstop = () => {
+        stream.getTracks().forEach((t) => t.stop());
+        setSampleBlob(new Blob(recChunks.current, { type: mr.mimeType || "audio/webm" }));
+      };
+      recRef.current = mr;
+      mr.start();
+      setRecording(true); setRecSecs(0);
+      recTimer.current = setInterval(() => setRecSecs((s) => { const n = s + 1; if (n >= 90) { stopRecording(); } return n; }), 1000);
+    } catch (e) { setSampleMsg({ ok: false, text: "Microphone access failed: " + (e instanceof Error ? e.message : String(e)) }); }
+  }
+  function stopRecording() {
+    stopRecTimer();
+    try { recRef.current?.stop(); } catch { /* already stopped */ }
+    recRef.current = null;
+    setRecording(false);
+  }
+  function pickSampleFile(file: File | undefined) {
+    if (!file) return;
+    if (!file.type.startsWith("audio/")) { setSampleMsg({ ok: false, text: "That's not an audio file." }); return; }
+    if (file.size > 11 * 1024 * 1024) { setSampleMsg({ ok: false, text: "Keep the sample under ~90 seconds." }); return; }
+    setSampleBlob(file); setSampleMsg(null); setRecSecs(0);
+  }
+  async function submitSample() {
+    if (!agent || !sampleBlob || sampleBusy) return;
+    setSampleBusy(true); setSampleMsg(null);
+    try {
+      const b64 = await new Promise<string>((resolve, reject) => {
+        const rd = new FileReader();
+        rd.onload = () => resolve(String(rd.result || "").split(",")[1] || "");
+        rd.onerror = () => reject(new Error("could not read the sample"));
+        rd.readAsDataURL(sampleBlob);
+      });
+      const res = await fetch(`${api.base}/api/voice/clone-sample`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(getAccessKey() ? { "X-API-Key": getAccessKey() } : {}) },
+        body: JSON.stringify({ agentId: agent.id, audioBase64: b64, mime: sampleBlob.type, seconds: recSecs || undefined }),
+      });
+      const j = (await res.json().catch(() => ({}))) as { voiceId?: string; error?: string };
+      if (!res.ok || !j.voiceId) throw new Error(j.error || `clone-sample → ${res.status}`);
+      const vr = await api.get<{ voices: VoiceOpt[]; connected: boolean }>("/api/voice/options").catch(() => null);
+      if (vr) setVoices(vr.voices);
+      const picked = vr?.voices.find((v) => v.id === j.voiceId);
+      await chooseVoice(picked ?? ({ id: j.voiceId, name: realVoiceName, tagline: "", gender: "", accent: "", age: "", category: "cloned", previewUrl: "" } as VoiceOpt));
+      setSampleBlob(null);
+      setSampleMsg({ ok: true, text: `Voice cloned from your clean sample and selected ✓` });
+    } catch (e) { setSampleMsg({ ok: false, text: e instanceof Error ? e.message : String(e) }); }
+    setSampleBusy(false);
+  }
+
+  // ACTIVATION QUALITY (#4) — legible readiness on the Confirm step.
+  type Readiness = { score: number; distanceTo70: number; toReach70: string[]; dimensions: { key: string; label: string; confidence: number | null; pass: boolean }[] };
+  const [readiness, setReadiness] = useState<Readiness | null>(null);
+  useEffect(() => {
+    if (step !== 6 || !agent) return;
+    void api.get<Readiness>(`/api/readiness/${agent.id}`).then(setReadiness).catch(() => setReadiness(null));
+  }, [step, agent]);
+
   // Fathom share links (step 2): paste one or more links, transcripts are read
   // from the public share pages server-side — no API connection needed.
   const [fLinks, setFLinks] = useState("");
@@ -500,10 +697,16 @@ export default function CloneARep() {
     }
     if (step === 2) { void extractFromSources(quick); return; }
     if (step === 3) { await commitIfDirty(); setStep(4); return; }
+    // Voice (step 4) is required in both modes.
+    if (step === 4 && !voiceId) { alert("Pick a voice before continuing — it's how the clone will sound on the call."); return; }
+    // Both modes stop at Demo system (step 5); guided then goes to Confirm (6),
+    // quick finishes straight from there.
     if (step === 4) { setStep(5); return; }
-    // Finish: the draft is now a real clone — clear the resume marker so the
-    // next "Clone a rep" starts fresh instead of editing this one. Land in the
-    // calibration room: text tuning up front, the live screen pre-warming.
+    if (step === 5 && !quick) { await persistDemoQuiet(); setStep(6); return; }
+    // Finish (guided Confirm = 6, or quick straight from Demo system = 5): persist
+    // the demo system, clear the resume marker so the next "Clone a rep" starts
+    // fresh, and land in the calibration room.
+    if (step === 5) { await persistDemoQuiet(); }
     try { localStorage.removeItem("clonerep_draft"); } catch { /* ignore */ }
     if (agent) {
       try { localStorage.setItem("pds_agent", agent.id); } catch { /* ignore */ }
@@ -553,11 +756,11 @@ export default function CloneARep() {
     })),
   ].filter((r) => !filterQ.trim() || r.title.toLowerCase().includes(filterQ.trim().toLowerCase()));
 
-  const nextLabel = step === 2 ? (quick ? "Clone with defaults" : "Extract persona") : step === 3 ? (saving ? "Saving…" : "Continue") : step === 5 ? "Enter the Calibration Room" : "Continue";
+  const nextLabel = step === 2 ? "Extract persona" : step === 3 ? (saving ? "Saving…" : "Continue") : (step === 6 || (step === 5 && quick)) ? "Enter the Calibration Room" : "Continue";
   const nextIcon = step === 2 ? "auto_awesome" : "arrow_forward";
   const stepHint = step === 3
     ? (dirty ? "Edits save as a new persona version when you continue" : "Every value points back to the source transcripts")
-    : step === 5 ? "Draft clone · not yet live" : `Step ${step} of 5`;
+    : step === 6 ? "Draft clone · not yet live" : `Step ${step} of 6`;
 
   return (
     <div className="pmx" data-theme={theme} style={{ height: "100%", overflowY: "auto" }}>
@@ -704,6 +907,9 @@ export default function CloneARep() {
             <div style={kicker}>Step 2 of 5 · Sources</div>
             <h1 style={h1S}>Feed the clone real calls</h1>
             <p style={{ ...leadS, maxWidth: 680 }}>Paste transcripts of {firstName} on real customer calls. The more range you give, the more faithful the clone. Everything extracted later points back to these sources.</p>
+            <div style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "8px 14px", borderRadius: 12, background: "var(--purple-soft)", color: "var(--purple-ink)", fontSize: 12.5, fontWeight: 700, marginBottom: 20 }}>
+              <span className="material-symbols-rounded" style={{ fontSize: 16 }}>lightbulb</span>Your clone is only as good as your best calls.
+            </div>
 
             <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1.7fr) minmax(0,1fr)", gap: 18, alignItems: "start" }}>
               <div style={{ ...cardS, overflow: "hidden" }}>
@@ -813,6 +1019,43 @@ export default function CloneARep() {
                   <div style={{ fontSize: 13.5, fontWeight: 600, marginTop: 8 }}>Drag transcripts here</div>
                   <div style={{ fontSize: 12, color: "var(--ink3)", marginTop: 2 }}>or click to upload .txt, .vtt, .srt</div>
                   <input ref={fileRef} type="file" accept=".txt,.vtt,.srt,text/plain" multiple onChange={(e) => { void addFiles(e.target.files); e.target.value = ""; }} style={{ display: "none" }} />
+                </div>
+
+                {/* ACTIVATION QUALITY (#4) — ingest quality check, inline before building */}
+                <div style={{ ...cardS, padding: 20 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span className="material-symbols-rounded" style={{ fontSize: 19, color: "var(--purple)", fontVariationSettings: "'FILL' 1" }}>fact_check</span>
+                    <div style={{ fontSize: 13.5, fontWeight: 800 }}>Call quality check</div>
+                  </div>
+                  <div style={{ fontSize: 12, color: "var(--ink3)", lineHeight: 1.5, margin: "6px 0 12px" }}>
+                    We scan your calls for what would weaken the clone — is the rep the main speaker, is a demo present, is the audio clean — and tell you what to add. This never blocks building; it just guides you.
+                  </div>
+                  <button onClick={() => void runIngestCheck()} disabled={ingestBusy || !agent || sources.length === 0} title={!agent || sources.length === 0 ? "Add and extract calls first — the check reads saved calls" : undefined} style={{ display: "inline-flex", alignItems: "center", gap: 7, height: 36, padding: "0 14px", borderRadius: 9999, border: "1px solid var(--border)", background: "transparent", color: "var(--ink1)", ...btnFont, fontSize: 12.5, opacity: ingestBusy || !agent || sources.length === 0 ? 0.55 : 1 }}>
+                    <span className="material-symbols-rounded" style={{ fontSize: 16, ...(ingestBusy ? { animation: "spin 1s linear infinite" } : {}) }}>{ingestBusy ? "progress_activity" : "fact_check"}</span>
+                    {ingestBusy ? "Checking your calls…" : ingest ? "Re-check calls" : "Check my calls"}
+                  </button>
+                  {ingestErr && <div style={{ fontSize: 12, color: "var(--error-ink)", marginTop: 8 }}>{ingestErr}</div>}
+                  {ingest && (
+                    <div style={{ marginTop: 12 }}>
+                      <div style={{ fontSize: 12.5, fontWeight: 700, color: ingest.addNext.length ? "var(--warning-ink)" : "var(--success-ink)", lineHeight: 1.5 }}>{ingest.summary}</div>
+                      {ingest.addNext.length > 0 && (
+                        <ul style={{ margin: "8px 0 0", paddingLeft: 18, display: "flex", flexDirection: "column", gap: 5 }}>
+                          {ingest.addNext.map((g, i) => <li key={i} style={{ fontSize: 12, color: "var(--ink2)", lineHeight: 1.45 }}>{g}</li>)}
+                        </ul>
+                      )}
+                      {ingest.sources.length > 0 && (
+                        <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 12 }}>
+                          {ingest.sources.map((s) => (
+                            <div key={s.id} style={{ fontSize: 11.5, color: "var(--ink3)", lineHeight: 1.4 }}>
+                              <span style={{ fontWeight: 700, color: "var(--ink2)" }}>{s.title.slice(0, 40)}</span>
+                              {" · "}{s.callType}{s.demoPresent ? " · demo" : ""}{s.repTalkSharePct != null ? ` · rep ${s.repTalkSharePct}%` : ""}{s.audioQuality !== "unknown" ? ` · audio ${s.audioQuality}` : ""}
+                              {s.guidance.length > 0 && <span style={{ color: "var(--warning-ink)" }}>{" — " + s.guidance[0]}</span>}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -950,6 +1193,58 @@ export default function CloneARep() {
                 </div>
               </div>
             </div>
+
+            {/* CLONE AUTHORITY (#3) — authorized-facts sheet + authority dial */}
+            <div style={{ ...cardS, padding: 24, marginTop: 18 }}>
+              <div style={secHead}>
+                <span className="material-symbols-rounded" style={{ fontSize: 20, color: "var(--purple)", fontVariationSettings: "'FILL' 1" }}>verified_user</span>
+                <div style={secTitle}>Authority &amp; authorized facts</div>
+                <span style={{ marginLeft: "auto", fontSize: 11, fontWeight: 600, color: "var(--ink3)" }}>you control this</span>
+              </div>
+              <div style={secSub}>The clone states company facts ONLY from this sheet (plus what it learned on calls) and defers on everything else. Two rules are hard-wired and can't be turned off: it never invents a number it wasn't given, and it never signs a binding contract by voice.</div>
+
+              <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: ".05em", textTransform: "uppercase", color: "var(--ink3)", margin: "6px 0 10px" }}>How far it can go</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10, marginBottom: 20 }}>
+                {AUTHORITY_META.map((m) => {
+                  const on = authority.level === m.level;
+                  return (
+                    <button key={m.level} onClick={() => setAuthority((a) => ({ ...a, level: m.level }))} style={{ textAlign: "left", padding: "12px 14px", borderRadius: 14, border: `2px solid ${on ? "var(--purple)" : "var(--border)"}`, background: on ? "var(--purple-soft)" : "transparent", cursor: "pointer", fontFamily: "inherit" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <span className="material-symbols-rounded" style={{ fontSize: 16, color: on ? "var(--purple)" : "var(--ink3)", fontVariationSettings: on ? "'FILL' 1" : undefined }}>{on ? "radio_button_checked" : "radio_button_unchecked"}</span>
+                        <span style={{ fontSize: 13, fontWeight: 800, color: on ? "var(--purple-ink)" : "var(--ink1)" }}>{m.label}</span>
+                      </div>
+                      <div style={{ fontSize: 11.5, color: "var(--ink2)", marginTop: 5, lineHeight: 1.4 }}>{m.blurb}</div>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 16 }}>
+                {([
+                  { key: "pricing", label: "Pricing it may quote", ph: "e.g. Starter $500/mo, Pro $1,500/mo, annual −15%. No other discounts without sign-off." },
+                  { key: "product", label: "Key product facts", ph: "e.g. Integrates with Greenhouse & Lever. SOC2 Type II. Sources 100M+ candidate profiles." },
+                  { key: "positioning", label: "Approved competitive positioning", ph: "e.g. vs LinkedIn Recruiter: we automate outreach end-to-end; don't disparage them." },
+                  { key: "commonAnswers", label: "Approved answers to common questions", ph: "e.g. Implementation takes ~2 weeks. Month-to-month, cancel anytime." },
+                ] as { key: keyof PersonaAuthority["facts"]; label: string; ph: string }[]).map((f) => (
+                  <div key={f.key} className="field" style={{ margin: 0 }}>
+                    <label style={lblS}>{f.label}</label>
+                    <textarea
+                      value={authority.facts[f.key]}
+                      onChange={(e) => setAuthority((a) => ({ ...a, facts: { ...a.facts, [f.key]: e.target.value } }))}
+                      rows={4}
+                      placeholder={f.ph}
+                      style={{ ...inputS, height: "auto", padding: "12px 14px", resize: "vertical", lineHeight: 1.5, fontSize: 13 }}
+                    />
+                  </div>
+                ))}
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 16 }}>
+                {authNote && <span style={{ fontSize: 12, fontWeight: 700, color: authNote.ok ? "var(--success-ink)" : "var(--error-ink)" }}>{authNote.text}</span>}
+                <button onClick={() => void saveAuthority()} disabled={authBusy || !agent} style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 7, height: 38, padding: "0 18px", borderRadius: 9999, background: "var(--purple)", color: "#fff", border: "none", ...btnFont, opacity: authBusy || !agent ? 0.6 : 1 }}>
+                  {authBusy ? "Saving…" : "Save authority sheet"}
+                </button>
+              </div>
+            </div>
           </div>
         )}
         {step === 3 && !spec && (
@@ -967,18 +1262,57 @@ export default function CloneARep() {
           <div style={{ maxWidth: 980 }}>
             <div style={kicker}>Step 4 of 5 · Voice</div>
             <h1 style={h1S}>Give the clone {firstName}'s voice</h1>
-            <p style={leadS}>Clone {firstName}'s real voice straight from their call recordings — or pick the closest library voice below and preview it before choosing.</p>
+            <p style={leadS}>The cleanest voice comes from a short, quiet sample — record or upload 60–90 seconds below (recommended). Or clone straight from the call recordings, or pick a library voice and preview it.</p>
 
-            {/* the real thing: built server-side from the rep's actual speech on their Fathom calls */}
-            <div style={{ ...cardS, border: "2px solid var(--purple)", background: "var(--purple-soft)", padding: "16px 20px", marginBottom: 18, display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
-              <span className="material-symbols-rounded" style={{ fontSize: 28, color: "var(--purple-ink)" }}>graphic_eq</span>
+            {/* VOICE SOURCE (feature 3) — RECOMMENDED DEFAULT: clean 60–90s sample → instant cloning */}
+            <div style={{ ...cardS, border: "2px solid var(--purple)", background: "var(--purple-soft)", padding: "16px 20px", marginBottom: 14 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <span className="material-symbols-rounded" style={{ fontSize: 26, color: "var(--purple-ink)" }}>mic</span>
+                <div style={{ flex: 1, minWidth: 220 }}>
+                  <div style={{ fontSize: 14.5, fontWeight: 800 }}>Record a clean sample <span style={{ ...pillS, background: "var(--purple)", color: "#fff", marginLeft: 6 }}>recommended</span></div>
+                  <div style={{ fontSize: 12.5, color: "var(--ink2)", marginTop: 2 }}>60–90 seconds of {firstName} speaking in a quiet room gives the truest voice. Recording your own sample is your consent (the T&amp;C covers it).</div>
+                </div>
+                {!recording ? (
+                  <button onClick={() => void startRecording()} disabled={sampleBusy || !agent} style={{ display: "flex", alignItems: "center", gap: 8, height: 40, padding: "0 16px", borderRadius: 9999, border: "none", background: "var(--purple)", color: "#fff", fontSize: 13, fontWeight: 800, cursor: "pointer", fontFamily: "inherit", opacity: sampleBusy || !agent ? 0.6 : 1 }}>
+                    <span className="material-symbols-rounded" style={{ fontSize: 18 }}>fiber_manual_record</span>Record
+                  </button>
+                ) : (
+                  <button onClick={() => stopRecording()} style={{ display: "flex", alignItems: "center", gap: 8, height: 40, padding: "0 16px", borderRadius: 9999, border: "none", background: "var(--error-ink)", color: "#fff", fontSize: 13, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>
+                    <span className="material-symbols-rounded" style={{ fontSize: 18 }}>stop</span>Stop · {recSecs}s
+                  </button>
+                )}
+                <label style={{ display: "inline-flex", alignItems: "center", gap: 6, height: 40, padding: "0 14px", borderRadius: 9999, border: "1px solid var(--border)", color: "var(--ink1)", ...btnFont, fontSize: 12.5, cursor: agent ? "pointer" : "not-allowed", opacity: agent ? 1 : 0.6 }}>
+                  <span className="material-symbols-rounded" style={{ fontSize: 17 }}>upload</span>Upload
+                  <input type="file" accept="audio/*" disabled={!agent} style={{ display: "none" }} onChange={(e) => { pickSampleFile(e.target.files?.[0]); e.target.value = ""; }} />
+                </label>
+              </div>
+              {recording && <div style={{ fontSize: 12, color: "var(--purple-ink)", fontWeight: 700, marginTop: 10 }}>Recording… speak naturally. Auto-stops at 90s.</div>}
+              {sampleBlob && !recording && (
+                <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 12 }}>
+                  <span style={{ fontSize: 12.5, color: "var(--ink2)", fontWeight: 600 }}>Sample ready{recSecs ? ` · ~${recSecs}s` : ""}.</span>
+                  <button onClick={() => void submitSample()} disabled={sampleBusy} style={{ display: "flex", alignItems: "center", gap: 7, height: 38, padding: "0 16px", borderRadius: 9999, border: "none", background: "var(--purple)", color: "#fff", ...btnFont, opacity: sampleBusy ? 0.6 : 1 }}>
+                    {sampleBusy && <span className="material-symbols-rounded" style={{ fontSize: 16, animation: "spin 1s linear infinite" }}>progress_activity</span>}
+                    {sampleBusy ? "Cloning the voice…" : "Use this sample"}
+                  </button>
+                  <button onClick={() => { setSampleBlob(null); setRecSecs(0); }} disabled={sampleBusy} style={{ background: "none", border: "none", color: "var(--ink3)", ...btnFont, fontSize: 12 }}>Discard</button>
+                </div>
+              )}
+              {sampleMsg && <div style={{ fontSize: 12, fontWeight: 700, marginTop: 8, color: sampleMsg.ok ? "var(--success-ink)" : "var(--error-ink)" }}>{sampleMsg.text}</div>}
+            </div>
+
+            {/* FALLBACK: auto-extract from the call recordings (zero-friction, quality-flagged) */}
+            <div style={{ ...cardS, border: "1px solid var(--border)", padding: "16px 20px", marginBottom: 18, display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+              <span className="material-symbols-rounded" style={{ fontSize: 28, color: "var(--ink2)" }}>graphic_eq</span>
               <div style={{ flex: 1, minWidth: 240 }}>
-                <div style={{ fontSize: 14.5, fontWeight: 800 }}>{realVoice ? "Real voice ready ✓" : `Clone ${firstName}'s real voice`}</div>
+                <div style={{ fontSize: 14.5, fontWeight: 800 }}>{realVoice ? "Real voice ready ✓" : `Fallback · clone from ${firstName}'s calls`}</div>
                 <div style={{ fontSize: 12.5, color: "var(--ink2)", marginTop: 2 }}>
                   {realVoice
                     ? `“${realVoiceName}” was built from ${firstName}'s actual calls — rebuild any time to refresh the sample.`
-                    : `Built from ${firstName}'s actual calls — the voice on the demo is the voice on the recordings.`}
+                    : `No clean sample handy? Built straight from the recordings — zero friction, though call audio is less clean than a fresh sample.`}
                 </div>
+                {ingest && ingest.audioQuality === "choppy" && !realVoice && (
+                  <div style={{ fontSize: 11.5, fontWeight: 700, marginTop: 5, color: "var(--warning-ink)" }}>Heads up: the call audio looked choppy in the quality check — a clean sample above will sound better.</div>
+                )}
                 {cloneVoiceMsg && (
                   <div style={{ fontSize: 12, fontWeight: 700, marginTop: 6, color: cloneVoiceMsg.ok ? "var(--success-ink)" : "var(--error-ink)" }}>{cloneVoiceMsg.text}</div>
                 )}
@@ -1055,10 +1389,111 @@ export default function CloneARep() {
           );
         })()}
 
-        {/* ============ STEP 5 · CONFIRM ============ */}
+        {/* ============ STEP 5 · DEMO SYSTEM ============ */}
         {step === 5 && (
           <div style={{ maxWidth: 760 }}>
-            <div style={kicker}>Step 5 of 5 · Confirm</div>
+            <div style={kicker}>Step 5 of 6 · Demo system</div>
+            <h1 style={h1S}>What does {firstName} drive on a call?</h1>
+            <p style={leadS}>The product this clone opens and operates on every rehearsal and live call — and, if it needs to sign in, the login it uses. Credentials are optional: leave them blank to connect by session or just to demonstrate.</p>
+
+            <div style={{ ...cardS, padding: 26 }}>
+              <div style={secHead}>
+                <span className="material-symbols-rounded" style={{ fontSize: 20, color: "var(--purple)", fontVariationSettings: "'FILL' 1" }}>desktop_windows</span>
+                <div style={secTitle}>The demo system</div>
+                {demoLoaded && demoInherited && !demoSystem && (
+                  <span style={{ marginLeft: "auto", ...pillS, background: "var(--sunk)", color: "var(--ink3)" }}>shared default</span>
+                )}
+              </div>
+              <div style={secSub}>Which product this clone demonstrates, and where it opens.</div>
+              <div className="field">
+                <label>System name</label>
+                <input type="text" value={demoSystem} onChange={(e) => setDemoSystem(e.target.value)} placeholder="GoPerfect" disabled={!agent} />
+              </div>
+              <div className="field">
+                <label>Login / app URL</label>
+                <input type="text" value={demoUrl} onChange={(e) => setDemoUrl(e.target.value)} placeholder="https://app.goperfectmatch.com" disabled={!agent} />
+              </div>
+              <div className="field">
+                <label>Notes for the clone <span style={{ fontWeight: 500, color: "var(--ink3)" }}>(optional)</span></label>
+                <textarea value={demoNotes} onChange={(e) => setDemoNotes(e.target.value)} placeholder="Anything it should know to navigate this system — which workspace, where the demo data lives, gotchas." disabled={!agent} rows={3} style={{ ...inputS, height: "auto", padding: "12px 16px", resize: "vertical", lineHeight: 1.5 }} />
+              </div>
+            </div>
+
+            <div style={{ ...cardS, padding: 26, marginTop: 16 }}>
+              <div style={secHead}>
+                <span className="material-symbols-rounded" style={{ fontSize: 20, color: "var(--purple)", fontVariationSettings: "'FILL' 1" }}>key</span>
+                <div style={secTitle}>Sign-in <span style={{ fontWeight: 500, color: "var(--ink3)", fontSize: 13 }}>— if needed</span></div>
+                {demoLoaded && demoInherited && demoEmail && (
+                  <span style={{ marginLeft: "auto", ...pillS, background: "var(--sunk)", color: "var(--ink3)" }}>shared default</span>
+                )}
+              </div>
+              <div style={secSub}>The account {firstName} signs into. Stored encrypted; the password is write-only and never shown back.</div>
+              {demoLoaded && demoInherited && (
+                <div style={{ fontSize: 12, color: "var(--ink3)", lineHeight: 1.5, marginBottom: 14 }}>Using the shared default — set a username to override it for this clone.</div>
+              )}
+              <div className="field">
+                <label>Username / email</label>
+                <input type="text" value={demoEmail} onChange={(e) => setDemoEmail(e.target.value)} placeholder="demo@goperfectmatch.com" disabled={!agent} />
+              </div>
+              <div className="field">
+                <label>{demoHasPw && !demoInherited ? "Password (leave blank to keep current)" : "Password"}</label>
+                <input type="password" value={demoPw} onChange={(e) => setDemoPw(e.target.value)} placeholder={demoHasPw && !demoInherited ? "•••••••• — a password is set" : "Set a password"} disabled={!agent} />
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 4 }}>
+                {demoNote && <span style={{ fontSize: 12, fontWeight: 700, color: demoNote.ok ? "var(--success-ink)" : "var(--error-ink)" }}>{demoNote.text}</span>}
+                <button onClick={() => void saveDemoLogin()} disabled={!agent || demoBusy} style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 7, height: 38, padding: "0 18px", borderRadius: 9999, background: "var(--purple)", color: "#fff", border: "none", ...btnFont, opacity: !agent || demoBusy ? 0.6 : 1 }}>
+                  {demoBusy ? "Saving…" : "Save demo system"}
+                </button>
+              </div>
+              {!agent && <div style={{ fontSize: 11.5, color: "var(--ink3)", marginTop: 8 }}>Available once the clone is created.</div>}
+            </div>
+
+            <div style={{ ...cardS, padding: 26, marginTop: 16 }}>
+              <div style={secHead}>
+                <span className="material-symbols-rounded" style={{ fontSize: 20, color: "var(--purple)", fontVariationSettings: "'FILL' 1" }}>calendar_month</span>
+                <div style={secTitle}>Meeting account <span style={{ fontWeight: 500, color: "var(--ink3)", fontSize: 13 }}>— the clone's own calendar</span></div>
+              </div>
+              <div style={secSub}>A real dedicated account for {firstName} (e.g. {firstName.toLowerCase()}-ai@yourcompany.com). Invite this address to a meeting and {firstName} joins at the scheduled time. Stored encrypted; the password is write-only and never shown back.</div>
+              <div className="field">
+                <label>Account email</label>
+                <input type="text" value={maEmail} onChange={(e) => setMaEmail(e.target.value)} placeholder="maya-ai@yourcompany.com" disabled={!agent} />
+              </div>
+              <div className="field">
+                <label>Username <span style={{ fontWeight: 500, color: "var(--ink3)" }}>(if different from email)</span></label>
+                <input type="text" value={maUsername} onChange={(e) => setMaUsername(e.target.value)} placeholder="maya-ai" disabled={!agent} />
+              </div>
+              <div className="field">
+                <label>Provider <span style={{ fontWeight: 500, color: "var(--ink3)" }}>(optional — google · microsoft · caldav)</span></label>
+                <input type="text" value={maProvider} onChange={(e) => setMaProvider(e.target.value)} placeholder="google" disabled={!agent} />
+              </div>
+              <div className="field">
+                <label>{maHasPw ? "Password (leave blank to keep current)" : "Password"}</label>
+                <input type="password" value={maPw} onChange={(e) => setMaPw(e.target.value)} placeholder={maHasPw ? "•••••••• — a password is set" : "Set the account password"} disabled={!agent} />
+              </div>
+              <label style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13, fontWeight: 600, color: "var(--ink1)", marginTop: 6, cursor: "pointer" }}>
+                <input type="checkbox" checked={maWatch} onChange={(e) => setMaWatch(e.target.checked)} disabled={!agent} />
+                Watch this calendar and auto-join booked meetings
+              </label>
+              <label style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13, fontWeight: 600, color: "var(--ink1)", marginTop: 8, cursor: "pointer" }}>
+                <input type="checkbox" checked={maInstant} onChange={(e) => setMaInstant(e.target.checked)} disabled={!agent} />
+                Allow instant joins (summon {firstName} onto a pasted link)
+              </label>
+              <div style={{ fontSize: 11.5, color: "var(--ink3)", lineHeight: 1.5, marginTop: 10 }}>Every live join — scheduled or instant — only fires once {firstName} clears the 70% readiness gate.</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 8 }}>
+                {maNote && <span style={{ fontSize: 12, fontWeight: 700, color: maNote.ok ? "var(--success-ink)" : "var(--error-ink)" }}>{maNote.text}</span>}
+                <button onClick={() => void saveMeetingAccount()} disabled={!agent || maBusy} style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 7, height: 38, padding: "0 18px", borderRadius: 9999, background: "var(--purple)", color: "#fff", border: "none", ...btnFont, opacity: !agent || maBusy ? 0.6 : 1 }}>
+                  {maBusy ? "Saving…" : "Save meeting account"}
+                </button>
+              </div>
+              {!agent && <div style={{ fontSize: 11.5, color: "var(--ink3)", marginTop: 8 }}>Available once the clone is created.</div>}
+            </div>
+          </div>
+        )}
+
+        {/* ============ STEP 6 · CONFIRM ============ */}
+        {step === 6 && (
+          <div style={{ maxWidth: 760 }}>
+            <div style={kicker}>Step 6 of 6 · Confirm</div>
             <h1 style={h1S}>{firstName}'s clone is ready to calibrate</h1>
             <p style={leadS}>Nothing here is live yet. The clone enters the Calibration Room as a draft and cannot take real calls until it passes all quality checks.</p>
 
@@ -1095,36 +1530,38 @@ export default function CloneARep() {
               </div>
             </div>
 
-            {/* Demo environment — the GoPerfect account THIS clone signs into.
-                Per-agent with a shared-default fallback; saving overrides it. */}
-            <div style={{ ...cardS, padding: 26 }}>
-              <div style={secHead}>
-                <span className="material-symbols-rounded" style={{ fontSize: 20, color: "var(--purple)", fontVariationSettings: "'FILL' 1" }}>key</span>
-                <div style={secTitle}>Demo environment</div>
-                {demoLoaded && demoInherited && demoEmail && (
-                  <span style={{ marginLeft: "auto", ...pillS, background: "var(--sunk)", color: "var(--ink3)" }}>shared default</span>
+            {/* ACTIVATION QUALITY (#4) — legible readiness: distance to 70 + what to do */}
+            {readiness && (
+              <div style={{ ...cardS, padding: 26 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                  <div style={secTitle}>Readiness</div>
+                  <span style={{ ...pillS, background: readiness.score >= 70 ? "var(--success-soft)" : "var(--warning-soft)", color: readiness.score >= 70 ? "var(--success-ink)" : "var(--warning-ink)" }}>{readiness.score}% ready</span>
+                  {readiness.distanceTo70 > 0 && <span style={{ fontSize: 12, color: "var(--ink3)" }}>{readiness.distanceTo70} points to the 70% live gate</span>}
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8, margin: "14px 0 4px" }}>
+                  {readiness.dimensions.map((d) => (
+                    <span key={d.key} style={{ ...pillS, background: d.pass ? "var(--success-soft)" : "var(--sunk)", color: d.pass ? "var(--success-ink)" : "var(--ink2)" }}>
+                      <span className="material-symbols-rounded" style={{ fontSize: 14 }}>{d.pass ? "check_circle" : "radio_button_unchecked"}</span>
+                      {d.label}{d.confidence != null ? ` · ${d.confidence}%` : ""}
+                    </span>
+                  ))}
+                </div>
+                {readiness.toReach70.length > 0 && (
+                  <div style={{ marginTop: 14 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: ".05em", textTransform: "uppercase", color: "var(--ink3)", marginBottom: 8 }}>To reach 70%, do this</div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      {readiness.toReach70.map((t, i) => (
+                        <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 9 }}>
+                          <span className="material-symbols-rounded" style={{ fontSize: 18, color: "var(--purple)", marginTop: 1 }}>arrow_circle_right</span>
+                          <span style={{ fontSize: 13, color: "var(--ink2)", lineHeight: 1.45 }}>{t}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 )}
+                <div style={{ fontSize: 11.5, color: "var(--ink3)", marginTop: 14, lineHeight: 1.5 }}>This only guides you — the clone can't take a live call until it clears 70%, and that gate is the only hard stop.</div>
               </div>
-              <div style={secSub}>The GoPerfect account {firstName} signs into on every rehearsal and live call.</div>
-              {demoLoaded && demoInherited && (
-                <div style={{ fontSize: 12, color: "var(--ink3)", lineHeight: 1.5, marginBottom: 14 }}>Using the shared default — set one to override for this clone.</div>
-              )}
-              <div className="field">
-                <label>Account email</label>
-                <input type="email" value={demoEmail} onChange={(e) => setDemoEmail(e.target.value)} placeholder="demo@goperfectmatch.com" disabled={!agent} />
-              </div>
-              <div className="field">
-                <label>{demoHasPw && !demoInherited ? "Password (leave blank to keep current)" : "Password"}</label>
-                <input type="password" value={demoPw} onChange={(e) => setDemoPw(e.target.value)} placeholder={demoHasPw && !demoInherited ? "•••••••• — a password is set" : "Set a password"} disabled={!agent} />
-              </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 4 }}>
-                {demoNote && <span style={{ fontSize: 12, fontWeight: 700, color: demoNote.ok ? "var(--success-ink)" : "var(--error-ink)" }}>{demoNote.text}</span>}
-                <button onClick={() => void saveDemoLogin()} disabled={!agent || demoBusy} style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 7, height: 38, padding: "0 18px", borderRadius: 9999, background: "var(--purple)", color: "#fff", border: "none", ...btnFont, opacity: !agent || demoBusy ? 0.6 : 1 }}>
-                  {demoBusy ? "Saving…" : "Save demo login"}
-                </button>
-              </div>
-              {!agent && <div style={{ fontSize: 11.5, color: "var(--ink3)", marginTop: 8 }}>Available once the clone is created.</div>}
-            </div>
+            )}
           </div>
         )}
 

@@ -23,7 +23,7 @@ import { KpiStrip, TodayCard, EmailCard, SlackCard, GoalsCard, ConnectedCard } f
 // ============================================================
 
 type Agent = { id: string; name: string; role?: string; buildTrack?: string };
-type Approval = { id: string; kind: string; title: string; detail: string; evidence: string; action: string; ready: boolean; blocked?: string };
+type Approval = { id: string; kind: string; title: string; detail: string; evidence: string; action: string; ready: boolean; blocked?: string; mode?: "judgment" | "auto" };
 type ReadinessData = {
   agentId: string; name: string; score: number; stage: string; sentence: string;
   approvals: Approval[]; activity: string[]; promoteUnlocked: boolean;
@@ -148,7 +148,7 @@ export default function Readiness() {
   const hereIndex = HERE[stageKey] ?? 2;
 
   const first: string = (data ? data.name.split(/\s+/)[0] : agent?.name?.split(/\s+/)[0]) ?? "the clone";
-  const readyCount = data ? data.approvals.filter((a) => a.ready).length : 0;
+  const readyCount = data ? data.approvals.filter((a) => a.ready && a.mode !== "auto").length : 0; // mode-aware: auto-handled items are not "your judgment"
 
   // the live/ready gate — the clone is running for real, OR promotion has been
   // unlocked; both signals come straight off the fetched readiness object.

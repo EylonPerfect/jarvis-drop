@@ -1,8 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AppShell, type ViewId } from "./components/AppShell";
 import { AboutModal } from "./screens/AboutModal";
 import LoginGate from "./screens/LoginGate";
-import { getAccessKey } from "./api/client";
+import { getAccessKey, api } from "./api/client";
 import CommandCenter from "./screens/CommandCenter";
 import AICore from "./screens/AICore";
 import Agents from "./screens/Agents";
@@ -41,6 +41,10 @@ import Readiness from "./screens/Readiness";
 import PreCallCheck from "./screens/PreCallCheck";
 import ScreenMap from "./screens/ScreenMap";
 import Connections from "./screens/Connections";
+import TrustPage from "./screens/TrustPage";
+import DpaPage from "./screens/DpaPage";
+import RetentionSettings from "./screens/RetentionSettings";
+import Billing from "./screens/Billing";
 
 // Every page has its own URL (#/echo, #/precall, ...) so browser back/forward,
 // bookmarks, and shared links work like any normal app. The hash is the source
@@ -50,10 +54,20 @@ const viewFromHash = (): ViewId | null => {
   return h ? (h as ViewId) : null;
 };
 
+// Neutral hold screen shown while we detect the auth mode / confirm the
+// session, so the wrong login never flashes (the access-code gate is useless
+// in password mode, and vice-versa).
+function AuthSplash() {
+  return <div style={{ minHeight: "100vh", background: "var(--jv-void)" }} />;
+}
+
 export function App() {
   const [view, setView] = useState<ViewId>(() => viewFromHash() ?? "echo");
   const [about, setAbout] = useState(false);
   const [authed, setAuthed] = useState(() => !!getAccessKey());
+  // Which login the backend expects. null = still detecting.
+  const [authMode, setAuthMode] = useState<"access-code" | "password" | null>(null);
+  const authModeRef = useRef<"access-code" | "password" | null>(null);
   const nav = (id: ViewId) => {
     if (viewFromHash() !== id) window.location.hash = "/" + id;
     setView(id);
@@ -70,9 +84,45 @@ export function App() {
   // If any request 401s (bad/expired code), the client clears the key and fires
   // this event — bounce back to the login gate.
   useEffect(() => {
-    const onUnauth = () => setAuthed(false);
+    const onUnauth = () => {
+      // Password mode has no access-code gate - a dropped session means the
+      // cookie expired, so send the operator to the email/password sign-in.
+      if (authModeRef.current === "password") { window.location.replace("/site#/signin"); return; }
+      setAuthed(false);
+    };
     window.addEventListener("jv-unauthorized", onUnauth);
     return () => window.removeEventListener("jv-unauthorized", onUnauth);
+  }, []);
+
+  // On load, learn the backend auth mode, then gate accordingly.
+  //  access-code -> keep today's behavior (LoginGate until a valid code).
+  //  password    -> confirm the session via /api/auth/me; if none, send the
+  //                 operator to the existing email/password sign-in.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      let mode: "access-code" | "password" = "access-code";
+      try {
+        const m = await api.get<{ mode: "access-code" | "password" }>("/api/auth/mode");
+        if (m?.mode === "password") mode = "password";
+      } catch {
+        // Mode probe failed - fall back to the legacy access-code gate (safe default).
+      }
+      if (cancelled) return;
+      authModeRef.current = mode;
+      setAuthMode(mode);
+      if (mode !== "password") return; // access-code path is unchanged
+      try {
+        const me = await api.get<{ authenticated?: boolean }>("/api/auth/me");
+        if (cancelled) return;
+        if (me?.authenticated) setAuthed(true);
+        else window.location.replace("/site#/signin");
+      } catch {
+        // 401 (or network) - no valid session; go sign in.
+        if (!cancelled) window.location.replace("/site#/signin");
+      }
+    })();
+    return () => { cancelled = true; };
   }, []);
 
   // The Perfect screens cross-navigate by firing a pds-nav event (they don't
@@ -86,7 +136,17 @@ export function App() {
     return () => window.removeEventListener("pds-nav", onPds);
   }, []);
 
-  if (!authed) return <LoginGate onAuthed={() => setAuthed(true)} />;
+  // Mode-aware gate. Until the mode is known we hold on a neutral splash so we
+  // never flash the wrong login.
+  if (authMode === null) return <AuthSplash />;
+  if (authMode === "password") {
+    // Session confirmed -> app renders below. Otherwise we're redirecting to
+    // /site#/signin (or still checking) - hold on the splash.
+    if (!authed) return <AuthSplash />;
+  } else if (!authed) {
+    // access-code mode - EXACTLY today's behavior.
+    return <LoginGate onAuthed={() => setAuthed(true)} />;
+  }
 
   let body: React.ReactNode;
   switch (view) {
@@ -131,6 +191,9 @@ export function App() {
       break;
     case "pricing":
       body = <PricingPage />;
+      break;
+    case "billing":
+      body = <Billing />;
       break;
     case "agentshome":
       body = <AgentsHome />;
@@ -216,13 +279,22 @@ export function App() {
     case "monitor":
       body = <SystemMonitor />;
       break;
+    case "trust":
+      body = <TrustPage />;
+      break;
+    case "dpa":
+      body = <DpaPage />;
+      break;
+    case "retention":
+      body = <RetentionSettings />;
+      break;
     default:
       body = <div className="placeholder">This surface isn't part of the kit yet.</div>;
   }
 
   // The Perfect app is its own product surface — full screen, no HUD chrome.
   // A small corner pill drops back into the legacy ops console.
-  const PDS_VIEWS: ViewId[] = ["agentshome", "echo", "readiness", "connections", "clonerep", "pdsstudio", "drillmode", "momenttrainer", "certification", "precall", "director", "democanvas", "debrief", "screenmap", "workspace", "modelsettings", "landing", "pricing", "rehearsal"];
+  const PDS_VIEWS: ViewId[] = ["agentshome", "echo", "readiness", "connections", "clonerep", "pdsstudio", "drillmode", "momenttrainer", "certification", "precall", "director", "democanvas", "debrief", "screenmap", "workspace", "modelsettings", "landing", "pricing", "billing", "rehearsal", "trust", "dpa", "retention"];
   if (PDS_VIEWS.includes(view)) {
     // Design-faithful: Perfect screens are full-bleed pages that navigate through
     // their own links (top-nav pills, jump-to chips, back arrows) — no app chrome.

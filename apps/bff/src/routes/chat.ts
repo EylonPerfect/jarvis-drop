@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { hermes, diagnose } from "../hermes.js";
 import { getActiveProvider, streamProviderChat, completeProviderChat } from "../lib/providers.js";
+import { orgId } from "../lib/auth.js";
 import { one } from "../db/pool.js";
 import { config } from "../config.js";
 import type { ChatRequest } from "@jarvis/shared";
@@ -13,13 +14,13 @@ const QUEUED_MESSAGE =
   "⏸ Queued for approval — this looks like an irreversible action. Approve it in the Approvals inbox before I run it.";
 
 // Create a pending approval for a gated Execute-mode message. Returns the id.
-async function queueApproval(message: string, agent: string): Promise<string> {
+async function queueApproval(org: string, message: string, agent: string): Promise<string> {
   const id = `apr_${Date.now().toString(36)}`;
   const action = message.length > 80 ? `${message.slice(0, 80)}…` : message;
   await one(
-    `INSERT INTO approvals (id, agent, action, detail, risk, kind)
-     VALUES ($1,$2,$3,$4,'high','action') RETURNING id`,
-    [id, agent, action, message],
+    `INSERT INTO approvals (id, org_id, agent, action, detail, risk, kind)
+     VALUES ($1,$5,$2,$3,$4,'high','action') RETURNING id`,
+    [id, agent, action, message, org],
   );
   return id;
 }
@@ -94,7 +95,7 @@ export default async function chatRoutes(app: FastifyInstance) {
     // an approval and tell the operator to approve it first.
     if (b.mode === "Execute" && IRREVERSIBLE.test(message)) {
       try {
-        await queueApproval(message, "Execute Agent");
+        await queueApproval(orgId(req), message, "Execute Agent");
       } catch (err) {
         app.log.error({ err }, "failed to queue Execute-mode approval");
       }
@@ -110,7 +111,7 @@ export default async function chatRoutes(app: FastifyInstance) {
 
     // Prefer an operator-configured provider (AI Core): stream directly from it.
     // This is what makes "connect a provider" actually work end-to-end.
-    const active = await getActiveProvider();
+    const active = await getActiveProvider(orgId(req));
     if (active) {
       try {
         const pres = await streamProviderChat(active, messages);
@@ -159,7 +160,7 @@ export default async function chatRoutes(app: FastifyInstance) {
     // Execute-mode guard (mirror of the streaming path): queue instead of run.
     if (b.mode === "Execute" && IRREVERSIBLE.test(message)) {
       try {
-        await queueApproval(message, "Execute Agent");
+        await queueApproval(orgId(req), message, "Execute Agent");
       } catch (err) {
         app.log.error({ err }, "failed to queue Execute-mode approval");
       }
@@ -170,7 +171,7 @@ export default async function chatRoutes(app: FastifyInstance) {
     if (b.mode && MODE_SYSTEM[b.mode]) messages.push({ role: "system", content: MODE_SYSTEM[b.mode] });
     messages.push({ role: "user", content: message });
 
-    const active = await getActiveProvider();
+    const active = await getActiveProvider(orgId(req));
     if (active) {
       const pr = await completeProviderChat(active, messages);
       if (pr.ok && pr.content) return { reply: pr.content, sessionId: b.sessionId ?? null };

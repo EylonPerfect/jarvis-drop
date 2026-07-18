@@ -1,5 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { query, one } from "../db/pool.js";
+import { orgId } from "../lib/auth.js";
+import { getSetting, setSetting } from "../lib/settingsStore.js";
 import { hermes } from "../hermes.js";
 import { testConnection, type AiProviderRow } from "../lib/providers.js";
 import type { AICoreState, ProviderKey, AiProvider, NewAiProvider } from "@jarvis/shared";
@@ -18,14 +20,15 @@ function rowToProvider(r: AiProviderRow): AiProvider {
 }
 
 export default async function aiCoreRoutes(app: FastifyInstance) {
-  app.get("/api/aicore", async (): Promise<AICoreState> => {
-    const cfg = (await one<{ value: any }>(`SELECT value FROM settings WHERE key = 'ai_core'`))?.value ?? {};
-    const providers: ProviderKey[] = (await query(`SELECT * FROM provider_keys ORDER BY sort`)).map((r: any) => ({
+  app.get("/api/aicore", async (req): Promise<AICoreState> => {
+    const org = orgId(req);
+    const cfg = (await getSetting<any>(org, "ai_core")) ?? {};
+    const providers: ProviderKey[] = (await query(`SELECT * FROM provider_keys WHERE org_id = $1 ORDER BY sort`, [org])).map((r: any) => ({
       id: r.id, name: r.name, tier: r.tier, tierTone: r.tier_tone, placeholder: r.placeholder, connected: r.connected,
     }));
 
     // Operator-added OpenAI-compatible providers (the ones the chat actually uses).
-    const aiProviders = await query<AiProviderRow>(`SELECT * FROM ai_providers ORDER BY created_at`);
+    const aiProviders = await query<AiProviderRow>(`SELECT * FROM ai_providers WHERE org_id = $1 ORDER BY created_at`, [org]);
     const active = aiProviders.find((p) => p.active);
 
     // Prefer live model list from hermes /v1/models.
@@ -52,8 +55,8 @@ export default async function aiCoreRoutes(app: FastifyInstance) {
   });
 
   // ---- Operator-added AI providers (OpenAI-compatible) --------------------
-  app.get("/api/aicore/providers", async (): Promise<AiProvider[]> => {
-    const rows = await query<AiProviderRow>(`SELECT * FROM ai_providers ORDER BY created_at`);
+  app.get("/api/aicore/providers", async (req): Promise<AiProvider[]> => {
+    const rows = await query<AiProviderRow>(`SELECT * FROM ai_providers WHERE org_id = $1 ORDER BY created_at`, [orgId(req)]);
     return rows.map(rowToProvider);
   });
 
@@ -69,26 +72,28 @@ export default async function aiCoreRoutes(app: FastifyInstance) {
     if (!/^https?:\/\//i.test(baseUrl)) {
       return reply.code(400).send({ error: "baseUrl must start with http:// or https://" });
     }
+    const org = orgId(req);
     const id = `prov_${Date.now().toString(36)}`;
-    // First provider added becomes active automatically.
-    const existing = await one<{ n: number }>(`SELECT COUNT(*)::int AS n FROM ai_providers`);
+    // First provider added FOR THIS ORG becomes active automatically.
+    const existing = await one<{ n: number }>(`SELECT COUNT(*)::int AS n FROM ai_providers WHERE org_id = $1`, [org]);
     const active = (existing?.n ?? 0) === 0;
     await query(
-      `INSERT INTO ai_providers (id, name, base_url, api_key, model, active) VALUES ($1,$2,$3,$4,$5,$6)`,
-      [id, name, baseUrl, apiKey, model, active],
+      `INSERT INTO ai_providers (id, org_id, name, base_url, api_key, model, active) VALUES ($1,$7,$2,$3,$4,$5,$6)`,
+      [id, name, baseUrl, apiKey, model, active, org],
     );
-    const row = await one<AiProviderRow>(`SELECT * FROM ai_providers WHERE id = $1`, [id]);
+    const row = await one<AiProviderRow>(`SELECT * FROM ai_providers WHERE id = $1 AND org_id = $2`, [id, org]);
     return reply.code(201).send(rowToProvider(row!));
   });
 
   app.patch("/api/aicore/providers/:id", async (req, reply) => {
     const { id } = req.params as { id: string };
+    const org = orgId(req);
     const b = req.body as Partial<NewAiProvider> & { active?: boolean };
-    const existing = await one<AiProviderRow>(`SELECT * FROM ai_providers WHERE id = $1`, [id]);
+    const existing = await one<AiProviderRow>(`SELECT * FROM ai_providers WHERE id = $1 AND org_id = $2`, [id, org]);
     if (!existing) return reply.code(404).send({ error: "not found" });
 
-    // Setting one active deactivates the rest (single active provider).
-    if (b.active === true) await query(`UPDATE ai_providers SET active = false`);
+    // Setting one active deactivates the rest FOR THIS ORG (single active provider per org).
+    if (b.active === true) await query(`UPDATE ai_providers SET active = false WHERE org_id = $1`, [org]);
 
     const sets: string[] = [];
     const vals: unknown[] = [];
@@ -103,27 +108,28 @@ export default async function aiCoreRoutes(app: FastifyInstance) {
     if (b.active !== undefined) set("active", b.active);
     if (sets.length) {
       vals.push(id);
-      await query(`UPDATE ai_providers SET ${sets.join(", ")} WHERE id = $${vals.length}`, vals);
+      vals.push(org);
+      await query(`UPDATE ai_providers SET ${sets.join(", ")} WHERE id = $${vals.length - 1} AND org_id = $${vals.length}`, vals);
     }
-    const row = await one<AiProviderRow>(`SELECT * FROM ai_providers WHERE id = $1`, [id]);
+    const row = await one<AiProviderRow>(`SELECT * FROM ai_providers WHERE id = $1 AND org_id = $2`, [id, org]);
     return rowToProvider(row!);
   });
 
   app.delete("/api/aicore/providers/:id", async (req) => {
     const { id } = req.params as { id: string };
-    await query(`DELETE FROM ai_providers WHERE id = $1`, [id]);
+    await query(`DELETE FROM ai_providers WHERE id = $1 AND org_id = $2`, [id, orgId(req)]);
     return { ok: true };
   });
 
-  app.delete("/api/aicore/providers", async () => {
-    await query(`DELETE FROM ai_providers`);
+  app.delete("/api/aicore/providers", async (req) => {
+    await query(`DELETE FROM ai_providers WHERE org_id = $1`, [orgId(req)]);
     return { ok: true };
   });
 
   // Live credential/connectivity check against the provider's /models endpoint.
   app.post("/api/aicore/providers/:id/test", async (req, reply) => {
     const { id } = req.params as { id: string };
-    const row = await one<AiProviderRow>(`SELECT * FROM ai_providers WHERE id = $1`, [id]);
+    const row = await one<AiProviderRow>(`SELECT * FROM ai_providers WHERE id = $1 AND org_id = $2`, [id, orgId(req)]);
     if (!row) return reply.code(404).send({ error: "not found" });
     return testConnection(row);
   });
@@ -132,8 +138,9 @@ export default async function aiCoreRoutes(app: FastifyInstance) {
   // the VPS — they cannot be written over this HTTP API. The UI marks a
   // provider connected and stores that intent; actual keys are set on the box.
   app.patch("/api/aicore", async (req) => {
+    const org = orgId(req);
     const b = req.body as Partial<AICoreState>;
-    const cur = (await one<{ value: any }>(`SELECT value FROM settings WHERE key = 'ai_core'`))?.value ?? {};
+    const cur = (await getSetting<any>(org, "ai_core")) ?? {};
     const next = {
       ...cur,
       ...(b.activeModel !== undefined ? { activeModel: b.activeModel } : {}),
@@ -141,13 +148,7 @@ export default async function aiCoreRoutes(app: FastifyInstance) {
       ...(b.streaming !== undefined ? { streaming: b.streaming } : {}),
       ...(b.verification !== undefined ? { verification: b.verification } : {}),
     };
-    // Upsert so a missing row is created (GET tolerates a missing row; the
-    // write path must too).
-    await query(
-      `INSERT INTO settings (key, value) VALUES ('ai_core', $1)
-       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
-      [JSON.stringify(next)],
-    );
+    await setSetting(org, "ai_core", next);
     return next;
   });
 }

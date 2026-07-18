@@ -172,7 +172,9 @@ export default function Integrations() {
   const { data: agentsData, reload: reloadAgents } = useApi<Agent[]>("/api/agents");
   const { data: providersData } = useApi<AiProvider[]>("/api/aicore/providers");
 
-  const integrations = integrationsData ?? [];
+  // AI-model/AI-API services (ElevenLabs, Recall) live in the AI Core hub — hide
+  // them here so a credential is never managed in two places.
+  const integrations = (integrationsData ?? []).filter((i) => !i.aiHub);
   const agents = agentsData ?? [];
   const providers = providersData ?? [];
 
@@ -195,7 +197,7 @@ export default function Integrations() {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <Panel title="Connections" eyebrow>
-        <p style={{ margin: "0 0 16px", font: "var(--fw-regular) 12.5px/1.55 var(--font-body)", color: "var(--jv-text-muted)" }}>Real connections to the systems your workforce uses. Credentials are stored securely server-side and never shown in full — only a masked hint after connecting.</p>
+        <p style={{ margin: "0 0 16px", font: "var(--fw-regular) 12.5px/1.55 var(--font-body)", color: "var(--jv-text-muted)" }}>Real connections to the systems your workforce uses. Credentials are stored securely server-side and never shown in full — only a masked hint after connecting. <span style={{ color: "var(--jv-text-soft)" }}>AI APIs (voice &amp; meeting bots — ElevenLabs, Recall.ai) are managed in <b>AI Core</b>.</span></p>
         {integrationsData == null ? (
           <EmptyState icon="plug" title="Loading connections…" compact />
         ) : integrations.length === 0 ? (

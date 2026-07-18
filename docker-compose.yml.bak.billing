@@ -1,0 +1,106 @@
+# J.A.R.V.I.S. Command Center — production stack.
+# Run on the same VPS as hermes-agent:  docker compose up -d --build
+# The BFF reaches hermes over the Docker host gateway (see DEPLOY.md).
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-jarvis}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-jarvis}
+      POSTGRES_DB: ${POSTGRES_DB:-jarvis}
+    volumes:
+      - jarvis_db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-jarvis} -d ${POSTGRES_DB:-jarvis}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    # Not published: only the BFF (same compose network) reaches it.
+
+  bff:
+    build:
+      context: .
+      dockerfile: apps/bff/Dockerfile
+    restart: unless-stopped
+    volumes:
+      - /root/ah-scripts:/app/ah
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PORT: "8787"
+      HOST: 0.0.0.0
+      WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:8080}
+      DATABASE_URL: postgres://${POSTGRES_USER:-jarvis}:${POSTGRES_PASSWORD:-jarvis}@db:5432/${POSTGRES_DB:-jarvis}
+      DATABASE_SSL: "false"
+      MIGRATE_ON_BOOT: "true"
+      CRED_ENC_KEY: ${CRED_ENC_KEY:-}
+      AUTH_MODE: ${AUTH_MODE:-access-code}
+      TRUST_PROXY: ${TRUST_PROXY:-true}
+      SUPERADMIN_API_KEY: ${SUPERADMIN_API_KEY:-}
+      SUPERADMIN_EMAIL: ${SUPERADMIN_EMAIL:-}
+      SUPERADMIN_PASSWORD_HASH: ${SUPERADMIN_PASSWORD_HASH:-}
+      # SEED_ON_BOOT unset → auto-seed only when the DB is empty.
+      # Optional shared secret guarding the BFF (see DEPLOY.md). If set, Nginx
+      # must forward it (uncomment the proxy_set_header line in nginx.conf).
+      BFF_API_KEY: ${BFF_API_KEY:-}
+      HERMES_BASE_URL: ${HERMES_BASE_URL:-http://host.docker.internal:8642}
+      HERMES_API_KEY: ${HERMES_API_KEY:-change-me}
+      HERMES_SESSION_KEY: ${HERMES_SESSION_KEY:-operator-primary}
+      HERMES_MODEL: ${HERMES_MODEL:-claude-sonnet-4-6}
+      # Hostinger hermes dashboard login (session-cookie auth). Set both in .env
+      # to turn on live Claude chat; without them the BFF can't log in and every
+      # reply falls back to the offline canned message.
+      HERMES_DASH_USER: ${HERMES_DASH_USER:-}
+      HERMES_DASH_PASS: ${HERMES_DASH_PASS:-}
+      # Server-side headless browser (real Chrome on the VPS) that the Command
+      # Center drives to actually open pages and stream them into the UI.
+      BROWSERLESS_URL: ${BROWSERLESS_URL:-http://browserless:3000}
+      BROWSERLESS_TOKEN: ${BROWSERLESS_TOKEN:-lsbrowser}
+    extra_hosts:
+      # Lets the container reach hermes bound on the VPS host (see DEPLOY.md).
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8787/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      # Wait until the BFF is actually listening (migrations done) to avoid
+      # early 502s from nginx.
+      bff:
+        condition: service_healthy
+    ports:
+      - "${WEB_PORT:-8080}:80"
+    labels:
+      # HTTPS front door via the host traefik (mic APIs need a secure origin)
+      - traefik.enable=true
+      - traefik.http.routers.afterhuman.entrypoints=websecure
+      - traefik.http.routers.afterhuman.rule=Host(`afterhuman.srv1797540.hstgr.cloud`)
+      - traefik.http.routers.afterhuman.tls.certresolver=letsencrypt
+      - traefik.http.routers.afterhuman.service=afterhuman
+      - traefik.http.services.afterhuman.loadbalancer.server.port=80
+      # the web IMAGE bakes an old jarvis.srv... router - bind it explicitly too
+      - traefik.http.routers.jarvis.service=jarvis
+
+  # Real headless Chrome on the VPS. The BFF drives it (navigate + screenshot)
+  # so the Command Center can actually open a browser and show the live page.
+  browserless:
+    image: ghcr.io/browserless/chromium:latest
+    restart: unless-stopped
+    environment:
+      TOKEN: ${BROWSERLESS_TOKEN:-lsbrowser}
+      CONCURRENT: "6"
+      TIMEOUT: "1800000"
+    # Internal only — reached by the BFF at http://browserless:3000
+
+volumes:
+  jarvis_db:

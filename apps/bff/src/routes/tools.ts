@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { query, one } from "../db/pool.js";
+import { orgId } from "../lib/auth.js";
 import { hermes } from "../hermes.js";
 import type { ToolItem } from "@jarvis/shared";
 
@@ -18,8 +19,8 @@ function rowToTool(r: any): ToolItem {
 export default async function toolsRoutes(app: FastifyInstance) {
   // Tools & Skills registry. Toggle state persists in Postgres; hermes
   // /v1/toolsets + /v1/skills are surfaced under `hermes` for reference.
-  app.get("/api/tools", async () => {
-    const rows = await query(`SELECT * FROM tool_toggles ORDER BY sort`);
+  app.get("/api/tools", async (req) => {
+    const rows = await query(`SELECT * FROM tool_toggles WHERE org_id = $1 ORDER BY sort`, [orgId(req)]);
     const items = rows.map(rowToTool);
     const [toolsets, skills] = await Promise.all([hermes.toolsets(), hermes.skills()]);
     return {
@@ -36,32 +37,34 @@ export default async function toolsRoutes(app: FastifyInstance) {
     const b = req.body as { name?: string; descr?: string; grp?: string; icon?: string };
     if (!b?.name?.trim()) return reply.code(400).send({ error: "name required" });
     const id = `tl_${Date.now().toString(36)}`;
-    const maxSort = await one<{ m: number }>(`SELECT COALESCE(MAX(sort), -1) + 1 AS m FROM tool_toggles`);
+    const org = orgId(req);
+    const maxSort = await one<{ m: number }>(`SELECT COALESCE(MAX(sort), -1) + 1 AS m FROM tool_toggles WHERE org_id = $1`, [org]);
     await query(
-      `INSERT INTO tool_toggles (id, grp, icon, name, descr, enabled, status_tone, sort) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-      [id, b.grp?.trim() || "Built-in Skills", b.icon?.trim() || "wrench", b.name.trim(), b.descr?.trim() || "", true, "optimal", maxSort?.m ?? 0],
+      `INSERT INTO tool_toggles (id, grp, icon, name, descr, enabled, status_tone, sort, org_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      [id, b.grp?.trim() || "Built-in Skills", b.icon?.trim() || "wrench", b.name.trim(), b.descr?.trim() || "", true, "optimal", maxSort?.m ?? 0, org],
     );
-    return reply.code(201).send(rowToTool(await one(`SELECT * FROM tool_toggles WHERE id = $1`, [id])));
+    return reply.code(201).send(rowToTool(await one(`SELECT * FROM tool_toggles WHERE id = $1 AND org_id = $2`, [id, org])));
   });
 
   app.patch("/api/tools/:id", async (req, reply) => {
     const { id } = req.params as { id: string };
     const b = req.body as { enabled?: boolean };
-    const existing = await one(`SELECT * FROM tool_toggles WHERE id = $1`, [id]);
+    const org = orgId(req);
+    const existing = await one(`SELECT * FROM tool_toggles WHERE id = $1 AND org_id = $2`, [id, org]);
     if (!existing) return reply.code(404).send({ error: "not found" });
-    await query(`UPDATE tool_toggles SET enabled = COALESCE($2, enabled) WHERE id = $1`, [id, b.enabled ?? null]);
-    return rowToTool(await one(`SELECT * FROM tool_toggles WHERE id = $1`, [id]));
+    await query(`UPDATE tool_toggles SET enabled = COALESCE($2, enabled) WHERE id = $1 AND org_id = $3`, [id, b.enabled ?? null, org]);
+    return rowToTool(await one(`SELECT * FROM tool_toggles WHERE id = $1 AND org_id = $2`, [id, org]));
   });
 
   app.delete("/api/tools/:id", async (req) => {
     const { id } = req.params as { id: string };
-    await query(`DELETE FROM tool_toggles WHERE id = $1`, [id]);
+    await query(`DELETE FROM tool_toggles WHERE id = $1 AND org_id = $2`, [id, orgId(req)]);
     return { ok: true };
   });
 
   // Clear all tools & skills.
-  app.delete("/api/tools", async () => {
-    await query(`DELETE FROM tool_toggles`);
+  app.delete("/api/tools", async (req) => {
+    await query(`DELETE FROM tool_toggles WHERE org_id = $1`, [orgId(req)]);
     return { ok: true };
   });
 }

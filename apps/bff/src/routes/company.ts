@@ -1,6 +1,8 @@
 import type { FastifyInstance } from "fastify";
 import { randomUUID } from "node:crypto";
 import { one, query } from "../db/pool.js";
+import { orgId } from "../lib/auth.js";
+import { getSetting, setSetting } from "../lib/settingsStore.js";
 import type { Person, NewPerson, OrgNode } from "@jarvis/shared";
 
 // The operator's company profile — set once, reused for every agent build so the
@@ -14,6 +16,8 @@ export interface CompanyProfile {
   size: string;
   coreBusiness: string;
   notes?: string;
+  /** data-URI image; brands the shared screen (curtain) and anywhere the call shows the company */
+  logo?: string;
 }
 
 const DEFAULT_COMPANY: CompanyProfile = {
@@ -25,17 +29,17 @@ const DEFAULT_COMPANY: CompanyProfile = {
   notes: "",
 };
 
-export async function getCompany(): Promise<CompanyProfile> {
-  const row = await one<{ value: Partial<CompanyProfile> }>(`SELECT value FROM settings WHERE key = 'company'`);
-  return { ...DEFAULT_COMPANY, ...(row?.value && typeof row.value === "object" ? row.value : {}) };
+export async function getCompany(org: string): Promise<CompanyProfile> {
+  const value = await getSetting<Partial<CompanyProfile>>(org, "company");
+  return { ...DEFAULT_COMPANY, ...(value && typeof value === "object" ? value : {}) };
 }
 
 export default async function companyRoutes(app: FastifyInstance) {
-  app.get("/api/company", async () => getCompany());
+  app.get("/api/company", async (req) => getCompany(orgId(req)));
 
   app.put("/api/company", async (req) => {
     const b = (req.body as Partial<CompanyProfile>) ?? {};
-    const cur = await getCompany();
+    const cur = await getCompany(orgId(req));
     const next: CompanyProfile = {
       name: (b.name ?? cur.name).toString().slice(0, 120),
       domain: (b.domain ?? cur.domain).toString().slice(0, 200),
@@ -44,12 +48,18 @@ export default async function companyRoutes(app: FastifyInstance) {
       coreBusiness: (b.coreBusiness ?? cur.coreBusiness).toString().slice(0, 600),
       notes: (b.notes ?? cur.notes ?? "").toString().slice(0, 800),
     };
-    await query(
-      `INSERT INTO settings (key, value) VALUES ('company', $1)
-       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
-      [JSON.stringify(next)],
-    );
-    return next;
+    // logo: data-URI image only, ≤400KB; explicit "" clears it
+    let logoError: string | undefined;
+    if (typeof b.logo === "string") {
+      const l = b.logo.trim();
+      if (l === "") next.logo = undefined;
+      else if (l.startsWith("data:image/") && l.length <= 400_000) next.logo = l;
+      else { next.logo = cur.logo; logoError = "logo must be an image under ~300KB"; }
+    } else if (cur.logo) {
+      next.logo = cur.logo;
+    }
+    await setSetting(orgId(req), "company", next);
+    return logoError ? { ...next, logoError } : next;
   });
 
   // ---- People (the HUMANS in the company) ----
@@ -65,8 +75,8 @@ export default async function companyRoutes(app: FastifyInstance) {
     createdAt: r.created_at,
   });
 
-  app.get("/api/company/people", async () => {
-    const rows = await query(`SELECT * FROM company_people ORDER BY created_at`);
+  app.get("/api/company/people", async (req) => {
+    const rows = await query(`SELECT * FROM company_people WHERE org_id = $1 ORDER BY created_at`, [orgId(req)]);
     return rows.map(rowToPerson);
   });
 
@@ -75,8 +85,8 @@ export default async function companyRoutes(app: FastifyInstance) {
     if (!b?.name?.trim()) return reply.code(400).send({ error: "name is required" });
     const id = `p_${randomUUID()}`;
     await query(
-      `INSERT INTO company_people (id, name, title, email, department, reports_to_id, is_you, notes)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      `INSERT INTO company_people (id, org_id, name, title, email, department, reports_to_id, is_you, notes)
+       VALUES ($1,$9,$2,$3,$4,$5,$6,$7,$8)`,
       [
         id,
         b.name.trim().slice(0, 120),
@@ -86,9 +96,10 @@ export default async function companyRoutes(app: FastifyInstance) {
         b.reportsToId ?? null,
         b.isYou ?? false,
         b.notes?.toString().slice(0, 800) ?? null,
+        orgId(req),
       ],
     );
-    const row = await one(`SELECT * FROM company_people WHERE id = $1`, [id]);
+    const row = await one(`SELECT * FROM company_people WHERE id = $1 AND org_id = $2`, [id, orgId(req)]);
     return reply.code(201).send(rowToPerson(row));
   });
 
@@ -109,18 +120,21 @@ export default async function companyRoutes(app: FastifyInstance) {
     if (b.isYou !== undefined) set("is_you", !!b.isYou);
     if (b.notes !== undefined) set("notes", b.notes === null ? null : b.notes.toString().slice(0, 800));
     if (!sets.length) return reply.code(400).send({ error: "no fields to update" });
+    const org = orgId(req);
     vals.push(id);
-    await query(`UPDATE company_people SET ${sets.join(", ")} WHERE id = $${vals.length}`, vals);
-    const row = await one(`SELECT * FROM company_people WHERE id = $1`, [id]);
+    vals.push(org);
+    await query(`UPDATE company_people SET ${sets.join(", ")} WHERE id = $${vals.length - 1} AND org_id = $${vals.length}`, vals);
+    const row = await one(`SELECT * FROM company_people WHERE id = $1 AND org_id = $2`, [id, org]);
     if (!row) return reply.code(404).send({ error: "not found" });
     return rowToPerson(row);
   });
 
   app.delete("/api/company/people/:id", async (req) => {
     const { id } = req.params as { id: string };
+    const org = orgId(req);
     // Keep the tree valid: anyone who reported to this person becomes a root.
-    await query(`UPDATE company_people SET reports_to_id = NULL WHERE reports_to_id = $1`, [id]);
-    await query(`DELETE FROM company_people WHERE id = $1`, [id]);
+    await query(`UPDATE company_people SET reports_to_id = NULL WHERE reports_to_id = $1 AND org_id = $2`, [id, org]);
+    await query(`DELETE FROM company_people WHERE id = $1 AND org_id = $2`, [id, org]);
     return { ok: true };
   });
 
@@ -128,8 +142,9 @@ export default async function companyRoutes(app: FastifyInstance) {
   // Builds a forest of people (children = those whose reports_to_id === this id),
   // then attaches each AGENT under the person it reports to (matched by email,
   // then name, case-insensitive). Unmatched agents become additional roots.
-  app.get("/api/company/org", async (): Promise<OrgNode[]> => {
-    const people = (await query(`SELECT * FROM company_people ORDER BY created_at`)).map(rowToPerson);
+  app.get("/api/company/org", async (req): Promise<OrgNode[]> => {
+    const org = orgId(req);
+    const people = (await query(`SELECT * FROM company_people WHERE org_id = $1 ORDER BY created_at`, [org])).map(rowToPerson);
 
     // Person nodes keyed by id.
     const nodes = new Map<string, OrgNode>();
@@ -174,7 +189,8 @@ export default async function companyRoutes(app: FastifyInstance) {
 
     // Attach agents. Match onboarding.reportsTo {email,name} to a person.
     const agents = await query<{ id: string; icon: string; name: string; role: string; onboarding: any }>(
-      `SELECT id, icon, name, role, onboarding FROM agents ORDER BY sort, created_at`,
+      `SELECT id, icon, name, role, onboarding FROM agents WHERE org_id = $1 ORDER BY sort, created_at`,
+      [org],
     );
     const byEmail = new Map<string, OrgNode>();
     const byName = new Map<string, OrgNode>();

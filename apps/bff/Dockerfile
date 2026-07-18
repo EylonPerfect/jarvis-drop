@@ -13,7 +13,7 @@ FROM node:22-slim AS run
 WORKDIR /app
 ENV NODE_ENV=production
 # tini for correct signal handling / zombie reaping in containers.
-RUN apt-get update && apt-get install -y --no-install-recommends tini curl \
+RUN apt-get update && apt-get install -y --no-install-recommends tini curl ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=deps /app/node_modules ./node_modules
 COPY package.json package-lock.json ./
