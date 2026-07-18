@@ -5,13 +5,23 @@ const BASE = (import.meta.env.VITE_API_BASE ?? "").replace(/\/$/, "");
 // VITE_BFF_API_KEY is a dev fallback. Sent as X-API-Key so the BFF (when
 // BFF_API_KEY is configured) authorizes the request.
 const KEY_STORAGE = "jv.access";
+// Optional org-scope hint. Only the demo sandbox sets this (via the gate-pass
+// injection); when present it is forwarded as X-Service-Org so the BFF service
+// path (which requires a valid BFF_API_KEY in X-API-Key) scopes the request to
+// that org — e.g. the Talk-to-Ava demo renders the Northwind tenant, not legacy.
+// Inert for normal users (their session cookie wins; they have no BFF_API_KEY).
+const SVCORG_STORAGE = "jv.serviceorg";
 const BUILD_KEY = import.meta.env.VITE_BFF_API_KEY as string | undefined;
 export function getAccessKey(): string {
   try { return localStorage.getItem(KEY_STORAGE) || BUILD_KEY || ""; } catch { return BUILD_KEY || ""; }
 }
 export function setAccessKey(k: string): void { try { localStorage.setItem(KEY_STORAGE, k.trim()); } catch { /* ignore */ } }
 export function clearAccessKey(): void { try { localStorage.removeItem(KEY_STORAGE); } catch { /* ignore */ } }
-const authHeaders = (): Record<string, string> => { const k = getAccessKey(); return k ? { "X-API-Key": k } : {}; };
+const authHeaders = (): Record<string, string> => {
+  const k = getAccessKey();
+  let so = ""; try { so = localStorage.getItem(SVCORG_STORAGE) || ""; } catch { /* ignore */ }
+  return { ...(k ? { "X-API-Key": k } : {}), ...(so ? { "X-Service-Org": so } : {}) };
+};
 
 // On an auth failure, drop the stored key and bounce to the login gate.
 function onUnauthorized(): void {

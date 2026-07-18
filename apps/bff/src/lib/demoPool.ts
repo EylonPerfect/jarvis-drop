@@ -56,7 +56,7 @@ let maintenanceTimer: ReturnType<typeof setInterval> | null = null;
 async function connectSandbox(sandboxId: string) {
   const { Sandbox } = await import("@e2b/desktop");
   const scoped = await one<{ values: { apiKey: string } }>(
-    `SELECT values FROM integrations WHERE id='e2b' AND org_id=$1`, [D.orgId],
+    `SELECT values FROM integrations WHERE id='e2b' AND org_id=$1`, [config.legacyOrgId],
   );
   const any = scoped ?? (await one<{ values: { apiKey: string } }>(`SELECT values FROM integrations WHERE id='e2b'`));
   if (!any?.values?.apiKey) throw new Error("e2b integration key not configured");
