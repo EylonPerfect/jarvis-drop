@@ -206,3 +206,80 @@ export async function orgCanGoLive(orgId: string, agentId: string): Promise<GoLi
     return { allowed: true, code: "error", reason: "billing check unavailable — allowing (fail-open)", plan: "free", status: "unknown", slots: 0, liveClones: 0 };
   }
 }
+
+// ============================================================
+// FREE-TIER REHEARSAL CAP — the value-first end of the funnel: an org may
+// BUILD + REHEARSE a clone for free, but only up to config.billing.freeRehearsalCap
+// lifetime rehearsal runs (E2B cost control). Going live (a paid plan) makes
+// rehearsals unlimited. Enforced at the single rehearsal launch choke point
+// (POST /api/live/join, mode='rehearsal').
+//
+// A "rehearsal run" == a live_calls row with mode='rehearsal' for the org
+// (every rehearsal join inserts exactly one such row — the same rows the
+// activation funnel already counts). The count is LIFETIME per org.
+//
+// Like the go-live gate this is INERT while config.billing.gateEnforced is
+// false (today: unlimited rehearsals, no cap), and FAIL-OPEN on any DB error so
+// a lookup blip never blocks a rehearsal.
+// ============================================================
+
+/** Count an org's LIFETIME rehearsal runs (live_calls rows with mode='rehearsal'). */
+export async function countRehearsalRuns(orgId: string): Promise<number> {
+  try {
+    const row = await one<{ n: string }>(
+      `SELECT COUNT(*)::int AS n FROM live_calls WHERE org_id = $1 AND mode = 'rehearsal'`,
+      [orgId],
+    );
+    return Number(row?.n ?? 0);
+  } catch {
+    return 0;
+  }
+}
+
+export type RehearsalCapCode = "ok" | "gate_disabled" | "paid" | "capped" | "error";
+
+export interface RehearsalCapDecision {
+  allowed: boolean;
+  code: RehearsalCapCode;
+  reason: string;
+  used: number; // rehearsal runs already recorded for the org
+  cap: number;  // the free lifetime cap
+  plan: Plan;
+}
+
+/**
+ * THE FREE-TIER REHEARSAL CAP. Call before launching a rehearsal run.
+ *
+ * - Global switch off (gateEnforced=false) -> always allowed ("gate_disabled").
+ * - Active paid plan -> always allowed, uncapped ("paid").
+ * - Free org under the cap -> allowed ("ok"), with used/cap for the UI.
+ * - Free org at/over the cap -> blocked ("capped") — go live to keep rehearsing.
+ */
+export async function orgCanRehearse(orgId: string): Promise<RehearsalCapDecision> {
+  const cap = config.billing.freeRehearsalCap;
+  try {
+    if (!config.billing.gateEnforced) {
+      return { allowed: true, code: "gate_disabled", reason: "billing gate disabled — rehearsals unlimited", used: 0, cap, plan: "free" };
+    }
+    const state = await getOrgBillingState(orgId);
+    if (activePaid(state)) {
+      return { allowed: true, code: "paid", reason: "active paid plan — rehearsals uncapped", used: 0, cap, plan: state.plan };
+    }
+    const used = await countRehearsalRuns(orgId);
+    if (used >= cap) {
+      return {
+        allowed: false,
+        code: "capped",
+        reason: `You've used all ${cap} free rehearsal runs. Go live to keep rehearsing — rehearsal is unlimited on a paid plan.`,
+        used,
+        cap,
+        plan: state.plan,
+      };
+    }
+    return { allowed: true, code: "ok", reason: `${Math.max(0, cap - used)} of ${cap} free rehearsals left`, used, cap, plan: state.plan };
+  } catch (err) {
+    // Fail-OPEN: never block a rehearsal on a billing-lookup error.
+    console.warn("[billing] orgCanRehearse failed (fail-open, allowing):", (err as Error).message);
+    return { allowed: true, code: "error", reason: "rehearsal-cap check unavailable — allowing (fail-open)", used: 0, cap, plan: "free" };
+  }
+}

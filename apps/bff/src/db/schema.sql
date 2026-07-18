@@ -667,3 +667,35 @@ END $$;
 -- NOTE (integration): the provisional `orgs` shim from this surface is dropped;
 -- Phase-2 tenancy (tenancy.sql) owns the canonical `orgs` (+ the lifecycle
 -- columns super-admin reads), so there is a single canonical orgs table.
+
+-- ---------------------------------------------------------------------------
+-- PUBLIC "Talk to Ava" DEMO (warm E2B pool + unauthenticated demo API).
+-- Org-scoped like every tenant table (org_id inline — these tables are created
+-- in the base schema, which runs BEFORE tenancy.sql's fixed-list org_id loop, so
+-- they carry their own org_id). All demo rows live on the fixed DEMO tenant.
+-- Idempotent (CREATE TABLE IF NOT EXISTS) — MIGRATE_ON_BOOT-safe.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS demo_sessions (
+  id          TEXT PRIMARY KEY,
+  org_id      TEXT NOT NULL DEFAULT 'org_legacy',
+  sandbox_id  TEXT,
+  status      TEXT NOT NULL DEFAULT 'queued',     -- queued | live | ended | expired
+  ip          TEXT,
+  utm         TEXT,
+  started_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at  TIMESTAMPTZ,
+  ended_at    TIMESTAMPTZ,
+  transcript  JSONB NOT NULL DEFAULT '[]'::jsonb,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS demo_sessions_ip_idx     ON demo_sessions (ip, created_at DESC);
+CREATE INDEX IF NOT EXISTS demo_sessions_status_idx ON demo_sessions (org_id, status);
+
+CREATE TABLE IF NOT EXISTS demo_leads (
+  id          TEXT PRIMARY KEY,
+  org_id      TEXT NOT NULL DEFAULT 'org_legacy',
+  session_id  TEXT NOT NULL,
+  email       TEXT NOT NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS demo_leads_session_idx ON demo_leads (session_id);

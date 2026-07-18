@@ -162,14 +162,32 @@ export async function resolveRequestAuth(req: FastifyRequest): Promise<{ ok: boo
     // platform (legacy) org — a trusted service account. Only the BFF's own
     // self-calls (fidelity, readiness, debrief/build, scheduled-join, the studio
     // pipeline, etc.) send this key; the web client does not send X-API-Key in
-    // password mode. NOTE: this pins service calls to the LEGACY org — correct
-    // while legacy is the only real tenant; multi-org internal calls must instead
-    // propagate the target org (see the internal-call org-propagation follow-up).
+    // password mode. By default this pins service calls to the LEGACY org
+    // (back-compat); a multi-org self-call names its target tenant via the
+    // X-Service-Org header, honored below (internal-call org propagation, #73).
     if (config.bffApiKey) {
       const authz = req.headers["authorization"];
       const provided = (req.headers["x-api-key"] as string | undefined)
         ?? (typeof authz === "string" && authz.startsWith("Bearer ") ? authz.slice(7) : undefined);
       if (provided === config.bffApiKey) {
+        // ORG PROPAGATION (follow-up #73): an internal self-call may name the
+        // TARGET org via X-Service-Org so a multi-org call (readiness/debrief/
+        // fidelity/scheduled-join/pipeline) resolves in the RIGHT tenant instead
+        // of always pinning to legacy. We honor this header ONLY because the
+        // BFF_API_KEY above already checked out, and only after validating the
+        // org actually exists — a present-but-unknown org is rejected rather
+        // than silently mis-scoped. An absent header keeps the legacy back-compat
+        // pin (single-tenant behavior unchanged). Never scopes a real user: a
+        // valid session cookie already returned above.
+        const svcHeader = req.headers["x-service-org"];
+        const svcOrg = typeof svcHeader === "string" ? svcHeader.trim() : "";
+        if (svcOrg) {
+          const orgRow = await one<{ name: string }>(`SELECT name FROM orgs WHERE id = $1`, [svcOrg]);
+          if (!orgRow) return { ok: false, reason: "unknown service org" };
+          req.orgId = svcOrg;
+          req.org = { id: svcOrg, name: orgRow.name, role: "owner" };
+          return { ok: true };
+        }
         req.orgId = config.legacyOrgId;
         req.org = { id: config.legacyOrgId, name: "Legacy", role: "owner" };
         return { ok: true };
