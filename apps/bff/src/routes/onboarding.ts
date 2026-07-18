@@ -14,10 +14,11 @@ const KEY = process.env.BFF_API_KEY || "";
 
 // Reuse the authoritative readiness score (fused 0-100 + promoteUnlocked) rather
 // than re-deriving the >=70 rule here — one source of truth for "hit 70".
-async function readiness(agentId: string): Promise<{ score: number; promoteUnlocked: boolean } | null> {
+async function readiness(agentId: string, org: string): Promise<{ score: number; promoteUnlocked: boolean } | null> {
   try {
     const r = await fetch(`http://localhost:${PORT}/api/readiness/${agentId}`, {
-      headers: KEY ? { "X-API-Key": KEY } : {},
+      // X-Service-Org: run this self-call inside the agent's tenant (follow-up #73).
+      headers: KEY ? { "X-API-Key": KEY, "X-Service-Org": org } : {},
       signal: AbortSignal.timeout(20_000),
     });
     if (!r.ok) return null;
@@ -80,7 +81,7 @@ export default async function onboardingRoutes(app: FastifyInstance) {
     let bestScore = 0;
     let anyUnlocked = false;
     for (const a of clonedAgents.length ? clonedAgents : agents) {
-      const r = await readiness(a.id);
+      const r = await readiness(a.id, org);
       if (r) {
         if (r.score > bestScore) bestScore = r.score;
         if (r.promoteUnlocked) anyUnlocked = true;

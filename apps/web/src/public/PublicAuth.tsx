@@ -135,7 +135,7 @@ export default function PublicAuth({ nav, mode }: { nav: Nav; mode: "signup" | "
             {error && <div style={{ fontSize: 12.5, color: "#E1173F", marginTop: 12, textAlign: "center" }}>{error}</div>}
 
             <div style={{ fontSize: 12.5, color: "var(--ink3)", lineHeight: 1.5, marginTop: 18, textAlign: "center" }}>{isSignup ? "Already have an account?" : "Don't have an account?"} <a href={isSignup ? "#/signin" : "#/auth"} onClick={(e) => { e.preventDefault(); nav.go(isSignup ? "#/signin" : "#/auth"); }} style={{ fontWeight: 700, color: "#FF0660" }}>{isSignup ? "Sign in" : "Start free"}</a></div>
-            {isSignup && <div style={{ fontSize: 11.5, color: "var(--ink3)", lineHeight: 1.5, marginTop: 14, textAlign: "center" }}>By creating an account you agree to our terms and privacy policy.</div>}
+            {isSignup && <div style={{ fontSize: 11.5, color: "var(--ink3)", lineHeight: 1.5, marginTop: 14, textAlign: "center" }}>By creating an account you agree to our <a href="#/terms" onClick={(e) => { e.preventDefault(); nav.go("#/terms"); }} style={{ fontWeight: 600, color: "var(--ink2)", textDecoration: "underline" }}>Terms of Service</a> and <a href="#/privacy" onClick={(e) => { e.preventDefault(); nav.go("#/privacy"); }} style={{ fontWeight: 600, color: "var(--ink2)", textDecoration: "underline" }}>Privacy Policy</a>.</div>}
           </div>
         </div>
       </div>

@@ -56,6 +56,8 @@ import onboardingRoutes from "./routes/onboarding.js";
 import superadminRoutes from "./routes/superadmin.js";
 import retentionRoutes from "./routes/retention.js";
 import billingRoutes from "./routes/billing.js";
+import demoRoutes from "./routes/demo.js";
+import { startDemoPool } from "./lib/demoPool.js";
 
 // trustProxy: behind Traefik, X-Forwarded-For must be trusted so req.ip / the
 // super-admin new-IP alert see the real client IP (CLAUDE.md deploy note).
@@ -115,6 +117,9 @@ app.addHook("onRequest", async (req, reply) => {
   // Super-admin surface enforces its own gate (IP allowlist + session +
   // password + role); it is authoritative there, so bypass the shared BFF key.
   if (req.url.startsWith("/api/superadmin")) return;
+  // Public "Talk to Ava" demo — unauthenticated by design; it self-rate-limits
+  // (per-IP + warm-pool hard cap) inside routes/demo.ts. Mirror superadmin bypass.
+  if (req.url.startsWith("/api/demo")) return;
   if (req.method === "GET" && !req.url.startsWith("/api")) return; // static / SPA
   // Presenter page runs inside Recall's headless browser (no login). Its GET
   // endpoints are authorized by the unguessable session id in the URL.
@@ -209,6 +214,7 @@ await app.register(onboardingRoutes);
 await app.register(superadminRoutes);
 await app.register(retentionRoutes);
 await app.register(billingRoutes);
+await app.register(demoRoutes);
 
 // Optional single-process mode: serve the built web app + SPA fallback.
 if (config.serveWeb) {
@@ -276,6 +282,11 @@ async function boot() {
   // gated by readiness >=70). Timers are unref'd so they never hold the process.
   try { startScheduler(); app.log.info("Clone calendar-watch scheduler started"); }
   catch (err) { app.log.error({ err }, "scheduler failed to start"); }
+
+  // Warm-pool for the public "Talk to Ava" demo. NO-OP unless DEMO_POOL_ENABLED=true
+  // (so this never warms E2B during a build) — the coordinator flips the flag.
+  try { startDemoPool(); }
+  catch (err) { app.log.error({ err }, "demo warm-pool failed to start"); }
 }
 
 boot().catch((err) => {

@@ -32,6 +32,7 @@ import ModelSettings from "./screens/ModelSettings";
 import LandingPage from "./screens/LandingPage";
 import PricingPage from "./screens/PricingPage";
 import AgentsHome from "./screens/AgentsHome";
+import FirstRun from "./screens/FirstRun";
 import EchoDashboard from "./screens/EchoDashboard";
 import CloneARep from "./screens/CloneARep";
 import DrillMode from "./screens/DrillMode";
@@ -136,6 +137,32 @@ export function App() {
     return () => window.removeEventListener("pds-nav", onPds);
   }, []);
 
+  // First-run activation: a signed-in org with zero clones lands on the
+  // "Clone your first rep" launchpad by default. We only redirect from the
+  // default landing (no deep link) and only once per load, so bookmarks,
+  // back/forward, and the skip-to-dashboard link are never overridden. Once the
+  // org has a clone (buildTrack==="clone"), this never fires and the app is normal.
+  const firstRunChecked = useRef(false);
+  useEffect(() => {
+    if (!authed || firstRunChecked.current) return;
+    // password mode gates on `authed`; access-code mode starts authed if a key
+    // exists. Either way, once authed we can ask whether any clones exist.
+    firstRunChecked.current = true;
+    const initial = viewFromHash();
+    if (initial && initial !== "echo") return; // respect an explicit deep link
+    let cancelled = false;
+    void (async () => {
+      const list = await api.get<{ buildTrack?: string }[]>("/api/agents").catch(() => [] as { buildTrack?: string }[]);
+      if (cancelled) return;
+      const hasClone = list.some((a) => a.buildTrack === "clone");
+      // still on the default landing? (the user may have navigated meanwhile)
+      const now = viewFromHash();
+      if (!hasClone && (now == null || now === "echo")) nav("firstrun");
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authed]);
+
   // Mode-aware gate. Until the mode is known we hold on a neutral splash so we
   // never flash the wrong login.
   if (authMode === null) return <AuthSplash />;
@@ -197,6 +224,9 @@ export function App() {
       break;
     case "agentshome":
       body = <AgentsHome />;
+      break;
+    case "firstrun":
+      body = <FirstRun />;
       break;
     case "echo":
       body = <EchoDashboard />;
@@ -294,7 +324,7 @@ export function App() {
 
   // The Perfect app is its own product surface — full screen, no HUD chrome.
   // A small corner pill drops back into the legacy ops console.
-  const PDS_VIEWS: ViewId[] = ["agentshome", "echo", "readiness", "connections", "clonerep", "pdsstudio", "drillmode", "momenttrainer", "certification", "precall", "director", "democanvas", "debrief", "screenmap", "workspace", "modelsettings", "landing", "pricing", "billing", "rehearsal", "trust", "dpa", "retention"];
+  const PDS_VIEWS: ViewId[] = ["firstrun", "agentshome", "echo", "readiness", "connections", "clonerep", "pdsstudio", "drillmode", "momenttrainer", "certification", "precall", "director", "democanvas", "debrief", "screenmap", "workspace", "modelsettings", "landing", "pricing", "billing", "rehearsal", "trust", "dpa", "retention"];
   if (PDS_VIEWS.includes(view)) {
     // Design-faithful: Perfect screens are full-bleed pages that navigate through
     // their own links (top-nav pills, jump-to chips, back arrows) — no app chrome.

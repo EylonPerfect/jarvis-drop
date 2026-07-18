@@ -21,6 +21,7 @@ export type ViewId =
   | "landing"
   | "pricing"
   | "billing"
+  | "firstrun"
   | "agentshome"
   | "echo"
   | "clonerep"

@@ -20,17 +20,22 @@ import { agentInOrg } from "../lib/tenancy.js";
 const PORT = process.env.PORT || 8787;
 const KEY = process.env.BFF_API_KEY || "";
 
-async function api<T = any>(method: string, path: string, body?: unknown): Promise<{ status: number; json: T }> {
-  // Content-Type only when a body rides along: Fastify 400s a bodyless POST
-  // that claims application/json (bit us on /api/live/end — leaked a sandbox).
-  const r = await fetch(`http://localhost:${PORT}${path}`, {
-    method,
-    headers: { "X-API-Key": KEY, ...(body !== undefined ? { "Content-Type": "application/json" } : {}) },
-    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-    signal: AbortSignal.timeout(120_000),
-  });
-  const json = (await r.json().catch(() => ({}))) as T;
-  return { status: r.status, json };
+// Bind the TARGET org into every internal self-call (follow-up #73): each call
+// carries X-Service-Org so resolveRequestAuth scopes it to this agent's tenant
+// instead of pinning to legacy. org is fixed for the whole fidelity run.
+function makeApi(org: string) {
+  return async function api<T = any>(method: string, path: string, body?: unknown): Promise<{ status: number; json: T }> {
+    // Content-Type only when a body rides along: Fastify 400s a bodyless POST
+    // that claims application/json (bit us on /api/live/end — leaked a sandbox).
+    const r = await fetch(`http://localhost:${PORT}${path}`, {
+      method,
+      headers: { "X-API-Key": KEY, "X-Service-Org": org, ...(body !== undefined ? { "Content-Type": "application/json" } : {}) },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+      signal: AbortSignal.timeout(120_000),
+    });
+    const json = (await r.json().catch(() => ({}))) as T;
+    return { status: r.status, json };
+  };
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -125,6 +130,7 @@ export default async function fidelityRoutes(app: FastifyInstance) {
     const maxTurns = Math.max(2, Math.min(25, b.maxTurns ?? 12));
 
     const org = orgId(req);
+    const api = makeApi(org); // self-calls below run in the agent's tenant (follow-up #73)
     if (!(await agentInOrg(b.agentId, org))) return reply.code(404).send({ error: "not found" });
 
     const agent = await one<any>(`SELECT * FROM agents WHERE id=$1 AND org_id=$2`, [b.agentId, org]);

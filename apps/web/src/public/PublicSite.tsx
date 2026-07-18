@@ -4,6 +4,8 @@ import { type Nav } from "./PublicChrome";
 import PublicLanding from "./PublicLanding";
 import PublicPricing from "./PublicPricing";
 import PublicAuth from "./PublicAuth";
+import TalkToAva from "./TalkToAva";
+import PublicLegal from "./PublicLegal";
 
 // ============================================================
 // After Human — public marketing site entry. Mounted by main.tsx
@@ -12,8 +14,11 @@ import PublicAuth from "./PublicAuth";
 // shared links work:
 //   /site#/        -> Landing
 //   /site#/pricing -> Pricing
+//   /site#/ava     -> Talk to Ava (live voice + screen demo)
 //   /site#/auth    -> Auth (signup)
 //   /site#/signin  -> Auth (signin)
+//   /site#/terms   -> Terms of Service
+//   /site#/privacy -> Privacy Policy
 // Navigation into the product app leaves the public site via
 // goApp (e.g. window.location.href = "/#/clonerep").
 //
@@ -21,10 +26,13 @@ import PublicAuth from "./PublicAuth";
 // product screen or shared style is touched.
 // ============================================================
 
-type Route = { page: "landing" | "pricing" | "auth"; authMode: "signup" | "signin" };
+type Route = { page: "landing" | "pricing" | "auth" | "ava" | "terms" | "privacy"; authMode: "signup" | "signin" };
 
 function routeFromHash(): Route {
   const h = window.location.hash.toLowerCase();
+  if (h.indexOf("ava") > -1) return { page: "ava", authMode: "signup" };
+  if (h.indexOf("privacy") > -1) return { page: "privacy", authMode: "signup" };
+  if (h.indexOf("terms") > -1) return { page: "terms", authMode: "signup" };
   if (h.indexOf("pricing") > -1) return { page: "pricing", authMode: "signup" };
   if (h.indexOf("signin") > -1) return { page: "auth", authMode: "signin" };
   if (h.indexOf("auth") > -1) return { page: "auth", authMode: "signup" };
@@ -70,6 +78,9 @@ export default function PublicSite() {
     },
   };
 
+  if (route.page === "ava") return <TalkToAva nav={nav} />;
+  if (route.page === "terms") return <PublicLegal nav={nav} doc="terms" />;
+  if (route.page === "privacy") return <PublicLegal nav={nav} doc="privacy" />;
   if (route.page === "pricing") return <PublicPricing nav={nav} />;
   if (route.page === "auth") return <PublicAuth nav={nav} mode={route.authMode} />;
   return <PublicLanding nav={nav} />;

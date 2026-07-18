@@ -147,9 +147,9 @@ export default function PublicLanding({ nav }: { nav: Nav }) {
               </button>
             </form>
             <div style={{ display: "flex", alignItems: "center", gap: 18, marginTop: 18, flexWrap: "wrap" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 13, fontWeight: 500, color: "var(--ink3)" }}><Icon name="videocam" style={{ fontSize: 18, color: "#FF0660" }} />Talk live with our AI rep now</div>
+              <a href="#/ava" onClick={(e) => { e.preventDefault(); nav.go("#/ava"); }} style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 13, fontWeight: 600, color: "#FF0660" }}><Icon name="videocam" style={{ fontSize: 18, color: "#FF0660" }} />Talk live with our AI rep now</a>
               <div style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 13, fontWeight: 500, color: "var(--ink3)" }}><Icon name="check_circle" style={{ fontSize: 18, color: "#0E8A4F" }} />Free to start, no card</div>
-              <a href="#/auth" onClick={(e) => { e.preventDefault(); nav.go("#/auth"); }} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, fontWeight: 600, color: "#FF0660" }}><Icon name="graphic_eq" style={{ fontSize: 18 }} />Book a meeting now</a>
+              <a href="#/ava" onClick={(e) => { e.preventDefault(); nav.go("#/ava"); }} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, fontWeight: 600, color: "#FF0660" }}><Icon name="graphic_eq" style={{ fontSize: 18 }} />Talk to Ava live</a>
             </div>
           </div>
 
@@ -275,7 +275,7 @@ export default function PublicLanding({ nav }: { nav: Nav }) {
                 </div>
               </div>
             </div>
-            <a href="#/auth" onClick={(e) => { e.preventDefault(); nav.go("#/auth"); }} style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, height: 60, borderRadius: 9999, background: "#FF0660", color: "#fff", fontSize: 17, fontWeight: 700, letterSpacing: ".02em", boxShadow: "0 8px 24px rgba(255,6,96,.3)" }}>
+            <a href="#/ava" onClick={(e) => { e.preventDefault(); nav.go("#/ava"); }} style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, height: 60, borderRadius: 9999, background: "#FF0660", color: "#fff", fontSize: 17, fontWeight: 700, letterSpacing: ".02em", boxShadow: "0 8px 24px rgba(255,6,96,.3)" }}>
               <Icon name="graphic_eq" style={{ fontSize: 22 }} />Talk to Ava now
             </a>
           </div>
@@ -365,11 +365,21 @@ export default function PublicLanding({ nav }: { nav: Nav }) {
           <button type="submit" style={{ display: "flex", alignItems: "center", gap: 8, height: 54, padding: "0 28px", border: "none", borderRadius: 9999, background: "#FF0660", color: "#fff", fontSize: 16, fontWeight: 700, cursor: "pointer", boxShadow: "0 8px 24px rgba(255,6,96,.3)" }}>Start free<Icon name="arrow_forward" style={{ fontSize: 20 }} /></button>
         </form>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, marginTop: 18, fontSize: 13, fontWeight: 500, color: "var(--ink3)" }}>
-          Not ready to sign up? <a href="#/auth" onClick={(e) => { e.preventDefault(); nav.go("#/auth"); }} style={{ fontWeight: 600, color: "#FF0660" }}>Book a meeting now</a> or <a href="#/pricing" onClick={(e) => { e.preventDefault(); nav.go("#/pricing"); }} style={{ fontWeight: 600, color: "var(--ink1)", textDecoration: "underline" }}>see pricing</a>
+          Not ready to sign up? <a href="#/ava" onClick={(e) => { e.preventDefault(); nav.go("#/ava"); }} style={{ fontWeight: 600, color: "#FF0660" }}>Talk to Ava live</a> or <a href="#/pricing" onClick={(e) => { e.preventDefault(); nav.go("#/pricing"); }} style={{ fontWeight: 600, color: "var(--ink1)", textDecoration: "underline" }}>see pricing</a>
         </div>
       </section>
 
       <PublicFooter nav={nav} onAnchor={scrollToId} />
+
+      {/* Persistent floating CTA — the single primary action, always in reach. */}
+      <a
+        href="#/ava"
+        onClick={(e) => { e.preventDefault(); nav.go("#/ava"); }}
+        aria-label="Talk to Ava, our live AI rep"
+        style={{ position: "fixed", right: 24, bottom: 24, zIndex: 40, display: "inline-flex", alignItems: "center", gap: 9, height: 56, padding: "0 24px", borderRadius: 9999, background: "#FF0660", color: "#fff", fontSize: 15.5, fontWeight: 700, letterSpacing: ".02em", boxShadow: "0 12px 32px rgba(255,6,96,.42)", animation: "ahpCard 6s ease-in-out infinite" }}
+      >
+        <Icon name="graphic_eq" style={{ fontSize: 22 }} />Talk to Ava
+      </a>
     </PublicShell>
   );
 }

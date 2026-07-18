@@ -9,7 +9,7 @@ import { purgeCall } from "../lib/purge.js";
 import { checkCapsForAgent, orgForAgent, recordLiveCallMinutes } from "../lib/metering.js";
 import { compileClone } from "@jarvis/shared";
 import { liveJoinGate, LIVE_GATE_MIN } from "./readiness.js";
-import { orgCanGoLive } from "../lib/billing.js";
+import { orgCanGoLive, orgCanRehearse } from "../lib/billing.js";
 import { emit, EVENTS } from "../lib/analytics.js";
 
 // The caller's org, falling back to the legacy org for the cookieless Recall
@@ -164,6 +164,19 @@ export default async function liveRoutes(app: FastifyInstance) {
       const cap = await checkCapsForAgent(agentForCall || null);
       if (!cap.allowed) return reply.code(429).send({ error: "Cost cap: " + cap.reason, capState: cap.state });
     }
+    // FREE-TIER REHEARSAL CAP (free->paid wedge): a FREE org may launch only
+    // config.billing.freeRehearsalCap lifetime rehearsals (E2B cost control);
+    // paid orgs are uncapped. This is the single rehearsal launch choke point —
+    // the RehearsalRoom UI AND the internal fidelity loop both land here. Inert
+    // while billing is off; fail-open in the helper. Blocks with 402 so the FE
+    // opens the "cap reached -> go live" prompt.
+    if (mode === "rehearsal") {
+      const reh = await orgCanRehearse(org);
+      if (!reh.allowed) {
+        appendFileSync(logPath(id), `[live.ts] BLOCKED by rehearsal cap: ${reh.reason}\n`);
+        return reply.code(402).send({ error: reh.reason, code: "rehearsal_cap", billing: true, plan: reh.plan, used: reh.used, cap: reh.cap });
+      }
+    }
     // ---- THE LIVE GATE (sole safety stop). A LIVE (zoom) join is allowed only
     // at readiness >= 70. This is the STRUCTURAL backstop and it ALWAYS runs:
     // the scheduler and the instant-link path both delegate here, so the >=70
@@ -185,7 +198,11 @@ export default async function liveRoutes(app: FastifyInstance) {
       const bill = await orgCanGoLive(org, agentForCall);
       if (!bill.allowed) {
         appendFileSync(logPath(id), `[live.ts] BLOCKED by billing gate: ${bill.reason}\n`);
-        return reply.code(402).send({ error: bill.reason, code: bill.code, billing: true, plan: bill.plan, slots: bill.slots, liveClones: bill.liveClones });
+        // Signal the FE to open the go-live paywall -> checkout when the block is
+        // "no paid plan" (payment_required); other blocks (e.g. no_slot) keep
+        // their specific code so the FE can tailor the prompt.
+        const code = bill.code === "no_subscription" ? "payment_required" : bill.code;
+        return reply.code(402).send({ error: bill.reason, code, billing: true, plan: bill.plan, slots: bill.slots, liveClones: bill.liveClones });
       }
     }
     // Persona compile for this call. Draft (default): unpinned clones get their
@@ -252,7 +269,8 @@ export default async function liveRoutes(app: FastifyInstance) {
           let readiness: number | null = null;
           if (agentForCall) {
             const rr = await fetch(`http://localhost:${process.env.PORT || 8787}/api/readiness/${agentForCall}`, {
-              headers: { "X-API-Key": process.env.BFF_API_KEY || "" }, signal: AbortSignal.timeout(15000),
+              // X-Service-Org: read readiness in THIS call's tenant (agentForCall was validated in org) — follow-up #73.
+              headers: { "X-API-Key": process.env.BFF_API_KEY || "", "X-Service-Org": org }, signal: AbortSignal.timeout(15000),
             }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
             if (rr && typeof (rr as any).score === "number") readiness = (rr as any).score;
           }
@@ -631,7 +649,8 @@ export default async function liveRoutes(app: FastifyInstance) {
     if (sourceId && row.agent_id) {
       const key = process.env.BFF_API_KEY || "";
       const buildOnce = () => fetch(`http://localhost:${process.env.PORT || 8787}/api/debrief/build`, {
-        method: "POST", headers: { "Content-Type": "application/json", "X-API-Key": key },
+        // X-Service-Org: build the debrief in the call's own tenant (row was fetched WHERE org_id = org) — follow-up #73.
+        method: "POST", headers: { "Content-Type": "application/json", "X-API-Key": key, "X-Service-Org": org },
         body: JSON.stringify({ agentId: row.agent_id, sourceId }),
       });
       void (async () => {

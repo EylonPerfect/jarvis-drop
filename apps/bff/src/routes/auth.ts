@@ -6,6 +6,8 @@ import {
   setSessionCookie, clearSessionCookie, parseCookies, orgId,
 } from "../lib/auth.js";
 import { getOrgDemoLogin, setOrgDemoLogin } from "../lib/tenancy.js";
+import { emit, EVENTS } from "../lib/analytics.js";
+import { notifyFunnelEvent } from "../lib/alerts.js";
 
 // ============================================================
 // PHASE 2 — auth endpoints (email + password + session cookie).
@@ -62,6 +64,11 @@ export default async function authRoutes(app: FastifyInstance) {
 
     const token = await createSession(userId, orgId);
     setSessionCookie(reply, token);
+    // OBSERVABILITY (launch monitoring): signup = activation-funnel denominator
+    // + an operator-visible "new signup" ping. Fire-and-forget so a ledger/alert
+    // hiccup never blocks account creation.
+    void emit(EVENTS.SIGNUP, { orgId, props: { email } }).catch(() => {});
+    void notifyFunnelEvent("signup", { orgId, email, orgName }).catch(() => {});
     return reply.code(201).send({ ok: true, user: { id: userId, email, name: b.name ?? undefined }, org: { id: orgId, name: orgName, role: "owner" } });
   });
 

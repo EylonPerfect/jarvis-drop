@@ -15,7 +15,8 @@ const PLATFORM_ORG = config.legacyOrgId;
 // Config lives in settings['incident_config'] so it's editable without a deploy.
 // ============================================================================
 
-export type AlertKind = "new_ip_superadmin" | "cost_runaway" | "bailout_spike" | "report_spike" | "lockdown";
+export type AlertKind = "new_ip_superadmin" | "cost_runaway" | "bailout_spike" | "report_spike" | "lockdown"
+  | "signup" | "first_go_live" | "payment" | "error_spike";
 export type Severity = "info" | "warning" | "critical";
 
 export type IncidentConfig = {
@@ -25,6 +26,7 @@ export type IncidentConfig = {
   costRunawayUsdPerHour?: number;  // spend rate threshold (default 25)
   bailoutRateThreshold?: number;   // fraction of live calls bailing in window (default 0.3)
   reportRateThreshold?: number;    // fraction of live calls reported in window (default 0.3)
+  errorRateThreshold?: number;     // fraction of live calls stuck in error in window (default 0.3)
   spikeWindowHours?: number;       // window for the spike detectors (default 6)
   spikeMinCalls?: number;          // ignore spikes below this call volume (default 5)
 };
@@ -34,6 +36,7 @@ const DEFAULTS: Required<Omit<IncidentConfig, "webhookUrl" | "slackWebhookUrl">>
   costRunawayUsdPerHour: 25,
   bailoutRateThreshold: 0.3,
   reportRateThreshold: 0.3,
+  errorRateThreshold: 0.3,
   spikeWindowHours: 6,
   spikeMinCalls: 5,
 };
@@ -48,6 +51,7 @@ export async function getConfig(): Promise<Required<IncidentConfig>> {
     costRunawayUsdPerHour: v.costRunawayUsdPerHour ?? DEFAULTS.costRunawayUsdPerHour,
     bailoutRateThreshold: v.bailoutRateThreshold ?? DEFAULTS.bailoutRateThreshold,
     reportRateThreshold: v.reportRateThreshold ?? DEFAULTS.reportRateThreshold,
+    errorRateThreshold: v.errorRateThreshold ?? DEFAULTS.errorRateThreshold,
     spikeWindowHours: v.spikeWindowHours ?? DEFAULTS.spikeWindowHours,
     spikeMinCalls: v.spikeMinCalls ?? DEFAULTS.spikeMinCalls,
   };
@@ -85,12 +89,13 @@ async function deliver(cfg: Required<IncidentConfig>, kind: AlertKind, severity:
  * Fire an alert: dedupe within the window, persist to incident_alerts, dispatch
  * to the configured channels. Returns {fired,delivered}; never throws.
  */
-export async function fireAlert(kind: AlertKind, severity: Severity, detail: Record<string, unknown> = {}): Promise<{ fired: boolean; delivered: boolean }> {
+export async function fireAlert(kind: AlertKind, severity: Severity, detail: Record<string, unknown> = {}, opts: { dedupeMinutes?: number } = {}): Promise<{ fired: boolean; delivered: boolean }> {
   try {
     const cfg = await getConfig();
+    const dedupeMinutes = opts.dedupeMinutes ?? cfg.dedupeMinutes;
     const recent = await one<{ id: number }>(
       `SELECT id FROM incident_alerts WHERE kind=$1 AND at > now() - ($2 || ' minutes')::interval ORDER BY at DESC LIMIT 1`,
-      [kind, String(cfg.dedupeMinutes)],
+      [kind, String(dedupeMinutes)],
     ).catch(() => null);
     if (recent) return { fired: false, delivered: false }; // deduped
     const delivered = await deliver(cfg, kind, severity, detail);
@@ -103,6 +108,19 @@ export async function fireAlert(kind: AlertKind, severity: Severity, detail: Rec
     console.error("[alerts] fireAlert failed:", (err as Error).message);
     return { fired: false, delivered: false };
   }
+}
+
+// ---- launch funnel signals (operator-visible pings on good/notable events) -
+// Positive funnel events (signup, first go-live, payment) are info-level and
+// each one matters, so they are NOT deduped per-kind (dedupeMinutes:0). They
+// travel the SAME incident_alerts ledger + webhook/Slack path as incidents, so
+// the operator sees them in GET /api/admin/security (recentAlerts) and any
+// configured Slack channel. Never throws (fireAlert swallows its own errors).
+export async function notifyFunnelEvent(
+  kind: Extract<AlertKind, "signup" | "first_go_live" | "payment">,
+  detail: Record<string, unknown> = {},
+): Promise<{ fired: boolean; delivered: boolean }> {
+  return fireAlert(kind, "info", detail, { dedupeMinutes: 0 });
 }
 
 // ---- detectors (pure reads; call from the scan endpoint / cron) ------------
@@ -132,4 +150,19 @@ export async function checkBailAndReportSpikes(): Promise<{ bailoutRate: number;
     if (reportRate >= cfg.reportRateThreshold) { reportTripped = true; await fireAlert("report_spike", "warning", { reportRate, reports, calls, windowHours: cfg.spikeWindowHours }); }
   }
   return { bailoutRate, reportRate, calls, bailoutTripped, reportTripped };
+}
+
+/** Error spike: fraction of recent live calls stuck in an error phase. */
+export async function checkErrorSpike(): Promise<{ errorRate: number; errored: number; calls: number; tripped: boolean }> {
+  const cfg = await getConfig();
+  const w = String(cfg.spikeWindowHours);
+  const calls = Number((await one<{ n: string }>(`SELECT COUNT(*) AS n FROM live_calls WHERE mode='zoom' AND started_at > now() - ($1 || ' hours')::interval`, [w]).catch(() => null))?.n ?? 0);
+  const errored = Number((await one<{ n: string }>(`SELECT COUNT(*) AS n FROM live_calls WHERE mode='zoom' AND phase='error' AND started_at > now() - ($1 || ' hours')::interval`, [w]).catch(() => null))?.n ?? 0);
+  const errorRate = calls > 0 ? errored / calls : 0;
+  let tripped = false;
+  if (calls >= cfg.spikeMinCalls && errorRate >= cfg.errorRateThreshold) {
+    tripped = true;
+    await fireAlert("error_spike", "critical", { errorRate, errored, calls, windowHours: cfg.spikeWindowHours });
+  }
+  return { errorRate, errored, calls, tripped };
 }

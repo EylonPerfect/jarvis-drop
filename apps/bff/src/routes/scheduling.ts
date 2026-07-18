@@ -153,11 +153,12 @@ async function spendAllowed(_orgId: string | null): Promise<{ ok: boolean; reaso
 // Both instant and scheduled call this. This layer pre-checks the gate (for a
 // fast, audited failure) but /api/live/join ALWAYS re-runs the gate itself as the
 // authoritative enforcement — there is no bypass flag.
-async function launchLive(agentId: string, meetingLink: string): Promise<{ ok: boolean; callId?: string; error?: string; status: number }> {
+async function launchLive(agentId: string, meetingLink: string, org: string): Promise<{ ok: boolean; callId?: string; error?: string; status: number }> {
   try {
     const r = await fetch(`http://localhost:${PORT}/api/live/join`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "X-API-Key": KEY },
+      // X-Service-Org: /api/live/join must resolve the clone in ITS org, not legacy (follow-up #73).
+      headers: { "Content-Type": "application/json", "X-API-Key": KEY, "X-Service-Org": org },
       body: JSON.stringify({ agentId, meetingId: meetingLink, mode: "zoom" }),
       signal: AbortSignal.timeout(30_000),
     });
@@ -307,7 +308,7 @@ async function dueCallsTick(): Promise<void> {
       }
       continue;
     }
-    const launched = await launchLive(agent.id, row.meeting_link);
+    const launched = await launchLive(agent.id, row.meeting_link, agent.org_id);
     if (launched.ok) {
       await query(`UPDATE scheduled_calls SET status='live', call_id=$2, launched_at=now(), last_error=NULL, updated_at=now() WHERE id=$1`, [row.id, launched.callId ?? null]).catch(() => {});
       await audit({ agentId: agent.id, orgId: agent.org_id, actor: "scheduler", source: "scheduled", meetingLink: row.meeting_link, event: "launched", score: pf.score, detail: `call ${launched.callId}` });
@@ -415,7 +416,7 @@ export default async function schedulingRoutes(app: FastifyInstance) {
       const status = pf.code === "concurrency" || pf.code === "spend" ? 429 : 403;
       return reply.code(status).send({ error: pf.reason, code: pf.code, score: pf.score });
     }
-    const launched = await launchLive(agentId, meetingLink);
+    const launched = await launchLive(agentId, meetingLink, org);
     if (!launched.ok) {
       await audit({ agentId, orgId: org, actor, source: "instant", meetingLink, event: "error", score: pf.score, detail: launched.error });
       return reply.code(launched.status === 409 ? 409 : 502).send({ error: launched.error ?? "launch failed" });

@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { query, one } from "../db/pool.js";
 import { config } from "../config.js";
 import { emit, EVENTS } from "../lib/analytics.js";
-import { fireAlert, checkCostRunaway, checkBailAndReportSpikes, getConfig } from "../lib/alerts.js";
+import { fireAlert, checkCostRunaway, checkBailAndReportSpikes, checkErrorSpike, getConfig } from "../lib/alerts.js";
 import {
   requireSuperadmin, getSecurityState, setSecurityState,
   recordSuperadminLogin, invalidateAllSessions, clientIp,
@@ -59,6 +59,16 @@ export default async function securityRoutes(app: FastifyInstance) {
     const recentAlerts = await query(`SELECT kind, severity, detail, delivered, at FROM incident_alerts ORDER BY at DESC LIMIT 20`).catch(() => []);
     const recentLogins = await query(`SELECT ip, user_agent, is_new_ip, at FROM superadmin_logins ORDER BY at DESC LIMIT 20`).catch(() => []);
     const activeSessions = await one<{ n: string }>(`SELECT COUNT(*) AS n FROM superadmin_sessions WHERE revoked_at IS NULL`).catch(() => null);
+    // Launch-funnel counters (last 24h) from the analytics ledger — a quick
+    // operator glance at signups / activation / go-lives / revenue alongside alerts.
+    const funnel = await one<{ signups: string; reached70: string; wentlive: string; livecalls: string; payments: string }>(
+      `SELECT COUNT(*) FILTER (WHERE name='signup')        AS signups,
+              COUNT(*) FILTER (WHERE name='reached_70')    AS reached70,
+              COUNT(*) FILTER (WHERE name='went_live')     AS wentlive,
+              COUNT(*) FILTER (WHERE name='live_call_run') AS livecalls,
+              COUNT(*) FILTER (WHERE name='mrr_change')    AS payments
+         FROM usage_events WHERE ts > now() - interval '24 hours'`,
+    ).catch(() => null);
     return {
       posture: {
         mfaEnabled: state.mfaEnabled,
@@ -70,6 +80,13 @@ export default async function securityRoutes(app: FastifyInstance) {
       },
       alertChannels: { webhook: !!cfg.webhookUrl, slack: !!cfg.slackWebhookUrl },
       activeSuperadminSessions: Number(activeSessions?.n ?? 0),
+      launchFunnel24h: {
+        signups: Number(funnel?.signups ?? 0),
+        reached70: Number(funnel?.reached70 ?? 0),
+        wentLive: Number(funnel?.wentlive ?? 0),
+        liveCalls: Number(funnel?.livecalls ?? 0),
+        payments: Number(funnel?.payments ?? 0),
+      },
       recentAlerts,
       recentLogins,
     };
@@ -99,8 +116,8 @@ export default async function securityRoutes(app: FastifyInstance) {
 
   // ---- run the incident detectors (cron / scheduler hits this) ----
   app.post("/api/admin/incident-scan", { preHandler: requireSuperadmin }, async () => {
-    const [cost, spikes] = await Promise.all([checkCostRunaway(), checkBailAndReportSpikes()]);
-    return { ok: true, scannedAt: new Date().toISOString(), cost, spikes };
+    const [cost, spikes, errors] = await Promise.all([checkCostRunaway(), checkBailAndReportSpikes(), checkErrorSpike()]);
+    return { ok: true, scannedAt: new Date().toISOString(), cost, spikes, errors };
   });
 
   // NOTE (integration, reconciliation #3): the self-serve "report this call"

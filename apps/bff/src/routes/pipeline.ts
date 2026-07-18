@@ -24,17 +24,22 @@ import { agentInOrg } from "../lib/tenancy.js";
 const PORT = process.env.PORT || 8787;
 const KEY = process.env.BFF_API_KEY || "";
 
-async function api<T = any>(method: string, path: string, body?: unknown, timeoutMs = 120_000): Promise<{ status: number; json: T }> {
-  // Content-Type only when a body rides along (Fastify 400s a bodyless POST
-  // that claims application/json — same lesson fidelity.ts learned).
-  const r = await fetch(`http://localhost:${PORT}${path}`, {
-    method,
-    headers: { "X-API-Key": KEY, ...(body !== undefined ? { "Content-Type": "application/json" } : {}) },
-    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  const json = (await r.json().catch(() => ({}))) as T;
-  return { status: r.status, json };
+// Bind the TARGET org into every internal self-call (follow-up #73): each call
+// carries X-Service-Org so resolveRequestAuth scopes it to this agent's tenant
+// instead of pinning to legacy. org is fixed for the whole pipeline run.
+function makeApi(org: string) {
+  return async function api<T = any>(method: string, path: string, body?: unknown, timeoutMs = 120_000): Promise<{ status: number; json: T }> {
+    // Content-Type only when a body rides along (Fastify 400s a bodyless POST
+    // that claims application/json — same lesson fidelity.ts learned).
+    const r = await fetch(`http://localhost:${PORT}${path}`, {
+      method,
+      headers: { "X-API-Key": KEY, "X-Service-Org": org, ...(body !== undefined ? { "Content-Type": "application/json" } : {}) },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    const json = (await r.json().catch(() => ({}))) as T;
+    return { status: r.status, json };
+  };
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -129,6 +134,7 @@ type SourceRow = { id: string; title: string | null; url: string | null; chars: 
 type ObservedEntry = { sourceId: string; title: string; segments: number; turns: number };
 
 async function runPipeline(app: FastifyInstance, agentId: string, org: string, run: Runner): Promise<void> {
+  const api = makeApi(org); // every self-call below runs in the agent's tenant (follow-up #73)
   const label = (s: SourceRow) => `"${(s.title || s.id).slice(0, 70)}"`;
 
   // ---------------- ingest ----------------

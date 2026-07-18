@@ -18,6 +18,8 @@ import {
   PAID_PLANS,
   type Plan,
 } from "../lib/billing.js";
+import { emit, EVENTS } from "../lib/analytics.js";
+import { notifyFunnelEvent } from "../lib/alerts.js";
 
 // ============================================================
 // BILLING routes — Lemon Squeezy hosted Checkout + Customer Portal + webhook,
@@ -172,6 +174,11 @@ export default async function billingRoutes(app: FastifyInstance) {
             paidCloneSlots: m.slots,
             currentPeriodEnd: m.periodEnd,
           });
+          if (name === "subscription_created") {
+            // OBSERVABILITY: a NEW paid subscription = revenue signal + payment ping.
+            void emit(EVENTS.MRR_CHANGE, { orgId: org, props: { plan: planForVariant(m.variantId) ?? null, slots: m.slots, kind: "new" } }).catch(() => {});
+            void notifyFunnelEvent("payment", { orgId: org, plan: planForVariant(m.variantId) ?? null, slots: m.slots, subscriptionId: m.subId }).catch(() => {});
+          }
           break;
         }
         case "subscription_cancelled": {

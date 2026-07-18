@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { api, getAccessKey } from "../api/client";
 import ReportCallModal from "../components/ReportCallModal";
+import PaywallModal, { type PaywallVariant } from "../components/PaywallModal";
 import "../pds.css";
 
 // ============================================================
@@ -186,6 +187,9 @@ export default function RehearsalRoom() {
   const [statusLoaded, setStatusLoaded] = useState(false);
   const [joining, setJoining] = useState(false);
   const [joinErr, setJoinErr] = useState<string | null>(null);
+  // Rehearsal-cap paywall: opened when a rehearsal launch is blocked with code
+  // "rehearsal_cap" (free org used all its lifetime rehearsal runs).
+  const [paywall, setPaywall] = useState<{ variant: PaywallVariant; cloneName?: string; reason?: string } | null>(null);
   const [ending, setEnding] = useState(false);
   // Demo account THIS clone signs into — per-agent, with a shared-default
   // fallback. inherited=true means it's still falling back to the shared/global
@@ -671,7 +675,23 @@ export default function RehearsalRoom() {
     if (!agentId || joining) return;
     setJoinErr(null); setJoining(true);
     try {
-      await api.post("/api/live/join", { mode: "rehearsal", agentId, personaMode: rehearseGolden ? "golden" : "draft" });
+      // Raw fetch (not api.post) so we can read the 402 body: a free org that
+      // hit the rehearsal cap gets code "rehearsal_cap" -> open the go-live
+      // prompt instead of a raw error. (Inert while billing is off.)
+      const res = await fetch(`${api.base}/api/live/join`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(getAccessKey() ? { "X-API-Key": getAccessKey() } : {}) },
+        body: JSON.stringify({ mode: "rehearsal", agentId, personaMode: rehearseGolden ? "golden" : "draft" }),
+      });
+      if (!res.ok) {
+        const j = (await res.json().catch(() => ({}))) as { error?: string; code?: string };
+        if (j.code === "rehearsal_cap") {
+          setPaywall({ variant: "cap", cloneName: agent?.name, reason: j.error });
+          setJoining(false);
+          return;
+        }
+        throw new Error(j.error || `join → ${res.status}`);
+      }
       await refreshStatus();
     } catch (e) {
       setJoinErr(e instanceof Error ? e.message : String(e));
@@ -1585,6 +1605,14 @@ export default function RehearsalRoom() {
 
   return (
     <div className="pmx" data-theme={theme} style={{ height: "100%", display: "flex", flexDirection: "column", background: "var(--bg)", color: "var(--ink1)", overflow: "hidden", position: "relative" }}>
+      {paywall && (
+        <PaywallModal
+          variant={paywall.variant}
+          cloneName={paywall.cloneName}
+          reason={paywall.reason}
+          onClose={() => setPaywall(null)}
+        />
+      )}
       <style>{`
         @keyframes rrPulse { 0%,100%{opacity:1; transform:scale(1)} 50%{opacity:.45; transform:scale(.8)} }
         @keyframes rrBlink { 0%,100%{opacity:.25} 50%{opacity:1} }

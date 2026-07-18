@@ -4,6 +4,7 @@ import { orgId } from "../lib/auth.js";
 import { getSetting } from "../lib/settingsStore.js";
 import { agentInOrg } from "../lib/tenancy.js";
 import { emit, EVENTS } from "../lib/analytics.js";
+import { notifyFunnelEvent } from "../lib/alerts.js";
 import { orgCanGoLive } from "../lib/billing.js";
 
 // Emit reached_70 the FIRST time a clone crosses the live gate (activation
@@ -24,15 +25,20 @@ async function markReached70(agentId: string, score: number): Promise<void> {
 
 const PORT = process.env.PORT || 8787;
 const KEY = process.env.BFF_API_KEY || "";
-async function api<T = unknown>(method: string, path: string, body?: unknown, timeoutMs = 120_000): Promise<{ status: number; json: T }> {
-  const r = await fetch(`http://localhost:${PORT}${path}`, {
-    method,
-    headers: { "X-API-Key": KEY, ...(body !== undefined ? { "Content-Type": "application/json" } : {}) },
-    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  const json = (await r.json().catch(() => ({}))) as T;
-  return { status: r.status, json };
+// Bind the TARGET org into every internal self-call (follow-up #73): each call
+// carries X-Service-Org so resolveRequestAuth scopes it to this agent's tenant
+// instead of pinning to legacy.
+function makeApi(org: string) {
+  return async function api<T = unknown>(method: string, path: string, body?: unknown, timeoutMs = 120_000): Promise<{ status: number; json: T }> {
+    const r = await fetch(`http://localhost:${PORT}${path}`, {
+      method,
+      headers: { "X-API-Key": KEY, "X-Service-Org": org, ...(body !== undefined ? { "Content-Type": "application/json" } : {}) },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    const json = (await r.json().catch(() => ({}))) as T;
+    return { status: r.status, json };
+  };
 }
 
 // mode types the next step: "judgment" is a real human decision (corrections,
@@ -352,6 +358,7 @@ export default async function readinessRoutes(app: FastifyInstance) {
     const id = (b.id ?? "").trim();
     if (!id) return reply.code(400).send({ error: "id required" });
     const org = orgId(req);
+    const api = makeApi(org); // chained self-calls (redteam/golden/coach/fidelity) run in the agent's tenant (follow-up #73)
     if (!(await agentInOrg(agentId, org))) return reply.code(404).send({ error: "not found" });
     const r = await computeReadiness(agentId, org);
     if (!r) return reply.code(404).send({ error: "agent not found" });
@@ -367,12 +374,19 @@ export default async function readinessRoutes(app: FastifyInstance) {
       // BILLING GATE (free->paid wedge): promoting a clone to LIVE consumes a
       // paid clone slot. Below-plan orgs may rehearse but cannot go live.
       const bill = await orgCanGoLive(org, agentId);
-      if (!bill.allowed) return reply.code(402).send({ error: bill.reason, code: bill.code, billing: true, plan: bill.plan, slots: bill.slots, liveClones: bill.liveClones });
+      if (!bill.allowed) {
+        // "no paid plan" -> payment_required so the FE opens the go-live paywall
+        // -> checkout; other blocks (e.g. no_slot) keep their specific code.
+        const code = bill.code === "no_subscription" ? "payment_required" : bill.code;
+        return reply.code(402).send({ error: bill.reason, code, billing: true, plan: bill.plan, slots: bill.slots, liveClones: bill.liveClones });
+      }
       const pin = await api<{ ok?: boolean; versionId?: string }>("POST", `/api/clones/${agentId}/golden`, {});
       if (pin.status !== 200) return reply.code(502).send({ error: `checks passed (${Math.round(avg * 100)}%) but the promote step failed (${pin.status})` });
       app.log.info({ agentId, redteam: avg }, "readiness: promoted to live");
       // OBSERVABILITY: went-live = free->paid signal + activation confirmation.
       void emit(EVENTS.WENT_LIVE, { agentId, value: r.score, props: { redteam: Math.round(avg * 100) } }).catch(() => {});
+      // OBSERVABILITY: a clone going live is a headline launch event — ping the operator.
+      void notifyFunnelEvent("first_go_live", { agentId, score: r.score, redteam: Math.round(avg * 100) }).catch(() => {});
       return { done: true, redteam: Math.round(avg * 100), promoted: true, receipt: `Adversarial check ${Math.round(avg * 100)}% → promoted to live.` };
     }
     if (id.startsWith("coach:")) {

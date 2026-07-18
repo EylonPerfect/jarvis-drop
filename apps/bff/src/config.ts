@@ -152,6 +152,11 @@ export const config = {
     // patch is INERT on the existing legacy tenant until the operator turns
     // billing on (set up Lemon Squeezy + assign plans), then flips this true.
     gateEnforced: (process.env.BILLING_GATE_ENFORCED ?? "false") === "true",
+    // FREE-TIER REHEARSAL CAP: lifetime rehearsal runs a FREE (no active paid
+    // plan) org may launch before it must go live to keep rehearsing (E2B cost
+    // control). Paid orgs are uncapped. Only enforced when gateEnforced is true,
+    // so the whole funnel stays unlimited/no-paywall until billing is turned on.
+    freeRehearsalCap: num("FREE_REHEARSAL_CAP", 10),
     // Optional explicit Checkout/Portal redirect overrides (else derived from the
     // request Origin / WEB_ORIGIN).
     successUrl: process.env.BILLING_SUCCESS_URL,
@@ -178,6 +183,24 @@ export const config = {
     bootstrapPassword: process.env.SUPERADMIN_PASSWORD,
     cookieName: process.env.SUPERADMIN_COOKIE ?? "sa_session",
     cookieSecure: (process.env.SUPERADMIN_COOKIE_SECURE ?? String(isProd)) === "true",
+  },
+
+
+  // ---- Public "Talk to Ava" demo (warm E2B pool + unauthenticated API). ----
+  // Warming is OFF unless DEMO_POOL_ENABLED=true so a build/import never touches
+  // E2B. DEMO_AGENT_ID/DEMO_ORG_ID are supplied by the coordinator (the fixed
+  // demo clone + tenant the warm sandboxes boot against).
+  demo: {
+    poolEnabled: (process.env.DEMO_POOL_ENABLED ?? "false") === "true",
+    poolSize: num("DEMO_POOL_SIZE", 3),
+    maxSandboxes: num("DEMO_MAX_SANDBOXES", 6),   // HARD cap: pool + in-use
+    agentId: (process.env.DEMO_AGENT_ID ?? "").trim(),
+    orgId: (process.env.DEMO_ORG_ID ?? process.env.LEGACY_ORG_ID ?? "org_legacy").trim(),
+    sessionSec: num("DEMO_SESSION_SEC", 360),     // hard session timeout
+    slotTtlSec: num("DEMO_SLOT_TTL_SEC", 1500),   // recycle idle ready slots (< 55m e2b cap)
+    bootTimeoutSec: num("DEMO_BOOT_TIMEOUT_SEC", 300),
+    perIpActive: num("DEMO_PER_IP_ACTIVE", 1),    // concurrent active sessions / IP
+    perIpHour: num("DEMO_PER_IP_HOUR", 5),        // session starts / IP / hour
   },
 };
 

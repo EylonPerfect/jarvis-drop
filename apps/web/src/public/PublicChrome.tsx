@@ -80,8 +80,8 @@ export function PublicNav({
             <Icon name={nav.theme === "dark" ? "light_mode" : "dark_mode"} style={{ fontSize: 20 }} />
           </button>
           <a
-            href="#/auth"
-            onClick={(e) => { e.preventDefault(); nav.go("#/auth"); }}
+            href="#/ava"
+            onClick={(e) => { e.preventDefault(); nav.go("#/ava"); }}
             style={{ display: "flex", alignItems: "center", gap: 7, height: 44, padding: "0 16px", borderRadius: 9999, border: "1px solid var(--border)", color: "var(--ink1)", fontSize: 14, fontWeight: 600 }}
           >
             <Icon name="graphic_eq" style={{ fontSize: 19, color: "#FF0660" }} />Talk to Ava
@@ -120,6 +120,8 @@ export function PublicFooter({ nav, onAnchor }: { nav: Nav; onAnchor?: (id: stri
           <a href="#how" onClick={(e) => { e.preventDefault(); anchor("how"); }}>How it works</a>
           <a href="#capabilities" onClick={(e) => { e.preventDefault(); anchor("capabilities"); }}>Product</a>
           <a href="#/pricing" onClick={(e) => { e.preventDefault(); nav.go("#/pricing"); }}>Pricing</a>
+          <a href="#/terms" onClick={(e) => { e.preventDefault(); nav.go("#/terms"); }}>Terms</a>
+          <a href="#/privacy" onClick={(e) => { e.preventDefault(); nav.go("#/privacy"); }}>Privacy</a>
           <a href="#/signin" onClick={(e) => { e.preventDefault(); nav.go("#/signin"); }}>Sign in</a>
         </div>
       </div>

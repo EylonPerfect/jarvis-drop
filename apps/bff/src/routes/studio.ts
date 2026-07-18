@@ -97,7 +97,7 @@ export async function saveVersion(agentId: string, spec: PersonaSpec, changeNote
 // After a recompile, re-score the clone against the real call so readiness reflects
 // the improvement (verify + red-team). Debounced, call-safe, fire-and-forget.
 const _rescoreLock = new Set<string>();
-async function autoRescore(agentId: string): Promise<void> {
+async function autoRescore(agentId: string, org: string): Promise<void> {
   try {
     if (_rescoreLock.has(agentId)) return;
     const active = await one<any>(`SELECT 1 FROM live_calls WHERE agent_id=$1 AND ended_at IS NULL LIMIT 1`, [agentId]);
@@ -108,7 +108,7 @@ async function autoRescore(agentId: string): Promise<void> {
     _rescoreLock.add(agentId);
     const PORT = process.env.PORT || 8787;
     const KEY = process.env.BFF_API_KEY || "";
-    const hit = (path: string) => fetch(`http://localhost:${PORT}${path}`, { method: "POST", headers: { "X-API-Key": KEY, "Content-Type": "application/json" }, body: "{}", signal: AbortSignal.timeout(600_000) }).then(() => undefined).catch(() => undefined);
+    const hit = (path: string) => fetch(`http://localhost:${PORT}${path}`, { method: "POST", headers: { "X-API-Key": KEY, "Content-Type": "application/json", "X-Service-Org": org }, body: "{}", signal: AbortSignal.timeout(600_000) }).then(() => undefined).catch(() => undefined); // X-Service-Org: rescore in the agent's tenant (follow-up #73)
     void (async () => {
       try { await hit(`/api/verify/${agentId}`); await hit(`/api/redteam/${agentId}`); }
       finally { _rescoreLock.delete(agentId); }
@@ -124,7 +124,7 @@ export async function recompileGolden(org: string, agentId: string): Promise<boo
   const instructions = compileClone(vrow.spec as PersonaSpec, playbookOf(agent), agent.name, (await getCompany(org)).name || "the company");
   await query(`UPDATE agents SET golden_instructions=$2 WHERE id=$1 AND org_id=$3`, [agentId, instructions, org]);
   await setSetting(org, "live_golden_instructions", { agentId, versionId: vrow.id, instructions });
-  void autoRescore(agentId); // improve loop: re-score so the readiness number tracks the recompiled clone
+  void autoRescore(agentId, org); // improve loop: re-score so the readiness number tracks the recompiled clone
   return true;
 }
 

@@ -3,6 +3,7 @@ import type { CSSProperties, ReactElement } from "react";
 import { api, getAccessKey } from "../api/client";
 import PdsNav from "../components/PdsNav";
 import { KpiStrip, TodayCard, EmailCard, SlackCard, GoalsCard, ConnectedCard } from "../components/OperationalHub";
+import PaywallModal, { type PaywallVariant } from "../components/PaywallModal";
 
 // ============================================================
 // Readiness — the self-serve front door. THREE concepts only:
@@ -70,6 +71,9 @@ export default function Readiness() {
   const [openEvidence, setOpenEvidence] = useState<string | null>(null);
   const [pipeline, setPipeline] = useState<Pipeline | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Go-live paywall: opened when the promote/go-live action is blocked by the
+  // billing gate with code "payment_required" (clone passed 70, org unpaid).
+  const [paywall, setPaywall] = useState<{ variant: PaywallVariant; cloneName?: string; reason?: string } | null>(null);
 
   const nav = (view: string) => window.dispatchEvent(new CustomEvent("pds-nav", { detail: { view } }));
 
@@ -125,7 +129,14 @@ export default function Readiness() {
         headers: { "Content-Type": "application/json", ...(getAccessKey() ? { "X-API-Key": getAccessKey() } : {}) },
         body: JSON.stringify({ id: a.id }),
       });
-      const j = (await res.json().catch(() => ({}))) as { receipt?: string; error?: string };
+      const j = (await res.json().catch(() => ({}))) as { receipt?: string; error?: string; code?: string };
+      // Go-live paywall: the clone cleared the 70 gate but the org has no paid
+      // plan — open the checkout modal instead of surfacing a raw error.
+      if (!res.ok && j.code === "payment_required") {
+        setPaywall({ variant: "golive", cloneName: data?.name, reason: j.error });
+        setActBusy(null);
+        return;
+      }
       if (!res.ok) throw new Error(j.error || `action → ${res.status}`);
       setActNote({ ok: true, text: j.receipt || "Done." });
       void load(agentId);
@@ -282,6 +293,14 @@ export default function Readiness() {
 
   return (
     <div className="pmx" data-theme={theme} style={{ height: "100%", overflowY: "auto", background: "var(--bg)", color: "var(--ink1)" }}>
+      {paywall && (
+        <PaywallModal
+          variant={paywall.variant}
+          cloneName={paywall.cloneName}
+          reason={paywall.reason}
+          onClose={() => setPaywall(null)}
+        />
+      )}
       <PdsNav
         active="readiness"
         theme={theme}
