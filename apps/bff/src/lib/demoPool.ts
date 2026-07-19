@@ -180,7 +180,7 @@ export type LeaseResult =
 async function restoreDemoHostGolden(): Promise<void> {
   try {
     const r = await one<{ instructions: string }>(
-      `SELECT value->>'instructions' AS instructions FROM settings WHERE org_id=$1 AND key='demo_host_golden'`, [D.orgId],
+      `SELECT value->>'instructions' AS instructions FROM settings WHERE org_id=$1 AND key='demo_host_golden'`, [config.legacyOrgId],
     );
     if (r && r.instructions && D.agentId) {
       await one(`UPDATE agents SET golden_instructions=$1 WHERE id=$2 AND org_id=$3 RETURNING id`, [r.instructions, D.agentId, D.orgId]);
