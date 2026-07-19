@@ -349,6 +349,20 @@ export default function TalkToAva({ nav }: { nav: Nav }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [micOn]);
 
+  // Autoplay unlock: the AudioContext is created only once the session goes live
+  // (seconds after the "Talk to Ava" click), so that original gesture has expired
+  // and Chrome suspends it — you'd see Ava move but hear nothing. Resume it on ANY
+  // subsequent user interaction (click / key / touch) so her voice actually plays.
+  useEffect(() => {
+    const resume = () => {
+      const c = audioCtxRef.current;
+      if (c && c.state === "suspended") void c.resume().catch(() => { /* keep trying on next gesture */ });
+    };
+    const evs: Array<keyof WindowEventMap> = ["pointerdown", "keydown", "touchstart"];
+    for (const ev of evs) window.addEventListener(ev, resume);
+    return () => { for (const ev of evs) window.removeEventListener(ev, resume); };
+  }, []);
+
   // ---- stream engine: poll /api/demo/:id/audio, schedule PCM via Web Audio -
   // A direct port of RehearsalRoom's live-audio effect (~1168-1237): what you
   // hear is the sandbox's ACTUAL output (EL hybrid voice, real pacing). While
