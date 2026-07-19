@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Icon, type Nav } from "./PublicChrome";
 import { api, setAccessKey } from "../api/client";
+import { getAttribution } from "./attribution";
 
 // ============================================================
 // After Human — public auth screen. Single screen covering both
@@ -42,7 +43,11 @@ export default function PublicAuth({ nav, mode }: { nav: Nav; mode: "signup" | "
     setError("");
     try {
       const path = isSignup ? "/api/auth/signup" : "/api/auth/login";
-      const res = await api.post<{ token?: string; accessKey?: string; key?: string }>(path, { email, password });
+      // On signup, carry the captured outbound attribution so the new org is tied
+      // back to its source (billing webhook → org → attribution → paid).
+      const attribution = isSignup ? getAttribution() : {};
+      const body = isSignup && Object.keys(attribution).length ? { email, password, attribution } : { email, password };
+      const res = await api.post<{ token?: string; accessKey?: string; key?: string }>(path, body);
       const key = res?.token || res?.accessKey || res?.key;
       if (key) setAccessKey(key);
       enterApp();

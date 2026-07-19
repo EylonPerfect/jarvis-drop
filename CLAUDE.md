@@ -329,3 +329,12 @@ Merged into prod + deployed (password mode): Talk-to-Ava (demoPool/demo.ts/demoT
 **HARD LESSON (LAW): the bff runs via  (no compile step) —  does NOT type-check; it only packages. A missing export / broken import only surfaces at RUNTIME boot. ALWAYS verify `docker logs jarvis-new-bff-1` shows "Server listening" (not SyntaxError) after a bff deploy; "image built" ≠ working.** Also: sequential `git merge-file` on multi-source files with a shared base can SILENTLY drop additions (no conflict marker) when two sources change nearby regions — and it operates per exact path, so lib/ vs routes/ mistakes drop whole files. Verify expected symbols (grep) after merging, per source.
 
 REMAINING for Talk-to-Ava live: re-run #74 audio (merged baseline; stream sandbox PCM via /api/live/audio pattern), seed Northwind (org_demo_northwind/ag_demo_ava) into prod + apply Ava demo-host golden + deploy ta_persona duplexnav7 bail-out to /root/ah-scripts, then warm-pool live test (needs Eylon OK on E2B cost + pool size, DEMO_POOL_ENABLED=true).
+
+---
+
+## TALK-TO-AVA DEMO — WORKING END-TO-END (2026-07-19, overnight)
+Live session verified: Ava (demo HOST, 24294 golden 'Ava Bergman, After Human teammate') greets+discloses AI → gate PASSED via token injection → app scoped to org_demo_northwind (svcorg) → toured the workforce, NAMED all 5 Northwind reps (Ava Chen/Marcus Reed/Hannah Brooks/Priya Nair/Diego Alvarez), DROVE into Clone-a-rep wizard, real voice streaming (/api/demo/:id/audio PCM), bail-out honesty confirmed. #70 done.
+
+Overnight fixes to get here: (1) demoPool.connectSandbox reads e2b key from config.legacyOrgId not D.orgId (Northwind had a placeholder key → 'could not reach bridge'); (2) client.ts authHeaders forwards X-Service-Org from localStorage['jv.serviceorg']; generic_gate injects jv.serviceorg = agent's org so the demo app scopes to Northwind; (3) App.tsx treats jv.serviceorg service token as authed in password mode (no /site#/signin bounce); (4) generic_gate navigates to app ROOT after inject (not location.reload → avoids landing on /site login); (5) demo-host golden applied to ag_demo_ava (24294).
+
+**OPEN (morning):** reset-on-lease is DISABLED (demoPool.ts 'if(false) void resetDemoTenant') so the demo-host golden survives — re-enable a reset that PRESERVES ava's demo-host golden (bake it into seedDemoTenant, or have resetDemoTenant re-apply it) before public/concurrent use, else prospect changes accumulate on the demo tenant.

@@ -1,4 +1,4 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { query, one } from "../db/pool.js";
 import { config } from "../config.js";
 import { emit, EVENTS } from "../lib/analytics.js";
@@ -25,6 +25,26 @@ import {
 // and write to the platform-config org (matches lib/alerts.ts getConfig) so it
 // survives dropping the settings org_id DEFAULT and never mis-scopes.
 const PLATFORM_ORG = config.legacyOrgId;
+
+// Derive a single canonical source from an attribution blob. Accepts a JSONB
+// object (settings.value, already parsed) OR a TEXT utm (demo_sessions.utm —
+// usually a JSON string, occasionally a bare code). Prefers `src`, then
+// `utm_source`; "" when nothing usable.
+function sourceOf(raw: unknown): string {
+  if (raw == null) return "";
+  let o: unknown = raw;
+  if (typeof raw === "string") {
+    const t = raw.trim();
+    if (!t) return "";
+    try { o = JSON.parse(t); } catch { return t.slice(0, 80); }
+  }
+  if (o && typeof o === "object" && !Array.isArray(o)) {
+    const m = o as Record<string, unknown>;
+    const v = (typeof m.src === "string" && m.src) || (typeof m.utm_source === "string" && m.utm_source) || "";
+    return String(v).slice(0, 80);
+  }
+  return "";
+}
 
 export default async function securityRoutes(app: FastifyInstance) {
   // ---- one-click LOCKDOWN (super-admin gated) ----
@@ -89,6 +109,52 @@ export default async function securityRoutes(app: FastifyInstance) {
       },
       recentAlerts,
       recentLogins,
+    };
+  });
+
+  // ---- outbound demo-link attribution: source → demo → signup → paid ----
+  // Groups the launch funnel by the outbound source that drove it, over a window.
+  //   demos    = demo_sessions.utm            (?src / utm_* captured at demo start)
+  //   signups  = usage_events(name='signup')  ⋈ settings(key='attribution') on org
+  //   payments = distinct paying orgs from usage_events(name='mrr_change') ⋈ same
+  // Sources are derived from the JSON blob in JS (utm col is TEXT, settings JSONB),
+  // so a non-JSON legacy utm never breaks the query. requireSuperadmin-gated.
+  app.get("/api/admin/attribution", { preHandler: requireSuperadmin }, async (req: FastifyRequest) => {
+    const q = (req.query ?? {}) as { hours?: string };
+    const hours = Math.min(24 * 90, Math.max(1, parseInt(q.hours ?? "168", 10) || 168)); // default 7d
+    const h = String(hours);
+    const demoRows = await query<{ utm: string | null }>(
+      `SELECT utm FROM demo_sessions WHERE created_at > now() - ($1 || ' hours')::interval`, [h],
+    ).catch(() => [] as { utm: string | null }[]);
+    const signupRows = await query<{ value: unknown }>(
+      `SELECT s.value FROM usage_events e
+         LEFT JOIN settings s ON s.org_id = e.org_id AND s.key = 'attribution'
+        WHERE e.name = 'signup' AND e.ts > now() - ($1 || ' hours')::interval`, [h],
+    ).catch(() => [] as { value: unknown }[]);
+    const paymentRows = await query<{ value: unknown }>(
+      `SELECT DISTINCT e.org_id, s.value FROM usage_events e
+         LEFT JOIN settings s ON s.org_id = e.org_id AND s.key = 'attribution'
+        WHERE e.name = 'mrr_change' AND e.ts > now() - ($1 || ' hours')::interval`, [h],
+    ).catch(() => [] as { value: unknown }[]);
+
+    type Row = { source: string; demos: number; signups: number; payments: number };
+    const acc = new Map<string, Row>();
+    const bump = (raw: unknown, field: "demos" | "signups" | "payments") => {
+      const source = sourceOf(raw) || "(none)";
+      const row = acc.get(source) ?? { source, demos: 0, signups: 0, payments: 0 };
+      row[field] += 1;
+      acc.set(source, row);
+    };
+    for (const r of demoRows) bump(r.utm, "demos");
+    for (const r of signupRows) bump(r.value, "signups");
+    for (const r of paymentRows) bump(r.value, "payments");
+    const sources = [...acc.values()].sort(
+      (a, b) => (b.demos + b.signups + b.payments) - (a.demos + a.signups + a.payments),
+    );
+    return {
+      windowHours: hours,
+      totals: { demos: demoRows.length, signups: signupRows.length, payments: paymentRows.length },
+      sources,
     };
   });
 

@@ -6,6 +6,7 @@ import PublicPricing from "./PublicPricing";
 import PublicAuth from "./PublicAuth";
 import TalkToAva from "./TalkToAva";
 import PublicLegal from "./PublicLegal";
+import { captureAttribution } from "./attribution";
 
 // ============================================================
 // After Human — public marketing site entry. Mounted by main.tsx
@@ -55,6 +56,11 @@ export default function PublicSite() {
       document.head.appendChild(link);
     }
   }, []);
+
+  // Capture outbound demo-link attribution (?src / utm_*) once on load, before
+  // any hash navigation strips the entry params. Persisted to localStorage so it
+  // survives #/ava → signup (see attribution.ts).
+  useEffect(() => { captureAttribution(); }, []);
 
   useEffect(() => {
     const onHash = () => setRoute(routeFromHash());

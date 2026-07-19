@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { Icon, type Nav } from "./PublicChrome";
+import { attributionString } from "./attribution";
 
 // ============================================================
 // After Human — "Talk to Ava" public live demo. The hero flow:
@@ -176,7 +177,10 @@ export default function TalkToAva({ nav }: { nav: Nav }) {
     setStreamUrl("");
     setPhase("connecting");
     try {
-      const r = await demoFetch<StartResp>("/api/demo/start", "POST", {});
+      // Attribution: pass the captured outbound source (?src / utm_*) as the demo
+      // `utm` field so this demo is tied back to the campaign that drove it.
+      const utm = attributionString();
+      const r = await demoFetch<StartResp>("/api/demo/start", "POST", utm ? { utm } : {});
       sessionRef.current = r.sessionId;
       if (r.streamUrl) setStreamUrl(r.streamUrl);
       if (r.status === "queued") {

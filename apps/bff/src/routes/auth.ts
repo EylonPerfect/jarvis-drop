@@ -6,8 +6,28 @@ import {
   setSessionCookie, clearSessionCookie, parseCookies, orgId,
 } from "../lib/auth.js";
 import { getOrgDemoLogin, setOrgDemoLogin } from "../lib/tenancy.js";
+import { setSetting } from "../lib/settingsStore.js";
 import { emit, EVENTS } from "../lib/analytics.js";
 import { notifyFunnelEvent } from "../lib/alerts.js";
+
+// Normalize the optional outbound-attribution blob sent by the public signup form
+// (object, or a JSON/plain string) into a clean string→string map (empty → null).
+function normalizeAttribution(raw: unknown): Record<string, string> | null {
+  let obj: unknown = raw;
+  if (typeof raw === "string") {
+    const t = raw.trim();
+    if (!t) return null;
+    try { obj = JSON.parse(t); } catch { return { src: t.slice(0, 120) }; }
+  }
+  if (obj && typeof obj === "object" && !Array.isArray(obj)) {
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+      if (typeof v === "string" && v) out[k.slice(0, 40)] = v.slice(0, 200);
+    }
+    return Object.keys(out).length ? out : null;
+  }
+  return null;
+}
 
 // ============================================================
 // PHASE 2 — auth endpoints (email + password + session cookie).
@@ -37,7 +57,7 @@ export default async function authRoutes(app: FastifyInstance) {
   // Sign up: creates a user, a brand-new org, an owner membership, and a session.
   app.post("/api/auth/signup", async (req, reply) => {
     if (!config.auth.allowSignup) return reply.code(403).send({ error: "signup disabled" });
-    const b = (req.body ?? {}) as { email?: string; password?: string; name?: string; orgName?: string };
+    const b = (req.body ?? {}) as { email?: string; password?: string; name?: string; orgName?: string; attribution?: unknown };
     const email = (b.email ?? "").trim().toLowerCase();
     const password = b.password ?? "";
     if (!email.includes("@")) return reply.code(400).send({ error: "valid email required" });
@@ -62,13 +82,20 @@ export default async function authRoutes(app: FastifyInstance) {
     }
     await query(`INSERT INTO memberships (user_id, org_id, role) VALUES ($1,$2,'owner')`, [userId, orgId]);
 
+    // ATTRIBUTION: persist the outbound source on the new org as a settings row
+    // (key 'attribution'). Ties a future paid org back to the campaign that drove
+    // it (billing webhook → org → attribution). Best-effort — never blocks signup.
+    const attribution = normalizeAttribution(b.attribution);
+    const src = attribution ? (attribution.src || attribution.utm_source || null) : null;
+    if (attribution) await setSetting(orgId, "attribution", attribution).catch(() => {});
+
     const token = await createSession(userId, orgId);
     setSessionCookie(reply, token);
     // OBSERVABILITY (launch monitoring): signup = activation-funnel denominator
     // + an operator-visible "new signup" ping. Fire-and-forget so a ledger/alert
     // hiccup never blocks account creation.
-    void emit(EVENTS.SIGNUP, { orgId, props: { email } }).catch(() => {});
-    void notifyFunnelEvent("signup", { orgId, email, orgName }).catch(() => {});
+    void emit(EVENTS.SIGNUP, { orgId, props: { email, src } }).catch(() => {});
+    void notifyFunnelEvent("signup", { orgId, email, orgName, src }).catch(() => {});
     return reply.code(201).send({ ok: true, user: { id: userId, email, name: b.name ?? undefined }, org: { id: orgId, name: orgName, role: "owner" } });
   });
 
