@@ -159,7 +159,9 @@ export function App() {
     // exists. Either way, once authed we can ask whether any clones exist.
     firstRunChecked.current = true;
     const initial = viewFromHash();
-    if (initial && initial !== "echo") return; // respect an explicit deep link
+    // echo + agentshome are the default landings (agentshome is where signup
+    // drops a new user); anything else is an explicit deep link — respect it.
+    if (initial && initial !== "echo" && initial !== "agentshome") return;
     let cancelled = false;
     void (async () => {
       const list = await api.get<{ buildTrack?: string }[]>("/api/agents").catch(() => [] as { buildTrack?: string }[]);
@@ -167,7 +169,7 @@ export function App() {
       const hasClone = list.some((a) => a.buildTrack === "clone");
       // still on the default landing? (the user may have navigated meanwhile)
       const now = viewFromHash();
-      if (!hasClone && (now == null || now === "echo")) nav("firstrun");
+      if (!hasClone && (now == null || now === "echo" || now === "agentshome")) nav("firstrun");
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
