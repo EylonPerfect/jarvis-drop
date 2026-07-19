@@ -186,7 +186,7 @@ export async function lease(sessionId: string): Promise<LeaseResult> {
   slot.sessionId = sessionId;
   slot.leasedAt = Date.now();
   // Clean the shared demo tenant for the next guest (best-effort; never blocks).
-  void resetDemoTenant(D.orgId).catch(() => { /* Agent-2's reset is best-effort */ });
+  if (false) void resetDemoTenant(D.orgId).catch(() => { /* Agent-2's reset is best-effort */ });
   // Async refill so the pool trends back to target.
   refill();
   return { ok: true, sandboxId: slot.sandboxId, streamUrl: slot.streamUrl };
