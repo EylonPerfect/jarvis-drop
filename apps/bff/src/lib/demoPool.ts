@@ -174,6 +174,20 @@ export type LeaseResult =
  * fires a best-effort demo-tenant reset (Agent-2), and triggers async refill.
  * Empty pool → queued with a position (number of leased+warming ahead).
  */
+// After a lease-time reset re-seeds the demo agent with its seed persona, restore
+// the pinned demo-HOST golden (stored once in settings.demo_host_golden) so Ava
+// stays the product tour host across resets. Best-effort.
+async function restoreDemoHostGolden(): Promise<void> {
+  try {
+    const r = await one<{ instructions: string }>(
+      `SELECT value->>'instructions' AS instructions FROM settings WHERE org_id=$1 AND key='demo_host_golden'`, [D.orgId],
+    );
+    if (r && r.instructions && D.agentId) {
+      await one(`UPDATE agents SET golden_instructions=$1 WHERE id=$2 AND org_id=$3 RETURNING id`, [r.instructions, D.agentId, D.orgId]);
+    }
+  } catch { /* best-effort — demo still works with the seed golden */ }
+}
+
 export async function lease(sessionId: string): Promise<LeaseResult> {
   const slot = readySlot();
   if (!slot) {
@@ -186,7 +200,7 @@ export async function lease(sessionId: string): Promise<LeaseResult> {
   slot.sessionId = sessionId;
   slot.leasedAt = Date.now();
   // Clean the shared demo tenant for the next guest (best-effort; never blocks).
-  if (false) void resetDemoTenant(D.orgId).catch(() => { /* Agent-2's reset is best-effort */ });
+  void resetDemoTenant(D.orgId).then(() => restoreDemoHostGolden()).catch(() => { /* Agent-2's reset is best-effort */ });
   // Async refill so the pool trends back to target.
   refill();
   return { ok: true, sandboxId: slot.sandboxId, streamUrl: slot.streamUrl };
