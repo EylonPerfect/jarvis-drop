@@ -86,6 +86,9 @@ export function App() {
   // this event — bounce back to the login gate.
   useEffect(() => {
     const onUnauth = () => {
+      // Demo/service context (Talk-to-Ava): a stray 401 must NOT eject to the
+      // user sign-in — the service token still authorizes via the BFF service path.
+      try { if (localStorage.getItem("jv.serviceorg")) return; } catch { /* ignore */ }
       // Password mode has no access-code gate - a dropped session means the
       // cookie expired, so send the operator to the email/password sign-in.
       if (authModeRef.current === "password") { window.location.replace("/site#/signin"); return; }
@@ -113,6 +116,13 @@ export function App() {
       authModeRef.current = mode;
       setAuthMode(mode);
       if (mode !== "password") return; // access-code path is unchanged
+      // Demo/service context: the Talk-to-Ava gate-pass injects a service token
+      // (jv.serviceorg + jv.access = BFF_API_KEY). Those requests are authorized
+      // via the BFF service path (scoped by X-Service-Org) with NO user session,
+      // so render the app directly instead of bouncing to the user sign-in.
+      let svcToken = "";
+      try { svcToken = localStorage.getItem("jv.serviceorg") || ""; } catch { /* ignore */ }
+      if (svcToken) { setAuthed(true); return; }
       try {
         const me = await api.get<{ authenticated?: boolean }>("/api/auth/me");
         if (cancelled) return;
