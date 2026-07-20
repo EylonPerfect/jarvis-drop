@@ -56,8 +56,13 @@ import onboardingRoutes from "./routes/onboarding.js";
 import superadminRoutes from "./routes/superadmin.js";
 import retentionRoutes from "./routes/retention.js";
 import billingRoutes from "./routes/billing.js";
+import referralsRoutes from "./routes/referrals.js";
+import legalRoutes from "./routes/legal.js";
+import notificationsRoutes from "./routes/notifications.js";
 import demoRoutes from "./routes/demo.js";
-import { startDemoPool } from "./lib/demoPool.js";
+import { startDemoPool, drainDemoPool } from "./lib/demoPool.js";
+import { startSandboxReaper } from "./lib/sandboxReaper.js";
+import { runDailyDigest } from "./lib/digest.js";
 
 // trustProxy: behind Traefik, X-Forwarded-For must be trusted so req.ip / the
 // super-admin new-IP alert see the real client IP (CLAUDE.md deploy note).
@@ -214,6 +219,9 @@ await app.register(onboardingRoutes);
 await app.register(superadminRoutes);
 await app.register(retentionRoutes);
 await app.register(billingRoutes);
+await app.register(referralsRoutes);
+await app.register(legalRoutes);
+await app.register(notificationsRoutes);
 await app.register(demoRoutes);
 
 // Optional single-process mode: serve the built web app + SPA fallback.
@@ -283,10 +291,25 @@ async function boot() {
   try { startScheduler(); app.log.info("Clone calendar-watch scheduler started"); }
   catch (err) { app.log.error({ err }, "scheduler failed to start"); }
 
+  // Daily digest: an hourly tick that composes each active org's once-a-day
+  // in-app digest around the target hour (notifyOnce dedupes to once/org/day).
+  try {
+    const digestTimer = setInterval(() => {
+      if (new Date().getUTCHours() === 14) void runDailyDigest();
+    }, 60 * 60 * 1000);
+    (digestTimer as { unref?: () => void }).unref?.();
+  } catch (err) { app.log.error({ err }, "daily digest scheduler failed to start"); }
+
   // Warm-pool for the public "Talk to Ava" demo. NO-OP unless DEMO_POOL_ENABLED=true
   // (so this never warms E2B during a build) — the coordinator flips the flag.
   try { startDemoPool(); }
   catch (err) { app.log.error({ err }, "demo warm-pool failed to start"); }
+
+  // Periodic sandbox reaper: reclaims LEAKED E2B sandboxes (abandoned demos +
+  // stale live calls past the 55-min cap) so the account never drifts to the
+  // concurrency cap. Conservative -- never touches an active session.
+  try { startSandboxReaper(); app.log.info("Sandbox reaper started"); }
+  catch (err) { app.log.error({ err }, "sandbox reaper failed to start"); }
 }
 
 boot().catch((err) => {
@@ -298,6 +321,7 @@ boot().catch((err) => {
 for (const sig of ["SIGINT", "SIGTERM"] as const) {
   process.on(sig, async () => {
     try {
+      await drainDemoPool().catch(() => {}); // kill warm sandboxes so a restart never orphans them (E2B cap)
       await app.close();
       await pool.end();
     } finally {

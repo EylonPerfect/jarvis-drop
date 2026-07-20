@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { openSync, readFileSync, existsSync, appendFileSync } from "node:fs";
-import { one } from "../db/pool.js";
+import { one, query } from "../db/pool.js";
 import { config } from "../config.js";
 import { resetDemoTenant } from "./demoTenant.js";
 
@@ -58,9 +58,63 @@ async function connectSandbox(sandboxId: string) {
   const scoped = await one<{ values: { apiKey: string } }>(
     `SELECT values FROM integrations WHERE id='e2b' AND org_id=$1`, [config.legacyOrgId],
   );
-  const any = scoped ?? (await one<{ values: { apiKey: string } }>(`SELECT values FROM integrations WHERE id='e2b'`));
-  if (!any?.values?.apiKey) throw new Error("e2b integration key not configured");
-  return Sandbox.connect(sandboxId, { apiKey: any.values.apiKey });
+  let apiKey = scoped?.values?.apiKey;
+  if (!apiKey) {
+    // Two rows share id='e2b' (a real `e2b_...` key + a `demo-e2b-key`
+    // placeholder). Prefer the real key deterministically so the unscoped
+    // fallback never grabs the placeholder.
+    const rows = await query<{ values: { apiKey?: string } }>(`SELECT values FROM integrations WHERE id='e2b'`);
+    const keys = rows.map((r) => r.values?.apiKey).filter((k): k is string => !!k);
+    apiKey = keys.find((k) => k.startsWith("e2b_")) ?? keys[0];
+  }
+  if (!apiKey) throw new Error("e2b integration key not configured");
+  return Sandbox.connect(sandboxId, { apiKey });
+}
+
+// Resolve the real e2b key (prefers a real e2b_ key over the demo placeholder).
+async function e2bKey(): Promise<string> {
+  const scoped = await one<{ values: { apiKey?: string } }>(
+    "SELECT values FROM integrations WHERE id='e2b' AND org_id=$1", [config.legacyOrgId],
+  );
+  let apiKey = scoped?.values?.apiKey;
+  if (!apiKey) {
+    const rows = await query<{ values: { apiKey?: string } }>("SELECT values FROM integrations WHERE id='e2b'");
+    const keys = rows.map((r) => r.values?.apiKey).filter((k): k is string => !!k);
+    apiKey = keys.find((k) => k.startsWith("e2b_")) ?? keys[0];
+  }
+  if (!apiKey) throw new Error("e2b integration key not configured");
+  return apiKey;
+}
+
+// Kill E2B sandboxes NOT referenced by any live demo session or active live
+// call. Runs at pool start, so a bff restart or crash that orphaned warm
+// sandboxes (they linger for their full 55-min timeout) can't stack toward the
+// 20 concurrency cap and queue every new demo. SAFE: reaps only untracked
+// orphans; anything a live demo/call still owns is kept.
+async function reapUntracked(): Promise<void> {
+  try {
+    const apiKey = await e2bKey();
+    const { Sandbox } = await import("e2b");
+    let running: Array<{ sandboxId?: string; id?: string }> = [];
+    const r = (await Sandbox.list({ apiKey })) as unknown;
+    if (Array.isArray(r)) running = r as Array<{ sandboxId?: string; id?: string }>;
+    else if (r && typeof (r as { nextItems?: unknown }).nextItems === "function") {
+      const pg = r as { hasNext: boolean; nextItems: () => Promise<unknown[]> };
+      while (pg.hasNext) running.push(...((await pg.nextItems()) as Array<{ sandboxId?: string; id?: string }>));
+    } else if (r && Array.isArray((r as { sandboxes?: unknown[] }).sandboxes)) {
+      running = (r as { sandboxes: Array<{ sandboxId?: string; id?: string }> }).sandboxes;
+    }
+    const ids = running.map((x) => x.sandboxId || x.id).filter((x): x is string => !!x);
+    const keep = new Set<string>();
+    for (const row of await query<{ sandbox_id: string }>("SELECT sandbox_id FROM demo_sessions WHERE sandbox_id IS NOT NULL AND status IN ('live','connecting','queued')")) keep.add(row.sandbox_id);
+    for (const row of await query<{ sandbox_id: string }>("SELECT sandbox_id FROM live_calls WHERE sandbox_id IS NOT NULL AND ended_at IS NULL")) keep.add(row.sandbox_id);
+    let killed = 0;
+    for (const id of ids) {
+      if (keep.has(id)) continue;
+      try { await Sandbox.kill(id, { apiKey }); killed++; } catch { /* already gone */ }
+    }
+    console.log("[demoPool] reapUntracked: " + ids.length + " alive, kept " + keep.size + ", killed " + killed + " orphan(s)");
+  } catch (e) { console.warn("[demoPool] reapUntracked failed:", (e as Error).message); }
 }
 
 // ---- counts / cap ----------------------------------------------------------
@@ -107,7 +161,10 @@ function bootOne(): void {
     const child = spawn("node", [`${AH}/rehearsal.mjs`, "0"], {
       detached: true,
       stdio: ["ignore", out, out],
-      env: { ...process.env, AH_AGENT_ID: D.agentId },
+      // DEMO sandboxes get a SHORTER 20-min e2b cap so an abandoned demo dies
+      // fast (the reaper is the backstop). Live rehearsals (routes/live.ts) do
+      // NOT set this and keep the 55-min default.
+      env: { ...process.env, AH_AGENT_ID: D.agentId, AH_SANDBOX_TIMEOUT_MS: "1200000" },
     });
     child.unref();
     slot.pid = child.pid ?? null;
@@ -227,6 +284,20 @@ export async function sayTo(sessionId: string, text: string): Promise<boolean> {
   } catch { return false; }
 }
 
+/** Fire Ava's PROACTIVE opener: she greets + discloses + asks the first
+ *  discovery question without waiting for the guest. The FE calls this once the
+ *  audio stream is live (the warm bridge suppresses its own auto-greet). */
+export async function greetTo(sessionId: string): Promise<boolean> {
+  const slot = slots.find((s) => s.sessionId === sessionId && s.state === "leased");
+  if (!slot?.sandboxId) return false;
+  try {
+    const d = await connectSandbox(slot.sandboxId);
+    const payload = JSON.stringify({ kind: "greet", t: Date.now() }).replace(/'/g, "'\\''");
+    await d.commands.run(`echo '${payload}' >> /tmp/nudges.jsonl`, { timeoutMs: 10000 });
+    return true;
+  } catch { return false; }
+}
+
 /** The bound sandbox for a session (status/stream lookups). */
 export function slotForSession(sessionId: string): { sandboxId: string; streamUrl: string; state: SlotState } | null {
   const slot = slots.find((s) => s.sessionId === sessionId && s.state !== "dead");
@@ -336,9 +407,13 @@ export function startDemoPool(): void {
   if (!D.agentId || !D.orgId) { console.warn("[demoPool] DEMO_AGENT_ID/DEMO_ORG_ID unset — pool cannot start"); return; }
   if (maintenanceTimer) return;
   console.log(`[demoPool] starting: target=${D.poolSize} hardCap=${D.maxSandboxes} agent=${D.agentId} org=${D.orgId}`);
-  refill();
-  maintenanceTimer = setInterval(maintain, 5000);
-  maintenanceTimer.unref?.();
+  // Reap orphaned sandboxes from a previous instance BEFORE warming, so a
+  // restart/crash never stacks toward the E2B concurrency cap and queues demos.
+  void reapUntracked().finally(() => {
+    refill();
+    maintenanceTimer = setInterval(maintain, 5000);
+    maintenanceTimer.unref?.();
+  });
 }
 
 /** Stop warming + tear down every sandbox (graceful shutdown / tests). */
@@ -346,4 +421,24 @@ export function stopDemoPool(): void {
   if (maintenanceTimer) { clearInterval(maintenanceTimer); maintenanceTimer = null; }
   for (const s of slots) if (s.state !== "dead") killSlot(s);
   for (const id of [...bootMonitors.keys()]) stopBootMonitor(id);
+}
+
+/**
+ * AWAIT-able teardown for graceful shutdown (SIGTERM). killSlot() fires its
+ * sandbox kill fire-and-forget, so on a container restart the process would exit
+ * before the kills land and the warm sandboxes would leak for their full 55-min
+ * timeout - stacking toward the E2B concurrency cap and queuing every new demo.
+ * This awaits every kill so a restart never orphans a sandbox.
+ */
+export async function drainDemoPool(): Promise<void> {
+  if (maintenanceTimer) { clearInterval(maintenanceTimer); maintenanceTimer = null; }
+  for (const id of [...bootMonitors.keys()]) stopBootMonitor(id);
+  const kills = slots
+    .filter((s) => s.sandboxId && s.state !== "dead")
+    .map(async (s) => {
+      s.state = "dead";
+      try { const d = await connectSandbox(s.sandboxId as string); await d.kill().catch(() => {}); }
+      catch { /* sandbox may already be gone */ }
+    });
+  await Promise.allSettled(kills);
 }
