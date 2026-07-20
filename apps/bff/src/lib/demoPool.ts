@@ -45,6 +45,7 @@ interface Slot {
   streamUrl: string;       // filled from PHASE STREAM
   sessionId: string | null; // guest session bound on lease
   leasedAt: number | null;
+  lastHealthAt: number | null; // ms of last liveness probe (ready-slot sweep)
 }
 
 // In-memory pool state (single-process; the bff runs one node process).
@@ -153,6 +154,7 @@ function bootOne(): void {
   const slot: Slot = {
     id, logPath, pid: null, state: "warming", bootedAt: Date.now(),
     readyAt: null, sandboxId: "", streamUrl: "", sessionId: null, leasedAt: null,
+    lastHealthAt: null,
   };
   try {
     const out = openSync(logPath, "a");
@@ -221,6 +223,40 @@ function killSlot(slot: Slot): void {
   })();
 }
 
+// Cheap liveness probe: connect + a trivial command. Returns false on ANY
+// failure — a sandbox e2b paused or reaped while idle throws "Paused sandbox
+// not found" / connect errors here, which is exactly the dead slot we must
+// never lease. Short timeout so a hung box can't stall a lease.
+async function isSlotAlive(slot: Slot): Promise<boolean> {
+  if (!slot.sandboxId) return false;
+  try {
+    const d = await connectSandbox(slot.sandboxId);
+    const r = await d.commands.run("echo ok", { timeoutMs: 6000 });
+    return (((r.stdout as string) || "")).includes("ok");
+  } catch {
+    return false;
+  }
+}
+
+// Health-check READY (unleased) slots so a sandbox e2b paused/reaped while idle
+// is EVICTED before it can ever be leased — the root of the "leased a dead
+// sandbox → Ava can't hear the guest" bug. Doubles as a keepalive: the periodic
+// command is activity that staves off e2b's idle auto-pause. Throttled per slot.
+async function sweepReadyHealth(): Promise<void> {
+  const now = Date.now();
+  for (const s of slots) {
+    if (s.state !== "ready") continue;
+    if (s.lastHealthAt && now - s.lastHealthAt < 15000) continue;
+    s.lastHealthAt = now; // stamp up-front so overlapping ticks don't double-probe
+    const okAlive = await isSlotAlive(s);
+    if (!okAlive && s.state === "ready") {
+      appendFileSync(s.logPath, `[demoPool] health: ready slot ${s.id} sandbox ${s.sandboxId} is DEAD — evicting\n`);
+      killSlot(s);
+      refill();
+    }
+  }
+}
+
 // ---- public API ------------------------------------------------------------
 export type LeaseResult =
   | { ok: true; sandboxId: string; streamUrl: string }
@@ -246,9 +282,19 @@ async function restoreDemoHostGolden(): Promise<void> {
 }
 
 export async function lease(sessionId: string): Promise<LeaseResult> {
-  const slot = readySlot();
+  // Hand out only a VERIFIED-ALIVE sandbox. A slot can go "ready" and then have
+  // its sandbox paused/reaped by e2b while it waits to be leased; leasing that
+  // dead sandbox is the "Ava can't hear the guest" bug (mic streams into a box
+  // that never pulls it). Probe each ready slot and evict the dead ones.
+  let slot = readySlot();
+  while (slot) {
+    if (await isSlotAlive(slot)) break;
+    appendFileSync(slot.logPath, `[demoPool] lease: ready slot ${slot.id} sandbox ${slot.sandboxId} is DEAD — evicting, trying next\n`);
+    killSlot(slot);
+    slot = readySlot();
+  }
   if (!slot) {
-    // No warm slot. Nudge a refill (respecting the hard cap) and report queued.
+    // No LIVE warm slot. Nudge a refill (respecting the hard cap) and report queued.
     refill();
     const position = slots.filter((s) => s.state === "leased").length + 1;
     return { ok: false, queued: true, position };
@@ -299,6 +345,40 @@ export async function greetTo(sessionId: string): Promise<boolean> {
 }
 
 /** The bound sandbox for a session (status/stream lookups). */
+// ---- guest mic -> realtime bridge --------------------------------------------
+// The public demo streams the guest's ECHO-CANCELLED mic PCM (16-bit, 24kHz,
+// mono) here; the bridge (in the sandbox) pulls it and feeds it straight into
+// Ava's OpenAI realtime session (input_audio_buffer.append) - replacing the
+// browser Web Speech STT, which mis-heard and transcribed Ava's own echo. Keyed
+// by sandboxId (the bridge knows its own id; the bff maps session->sandbox).
+type MicBuf = { data: Buffer; base: number }; // base = bytes already dropped after pull
+const micBufs = new Map<string, MicBuf>();
+const MIC_MAX_BYTES = 24000 * 2 * 6; // ~6s backlog cap (48KB/s) so a dead puller can't grow it
+
+export function pushMic(sandboxId: string, bytes: Buffer): void {
+  if (!sandboxId || !bytes.length) return;
+  let m = micBufs.get(sandboxId);
+  if (!m) { m = { data: Buffer.alloc(0), base: 0 }; micBufs.set(sandboxId, m); }
+  m.data = m.data.length ? Buffer.concat([m.data, bytes]) : bytes;
+  if (m.data.length > MIC_MAX_BYTES) { const drop = m.data.length - MIC_MAX_BYTES; m.data = m.data.subarray(drop); m.base += drop; }
+}
+
+// Return PCM appended after cursor `after`; advance/trim so memory stays bounded.
+export function pullMic(sandboxId: string, after: number): { chunk: string; offset: number } {
+  const m = micBufs.get(sandboxId);
+  if (!m) return { chunk: "", offset: after };
+  const end = m.base + m.data.length;
+  let from = after;
+  if (from < m.base) from = m.base; // caller fell behind past the trim window
+  if (from >= end) return { chunk: "", offset: end };
+  const slice = m.data.subarray(from - m.base);
+  // trim everything we just handed out so the buffer doesn't grow unbounded
+  m.data = Buffer.alloc(0); m.base = end;
+  return { chunk: slice.toString("base64"), offset: end };
+}
+
+export function clearMic(sandboxId: string): void { micBufs.delete(sandboxId); }
+
 export function slotForSession(sessionId: string): { sandboxId: string; streamUrl: string; state: SlotState } | null {
   const slot = slots.find((s) => s.sessionId === sessionId && s.state !== "dead");
   return slot ? { sandboxId: slot.sandboxId, streamUrl: slot.streamUrl, state: slot.state } : null;
@@ -308,6 +388,16 @@ export function slotForSession(sessionId: string): { sandboxId: string; streamUr
  * Read the live transcript for a session from the bridge log (same parse as
  * /api/live/feed). Returns a compact turn list; empty on any failure.
  */
+export async function revealedFor(sessionId: string): Promise<boolean> {
+  const slot = slots.find((s) => s.sessionId === sessionId && s.state === "leased");
+  if (!slot?.sandboxId) return false;
+  try {
+    const d = await connectSandbox(slot.sandboxId);
+    const r = await d.commands.run("test -f /tmp/ah_revealed && echo 1 || echo 0", { timeoutMs: 8000 });
+    return (r.stdout || "").trim().endsWith("1");
+  } catch { return false; }
+}
+
 export async function transcriptFor(sessionId: string): Promise<{ role: string; text: string }[]> {
   const slot = slots.find((s) => s.sessionId === sessionId && s.state === "leased");
   if (!slot?.sandboxId) return [];
@@ -393,6 +483,12 @@ function maintain(): void {
       killSlot(s);
     }
   }
+  // 2b) health-check ready slots: evict any sandbox e2b paused/reaped while idle
+  //     (so it can never be leased dead) — also keepalives against idle-pause.
+  void sweepReadyHealth();
+  // 2c) flip stale demo_sessions: a 'live' row past its lease can never recover,
+  //     so it must not linger as "live" (misleads status + ops + our audits).
+  void query(`UPDATE demo_sessions SET status='ended', ended_at=now() WHERE status='live' AND expires_at IS NOT NULL AND expires_at < now()`).catch(() => { /* best-effort */ });
   // 3) refill toward target under the cap.
   refill();
 }
