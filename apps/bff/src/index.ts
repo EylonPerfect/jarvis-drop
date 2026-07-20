@@ -60,6 +60,7 @@ import referralsRoutes from "./routes/referrals.js";
 import legalRoutes from "./routes/legal.js";
 import notificationsRoutes from "./routes/notifications.js";
 import demoRoutes from "./routes/demo.js";
+import mockcallRoutes from "./routes/mockcall.js";
 import { startDemoPool, drainDemoPool } from "./lib/demoPool.js";
 import { startSandboxReaper } from "./lib/sandboxReaper.js";
 import { runDailyDigest } from "./lib/digest.js";
@@ -239,6 +240,7 @@ await app.register(referralsRoutes);
 await app.register(legalRoutes);
 await app.register(notificationsRoutes);
 await app.register(demoRoutes);
+await app.register(mockcallRoutes);
 
 // Optional single-process mode: serve the built web app + SPA fallback.
 if (config.serveWeb) {
