@@ -113,6 +113,10 @@ export default function CloneARep() {
   const [pasteTitle, setPasteTitle] = useState("");
   const [pasteText, setPasteText] = useState("");
   const [pasteOpen, setPasteOpen] = useState(false);
+  // No-recordings path: draft a realistic sample call (POST /api/mockcall/generate),
+  // add it as a source so Extract has something to work from.
+  const [sampleGenBusy, setSampleGenBusy] = useState(false);
+  const [sampleGenMsg, setSampleGenMsg] = useState<{ ok: boolean; text: string } | null>(null);
   // extraction
   const [spec, setSpec] = useState<PersonaSpec | null>(null);
   const [verNum, setVerNum] = useState<number | null>(null);
@@ -356,6 +360,28 @@ export default function CloneARep() {
     setPending((p) => [...p, { title, transcript: pasteText }]);
     setPasteTitle(""); setPasteText("");
   }
+  // No note-taker or transcript? Draft a realistic sample call from the rep's
+  // identity and add it as a source, so a starter clone can be built right away.
+  async function draftSampleCall() {
+    if (sampleGenBusy) return;
+    setSampleGenBusy(true); setSampleGenMsg(null);
+    try {
+      const g = await api.post<{ transcript?: string; error?: string }>("/api/mockcall/generate", {
+        name: name.trim() || firstName || "The rep",
+        role: role.trim(),
+        company: company.trim(),
+      });
+      const transcript = (g?.transcript ?? "").trim();
+      if (transcript.length < 100) throw new Error(g?.error || "the sample generator returned too little — try again");
+      const title = `Sample call — ${name.trim() || firstName || "rep"}`;
+      setPending((p) => [...p, { title, transcript }]);
+      setSampleGenMsg({ ok: true, text: "Drafted a realistic sample call ✓ — added below. Press Extract persona to build a starter clone." });
+    } catch (e) {
+      setSampleGenMsg({ ok: false, text: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setSampleGenBusy(false);
+    }
+  }
   async function addFiles(files: FileList | null) {
     if (!files) return;
     const adds: Pending[] = [];
@@ -461,9 +487,16 @@ export default function CloneARep() {
   const [savingVoice, setSavingVoice] = useState(false);
   useEffect(() => {
     if (step !== 4 || voices.length) return;
-    void api.get<{ voices: VoiceOpt[]; connected: boolean }>("/api/voice/options")
-      .then((r) => { setVoices(r.voices); if (!r.connected) setVoicesErr("ElevenLabs is not connected in Integrations — no voices to choose from."); })
-      .catch(() => setVoicesErr("Could not load the voice library."));
+    void api.get<{ voices: VoiceOpt[]; connected: boolean; error?: string }>("/api/voice/options")
+      .then((r) => {
+        setVoices(r.voices ?? []);
+        // Always resolve the loading state - a bad/expired key returns connected:true
+        // with empty voices + an error, and must NOT leave the step spinning forever.
+        if (!r.connected) setVoicesErr("ElevenLabs is not connected in Integrations — pick a voice later, or continue with the account default.");
+        else if (r.error) setVoicesErr("The voice library is unavailable right now. You can continue — playback uses the account default and you can choose a voice later.");
+        else if (!(r.voices && r.voices.length)) setVoicesErr("No voices in the library yet. You can continue — playback uses the account default.");
+      })
+      .catch(() => setVoicesErr("Could not load the voice library. You can continue — playback uses the account default."));
   }, [step, voices.length]);
   function previewVoice(v: VoiceOpt) {
     if (previewRef.current) { previewRef.current.pause(); previewRef.current = null; }
@@ -633,7 +666,10 @@ export default function CloneARep() {
       if (vr) setVoices(vr.voices);
       const picked = vr?.voices.find((v) => v.id === j.voiceId);
       await chooseVoice(picked ?? ({ id: j.voiceId, name: realVoiceName, tagline: "", gender: "", accent: "", age: "", category: "cloned", previewUrl: "" } as VoiceOpt));
+      // Erase the raw recording from the browser once the voice exists — we don't
+      // keep the sample (the clone lives in the voice model, not the audio).
       setSampleBlob(null);
+      recChunks.current = [];
       setSampleMsg({ ok: true, text: `Voice cloned from your clean sample and selected ✓` });
     } catch (e) { setSampleMsg({ ok: false, text: e instanceof Error ? e.message : String(e) }); }
     setSampleBusy(false);
@@ -973,6 +1009,18 @@ export default function CloneARep() {
                     </button>
                   </div>
                   {fErr && <div style={{ fontSize: 12, color: "var(--warning-ink)", marginTop: 8, lineHeight: 1.5 }}>{fErr}</div>}
+                </div>
+
+                {/* No recordings? Draft a realistic sample call (POST /api/mockcall/generate) and add it as a source. */}
+                <div style={{ padding: "16px 22px", borderBottom: "1px solid var(--divider)" }}>
+                  <label style={lblS}>No recordings? Draft a sample call</label>
+                  <div style={{ fontSize: 12.5, color: "var(--ink2)", lineHeight: 1.5, marginBottom: 10 }}>
+                    No note-taker or transcript yet? We'll draft a realistic call for {firstName || "this rep"}'s role and company so you get a starter clone right away — rehearse it now, add real calls later.
+                  </div>
+                  <button onClick={() => void draftSampleCall()} disabled={sampleGenBusy} style={{ display: "flex", alignItems: "center", gap: 7, height: 38, padding: "0 16px", borderRadius: 9999, background: "var(--decor)", color: "#fff", border: "none", ...btnFont, opacity: sampleGenBusy ? 0.6 : 1 }}>
+                    <span className="material-symbols-rounded" style={{ fontSize: 18 }}>auto_awesome</span>{sampleGenBusy ? "Drafting a sample…" : "Draft a sample call"}
+                  </button>
+                  {sampleGenMsg && <div style={{ fontSize: 12, fontWeight: 600, color: sampleGenMsg.ok ? "var(--success-ink)" : "var(--warning-ink)", marginTop: 8, lineHeight: 1.5 }}>{sampleGenMsg.text}</div>}
                 </div>
 
                 {/* Paste a transcript — advanced, collapsed by default (Fathom links are the main path) */}
