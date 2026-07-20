@@ -42,10 +42,35 @@ export function isSuperadmin(req: FastifyRequest): boolean {
 
 /** Fastify preHandler: 401 unless super-admin. Use on fleet/lockdown routes. */
 export async function requireSuperadmin(req: FastifyRequest, reply: FastifyReply): Promise<void> {
-  if (!isSuperadmin(req)) {
-    if (!SA_KEY) return reply.code(503).send({ error: "super-admin endpoints disabled — set SUPERADMIN_API_KEY" });
-    return reply.code(401).send({ error: "super-admin authorization required" });
+  // Two accepted credentials: the SUPERADMIN_API_KEY header/bearer (server-to-
+  // server: cron, incident scans) OR a live sa_session cookie (the operator's
+  // browser). The browser can never hold SUPERADMIN_API_KEY, so cookie auth is
+  // what makes panels outside /api/superadmin — e.g. Cost & metering — work.
+  if (isSuperadmin(req)) return;
+  if (await hasValidSaSession(req)) return;
+  if (!SA_KEY) return reply.code(503).send({ error: "super-admin endpoints disabled — set SUPERADMIN_API_KEY" });
+  return reply.code(401).send({ error: "super-admin authorization required" });
+}
+
+function readSaCookie(req: FastifyRequest, name: string): string | undefined {
+  const raw = req.headers.cookie;
+  if (!raw) return undefined;
+  for (const part of raw.split(";")) {
+    const i = part.indexOf("=");
+    if (i === -1) continue;
+    if (part.slice(0, i).trim() === name) return decodeURIComponent(part.slice(i + 1).trim());
   }
+  return undefined;
+}
+
+async function hasValidSaSession(req: FastifyRequest): Promise<boolean> {
+  const token = readSaCookie(req, config.superadmin.cookieName);
+  if (!token) return false;
+  const row = await one<{ token: string }>(
+    `SELECT token FROM superadmin_sessions WHERE token=$1 AND revoked_at IS NULL AND expires_at > now() LIMIT 1`,
+    [token],
+  ).catch(() => null);
+  return !!row;
 }
 
 export async function getSecurityState(): Promise<SecurityState> {

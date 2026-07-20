@@ -122,6 +122,22 @@ app.addHook("onRequest", async (req, reply) => {
   // Super-admin surface enforces its own gate (IP allowlist + session +
   // password + role); it is authoritative there, so bypass the shared BFF key.
   if (req.url.startsWith("/api/superadmin")) return;
+  // Super-admin routes that live OUTSIDE /api/superadmin but self-guard via
+  // requireSuperadmin (SUPERADMIN_API_KEY header for cron, OR an sa_session
+  // cookie for the operator browser). Let them past the shared app gate so the
+  // guard — not this gate — decides. Enumerated EXACTLY: the per-tenant
+  // /api/admin/* (reset/org purge) and per-org GET /api/usage/:orgId stay under
+  // the app gate — they need app-session org context.
+  {
+    const u = req.url.split("?")[0];
+    const m = req.method;
+    if (m === "GET" && u === "/api/usage") return;
+    if (m === "POST" && u === "/api/usage/kill-switch") return;
+    if (m === "POST" && /^\/api\/usage\/[^/]+\/billing$/.test(u)) return;
+    if (m === "GET" && u === "/api/metrics/summary") return;
+    if (m === "POST" && u === "/api/status/incidents") return;
+    if (m === "PATCH" && /^\/api\/status\/incidents\/[^/]+$/.test(u)) return;
+  }
   // Public "Talk to Ava" demo — unauthenticated by design; it self-rate-limits
   // (per-IP + warm-pool hard cap) inside routes/demo.ts. Mirror superadmin bypass.
   if (req.url.startsWith("/api/demo")) return;

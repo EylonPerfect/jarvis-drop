@@ -3,6 +3,8 @@ import { randomBytes, randomUUID, scryptSync, timingSafeEqual, createHmac } from
 import { query, one } from "../db/pool.js";
 import { config } from "../config.js";
 import { getCall, endCall } from "../lib/callstate.js";
+import { createSession, setSessionCookie as setAppSessionCookie } from "../lib/auth.js";
+import { setKillSwitch } from "../lib/metering.js";
 
 // ============================================================
 // SUPER-ADMIN BACKEND — the one deliberately CROSS-ORG surface.
@@ -149,14 +151,14 @@ function setSessionCookie(reply: FastifyReply, token: string, maxAgeSec: number)
     `${SA.cookieName}=${encodeURIComponent(token)}`,
     "HttpOnly",
     "SameSite=Strict",
-    "Path=/api/superadmin",
+    "Path=/",
     `Max-Age=${maxAgeSec}`,
   ];
   if (SA.cookieSecure) parts.push("Secure");
   reply.header("Set-Cookie", parts.join("; "));
 }
 function clearSessionCookie(reply: FastifyReply): void {
-  const parts = [`${SA.cookieName}=`, "HttpOnly", "SameSite=Strict", "Path=/api/superadmin", "Max-Age=0"];
+  const parts = [`${SA.cookieName}=`, "HttpOnly", "SameSite=Strict", "Path=/", "Max-Age=0"];
   if (SA.cookieSecure) parts.push("Secure");
   reply.header("Set-Cookie", parts.join("; "));
 }
@@ -339,6 +341,25 @@ export default async function superadminRoutes(app: FastifyInstance) {
     return { ok: true, id, status: "killed" };
   });
 
+  // ---- POST /emergency-stop — the highest-impact button in the console ----
+  // Ends EVERY in-progress live call across ALL orgs (same authoritative-row
+  // mechanism as calls/:id/kill — the reaper tears sandboxes down next tick; we
+  // do NOT invoke e2b directly) AND engages the global spend kill-switch so no
+  // clone can start new model spend. Reason required; fully audited. Cross-org by
+  // design — this is a platform emergency control, not a per-tenant action.
+  app.post("/api/superadmin/emergency-stop", async (req, reply) => {
+    const reason = ((req.body ?? {}) as { reason?: string }).reason;
+    if (!reason) return reply.code(400).send({ error: "reason required" });
+    // 1) End all live calls (mark ended; drop live state per call).
+    const live = await query<{ id: string }>(`SELECT id FROM live_calls WHERE ended_at IS NULL`);
+    await query(`UPDATE live_calls SET ended_at = now(), phase = 'killed' WHERE ended_at IS NULL`);
+    for (const r of live) endCall(r.id);
+    // 2) Engage the global spend kill-switch (halts all model spend platform-wide).
+    await setKillSwitch(true, `emergency-stop: ${reason}`);
+    await writeAudit({ actorUserId: (req as any).saUserId, action: "platform.emergency_stop", severity: "critical", reason, ip: (req as any).saIp, meta: { endedCalls: live.length } });
+    return { ok: true, endedCalls: live.length, killSwitch: true };
+  });
+
   // ---- GET /orgs ----
   app.get("/api/superadmin/orgs", async () => {
     const orgs = await query(
@@ -404,13 +425,26 @@ export default async function superadminRoutes(app: FastifyInstance) {
       [`on_${randomUUID().slice(0, 8)}`, id, `Platform staff entered your workspace (full admin access, ${SA.impersonationTtlMinutes}m) to assist. Reason: ${reason}`],
     );
     await writeAudit({ actorUserId: (req as any).saUserId, action: "org.enter", target: id, severity: "critical", reason, ip: (req as any).saIp, meta: { impersonationId: impId, ttlMinutes: SA.impersonationTtlMinutes } });
-    // Phase 2 /api/auth is expected to accept this id as the acting org-admin.
-    // Product credentials stay write-only — impersonation never unlocks a read path.
+    // Act-as: mint a real, TIME-BOXED (impersonation TTL, not the normal 7d) app
+    // session as the org's own owner/admin so resolveRequestAuth scopes the whole
+    // Command Center to this tenant. The impersonation is fully attributed via the
+    // impersonation_sessions row + the org.enter audit above; product credentials
+    // stay write-only (impersonation never unlocks a read path).
+    const actAs = await one<{ user_id: string }>(
+      `SELECT user_id FROM memberships WHERE org_id = $1
+        ORDER BY (role='owner') DESC, (role='admin') DESC, created_at ASC LIMIT 1`,
+      [id],
+    );
+    if (!actAs) return reply.code(409).send({ error: "org has no admin user to act as" });
+    const token = await createSession(actAs.user_id, id, ttlSec * 1000);
+    setAppSessionCookie(reply, token);
     return {
+      ok: true,
       impersonationId: impId,
       orgId: id,
       actingAs: "org-admin",
       expiresInSec: ttlSec,
+      redirect: "/",
       note: "full act-as-admin; product credentials remain write-only/never-readable",
     };
   });
