@@ -639,12 +639,6 @@ export default function CloneARep() {
     recRef.current = null;
     setRecording(false);
   }
-  function pickSampleFile(file: File | undefined) {
-    if (!file) return;
-    if (!file.type.startsWith("audio/")) { setSampleMsg({ ok: false, text: "That's not an audio file." }); return; }
-    if (file.size > 11 * 1024 * 1024) { setSampleMsg({ ok: false, text: "Keep the sample under ~90 seconds." }); return; }
-    setSampleBlob(file); setSampleMsg(null); setRecSecs(0);
-  }
   async function submitSample() {
     if (!agent || !sampleBlob || sampleBusy) return;
     setSampleBusy(true); setSampleMsg(null);
@@ -1318,7 +1312,7 @@ export default function CloneARep() {
           <div style={{ maxWidth: 980 }}>
             <div style={kicker}>Step 4 of 5 · Voice</div>
             <h1 style={h1S}>Give the clone {firstName}'s voice</h1>
-            <p style={leadS}>The cleanest voice comes from a short, quiet sample — record or upload 60–90 seconds below (recommended). Or clone straight from the call recordings, or pick a library voice and preview it.</p>
+            <p style={leadS}>The cleanest voice comes from a short, quiet sample — record 60–90 seconds below (recommended). Or clone straight from the call recordings, or pick a library voice and preview it.</p>
 
             {/* VOICE SOURCE (feature 3) — RECOMMENDED DEFAULT: clean 60–90s sample → instant cloning */}
             <div style={{ ...cardS, border: "2px solid var(--purple)", background: "var(--purple-soft)", padding: "16px 20px", marginBottom: 14 }}>
@@ -1337,10 +1331,6 @@ export default function CloneARep() {
                     <span className="material-symbols-rounded" style={{ fontSize: 18 }}>stop</span>Stop · {recSecs}s
                   </button>
                 )}
-                <label style={{ display: "inline-flex", alignItems: "center", gap: 6, height: 40, padding: "0 14px", borderRadius: 9999, border: "1px solid var(--border)", color: "var(--ink1)", ...btnFont, fontSize: 12.5, cursor: agent ? "pointer" : "not-allowed", opacity: agent ? 1 : 0.6 }}>
-                  <span className="material-symbols-rounded" style={{ fontSize: 17 }}>upload</span>Upload
-                  <input type="file" accept="audio/*" disabled={!agent} style={{ display: "none" }} onChange={(e) => { pickSampleFile(e.target.files?.[0]); e.target.value = ""; }} />
-                </label>
               </div>
               {recording && <div style={{ fontSize: 12, color: "var(--purple-ink)", fontWeight: 700, marginTop: 10 }}>Recording… speak naturally. Auto-stops at 90s.</div>}
               {sampleBlob && !recording && (
