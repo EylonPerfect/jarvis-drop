@@ -1,0 +1,15 @@
+# Runtime artifacts + secrets — NEVER commit.
+# Live runtime dir is /root/ah-scripts on the VPS (bind-mounted to bff /app/ah).
+*.log
+*.bak
+*.bak-*
+*.bak.*
+*.pre*
+*.orig
+*.json
+*.tgz
+*.png
+*.raw
+*.wav
+demo_dslot_*
+/tmp/
