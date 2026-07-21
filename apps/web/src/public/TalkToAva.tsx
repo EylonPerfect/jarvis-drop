@@ -42,6 +42,7 @@ type StatusResp = {
   streamUrl?: string;
   remainingSec?: number;
   transcript?: RawTurn[];
+  revealed?: boolean; // true once Ava takes her first product action (curtain lifts)
 };
 type RawTurn = { role?: string; speaker?: string; who?: string; text?: string; content?: string };
 type Turn = { ava: boolean; text: string };
@@ -60,7 +61,13 @@ async function demoFetch<T>(path: string, method: "GET" | "POST", body?: unknown
     headers: body != null ? { "Content-Type": "application/json" } : {},
     body: body != null ? JSON.stringify(body) : undefined,
   });
-  if (!res.ok) throw new Error(`${method} ${path} -> ${res.status}`);
+  if (!res.ok) {
+    let code = "", msg = "";
+    try { const j = await res.json() as { error?: string; code?: string }; code = j.code || ""; msg = j.error || ""; } catch { /* non-JSON */ }
+    const e = new Error(msg || `${method} ${path} -> ${res.status}`) as Error & { status?: number; code?: string };
+    e.status = res.status; e.code = code;
+    throw e;
+  }
   return (await res.json()) as T;
 }
 
@@ -95,6 +102,13 @@ export default function TalkToAva({ nav }: { nav: Nav }) {
   const [sending, setSending] = useState(false);
   // true while Ava's streamed voice is actively voicing — pulses the orb/wave.
   const [speaking, setSpeaking] = useState(false);
+  // false until Ava reveals the product (her first action); drives the branded
+  // curtain + the Ava orb gliding from center to the bottom-right self-view.
+  const [revealed, setRevealed] = useState(false);
+  // Chrome autoplay: the AudioContext is born suspended (no user gesture inside
+  // this page — the landing click was spent on navigation). `muted` gates a
+  // visible "tap to hear Ava" unlock that creates+resumes the ctx in a gesture.
+  const [muted, setMuted] = useState(true);
 
   // email capture (END only)
   const [email, setEmail] = useState("");
@@ -113,6 +127,7 @@ export default function TalkToAva({ nav }: { nav: Nav }) {
   // player (screens/RehearsalRoom.tsx): poll /audio, decode s16le → Float32,
   // schedule at 24kHz with a small look-ahead; barge-in flushes what's queued.
   const audioCtxRef = useRef<AudioContext | null>(null);
+  const greetedRef = useRef(false);          // fire Ava's proactive opener exactly once
   const streamOffsetRef = useRef(-1);        // byte cursor into the sandbox raw file
   const streamNextTRef = useRef(0);          // next scheduled start time (ctx clock)
   const streamSrcsRef = useRef<AudioBufferSourceNode[]>([]);
@@ -127,6 +142,8 @@ export default function TalkToAva({ nav }: { nav: Nav }) {
   const vadCtxRef = useRef<AudioContext | null>(null);
   const vadRafRef = useRef<number | null>(null);
   const vadCleanupRef = useRef<(() => void) | null>(null);
+  const userSpokeAtRef = useRef(0);          // last ms the echo-cancelled mic heard YOU speak
+  const vadActiveRef = useRef(false);        // the echo-cancelled sensing loop is running (else don't gate)
 
   const stopPolling = useCallback(() => {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
@@ -154,6 +171,7 @@ export default function TalkToAva({ nav }: { nav: Nav }) {
       if (s.streamUrl) setStreamUrl(s.streamUrl);
       if (typeof s.remainingSec === "number") setRemaining(Math.max(0, Math.round(s.remainingSec)));
       if (Array.isArray(s.transcript)) setTranscript(s.transcript.map(normalizeTurn).filter((t) => t.text));
+      if (s.revealed) setRevealed(true); // sticky: once she reveals, the orb stays bottom-right
       if (s.status === "live") setPhase((p) => (p === "ended" || p === "error" ? p : "live"));
       else if (s.status === "connecting") setPhase((p) => (p === "queued" ? "queued" : "connecting"));
       else if (s.status === "ended") finish("ended");
@@ -172,6 +190,7 @@ export default function TalkToAva({ nav }: { nav: Nav }) {
     failRef.current = 0;
     setErrMsg("");
     setTranscript([]);
+    setRevealed(false);
     setRemaining(null);
     setQueuePos(null);
     setStreamUrl("");
@@ -193,10 +212,18 @@ export default function TalkToAva({ nav }: { nav: Nav }) {
       pollRef.current = setInterval(poll, 2000);
       tickRef.current = setInterval(() => setRemaining((r2) => (r2 == null ? r2 : Math.max(0, r2 - 1))), 1000);
       poll();
-    } catch {
-      // Pool full, endpoint not live (dev), or network — one friendly surface
-      // with a retry. Never a stack trace in front of a prospect.
-      setErrMsg("Ava is at capacity right now. Give it a moment and try again.");
+    } catch (e) {
+      // Distinguish the per-IP throttle (a normal abuse-control 429) from a real
+      // capacity/endpoint problem, so a rate-limited guest isn't told the product
+      // is overloaded. Never a stack trace in front of a prospect.
+      const err = e as { status?: number; code?: string };
+      if (err.status === 429 && err.code === "ip_active") {
+        setErrMsg("You already have a demo open in another tab — close it, then start again.");
+      } else if (err.status === 429) {
+        setErrMsg("You've reached the demo limit for now. Give it a few minutes and try again.");
+      } else {
+        setErrMsg("Ava is at capacity right now. Give it a moment and try again.");
+      }
       setPhase("error");
     }
   }, [poll, stopPolling]);
@@ -261,10 +288,19 @@ export default function TalkToAva({ nav }: { nav: Nav }) {
     streamSpeakingRef.current = false;
   }
 
-  // ---- VAD guard (RehearsalRoom ~791-831) --------------------------------
+  // ---- echo-cancelled mic sensing (continuous while mic is on) ------------
+  // This runs the WHOLE time you're on mic — it is the source of truth for
+  // "are YOU actually speaking". Because getUserMedia here has echoCancellation,
+  // Ava's voice (out your speakers) is stripped, so it only goes hot on YOUR
+  // real speech. Two jobs: (1) instant barge-in — stop Ava the moment you talk;
+  // (2) gate the raw SpeechRecognition results so Ava's own words (bleeding into
+  // the non-cancelled recognizer mic on laptop speakers) are dropped, not sent.
+  // Unlike the old design it NEVER stops the recognizer, so it can't miss the
+  // start of what you say.
   function stopVadGuard() {
     if (vadRafRef.current !== null) cancelAnimationFrame(vadRafRef.current);
     vadRafRef.current = null;
+    vadActiveRef.current = false;
     vadCleanupRef.current?.();
     vadCleanupRef.current = null;
   }
@@ -272,80 +308,97 @@ export default function TalkToAva({ nav }: { nav: Nav }) {
     if (!micOnRef.current || vadRafRef.current !== null) return;
     try {
       if (!vadStreamRef.current) {
-        vadStreamRef.current = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+        vadStreamRef.current = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
       }
-      const ctx = vadCtxRef.current ?? new AudioContext();
+      // 24kHz context so the capture node yields exactly the PCM rate Ava's
+      // realtime input expects — no resampling needed.
+      const ctx = vadCtxRef.current ?? new AudioContext({ sampleRate: 24000 });
       vadCtxRef.current = ctx;
       if (ctx.state === "suspended") void ctx.resume();
       const src = ctx.createMediaStreamSource(vadStreamRef.current);
       const an = ctx.createAnalyser();
       an.fftSize = 512;
       src.connect(an);
-      vadCleanupRef.current = () => { try { src.disconnect(); } catch { /* gone */ } };
+      // CAPTURE: Float32 -> PCM16 -> base64 -> POST to the bff. The in-sandbox
+      // bridge pulls this and feeds it straight into Ava's OpenAI realtime session
+      // (input_audio_buffer.append). This IS the guest's voice channel now — the
+      // stream is echo-cancelled, so Ava's own voice is never sent back to her, and
+      // Whisper (server-side) transcribes far more accurately than browser STT.
+      const proc = ctx.createScriptProcessor(4096, 1, 1);
+      let lastFrame: string | null = null; // 1-frame lookback so speech lead-in isn't clipped
+      let wasSending = false;
+      proc.onaudioprocess = (ev) => {
+        if (!micOnRef.current || !liveRef.current) return;
+        const f32 = ev.inputBuffer.getChannelData(0);
+        const pcm = new Int16Array(f32.length);
+        for (let i = 0; i < f32.length; i++) { let s = f32[i]; if (s > 1) s = 1; else if (s < -1) s = -1; pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff; }
+        const bytes = new Uint8Array(pcm.buffer);
+        let bin = "";
+        for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+        const chunk = btoa(bin);
+        const id = sessionRef.current;
+        // Stream to Ava's realtime input ONLY while YOU are actually speaking (plus
+        // a ~1.2s tail so server-VAD sees the trailing silence and closes the turn).
+        // Sending continuous audio/silence let ambient noise trip her interrupt-on-
+        // speech and cut her off — which made her seem to never speak at all. The
+        // echo-cancelled VAD sets userSpokeAtRef; a 1-frame lookback keeps the lead-in.
+        const speaking = (Date.now() - userSpokeAtRef.current) < 1200;
+        if (id && speaking) {
+          if (!wasSending && lastFrame) void demoFetch(`/api/demo/${id}/mic`, "POST", { chunk: lastFrame }).catch(() => { /* lead-in */ });
+          wasSending = true;
+          if (chunk) void demoFetch(`/api/demo/${id}/mic`, "POST", { chunk }).catch(() => { /* fire-and-forget */ });
+        } else {
+          wasSending = false;
+        }
+        lastFrame = chunk;
+      };
+      src.connect(proc);
+      proc.connect(ctx.destination); // needed for onaudioprocess to fire; output stays silent (we never fill it)
+      vadCleanupRef.current = () => {
+        try { src.disconnect(); } catch { /* gone */ }
+        try { proc.disconnect(); proc.onaudioprocess = null; } catch { /* gone */ }
+      };
+      vadActiveRef.current = true;
       const buf = new Uint8Array(an.fftSize);
       let hot = 0;
+      // Adaptive (SNR-based) speech gate. A fixed floor is always wrong for some
+      // room: 0.045 lost whispers, 0.02 let breaths / button-clicks / fan noise
+      // trip the gate and interrupt Ava. Instead, learn the room's ambient level
+      // (EMA over non-speech frames) and require energy to clear BOTH a small
+      // absolute floor AND a margin above that ambient. In a quiet room the floor
+      // dominates, so whispers still pass; in a noisy room the bar rises with the
+      // noise, so ambient stops opening the mic. Sustain requirement is longer
+      // (~100ms) so transient clicks — which are short — can't trip it.
+      let noiseFloor = 0.012; // adaptive ambient estimate
       const tick = () => {
         an.getByteTimeDomainData(buf);
         let sum = 0;
         for (let i = 0; i < buf.length; i++) { const d = (buf[i] - 128) / 128; sum += d * d; }
         const rms = Math.sqrt(sum / buf.length);
-        hot = rms > 0.055 ? hot + 1 : 0;
-        if (hot >= 4) { // ~sustained real speech, not a pop
-          stopPlayback();  // Ava shuts up instantly
-          stopVadGuard();
-          if (micOnRef.current && liveRef.current) startRecog(); // now listen for real
-          return;
+        const speechThresh = Math.max(0.03, noiseFloor * 2.8);
+        if (rms > speechThresh) {
+          hot += 1;
+        } else {
+          hot = 0;
+          noiseFloor = noiseFloor * 0.94 + rms * 0.06; // learn ambient from non-speech frames only
         }
+        if (hot >= 6) { userSpokeAtRef.current = Date.now(); stopPlayback(); } // ~100ms of sustained, above-ambient energy = real speech (not a breath or click)
         vadRafRef.current = requestAnimationFrame(tick);
       };
       vadRafRef.current = requestAnimationFrame(tick);
-    } catch { /* no mic permission — Ava plays walkie-talkie style */ }
+    } catch { vadActiveRef.current = false; setErrMsg("I couldn't reach your mic — you can type to Ava instead."); }
   }
 
-  // ---- mic recognizer (SpeechRecognition; RehearsalRoom start/stopRecog) --
-  // Each finalized phrase POSTs /say (also the backend barge-in signal) AND cuts
-  // local playback. onspeechstart is the instant barge-in. Text input is the
-  // no-mic fallback and is ALWAYS available.
-  function stopRecog() {
-    const r = recRef.current;
-    recRef.current = null;
-    try { if (r) { r.onend = null; (r.abort ?? r.stop).call(r); } } catch { /* already stopped */ }
-  }
-  function startRecog() {
-    if (recRef.current) return;
-    const W = window as unknown as { SpeechRecognition?: new () => SR; webkitSpeechRecognition?: new () => SR };
-    const Ctor = W.SpeechRecognition || W.webkitSpeechRecognition;
-    if (!Ctor) { setErrMsg("This browser can't capture your mic — type to Ava instead."); setMicOn(false); return; }
-    try {
-      const rec = new Ctor();
-      rec.continuous = true;
-      rec.interimResults = false;
-      rec.lang = "en-US";
-      // BARGE-IN: the instant you start talking, Ava stops.
-      rec.onspeechstart = () => stopPlayback();
-      rec.onresult = (e: unknown) => {
-        const ev = e as { results: ArrayLike<ArrayLike<{ transcript: string }>>; resultIndex: number };
-        for (let i = ev.resultIndex; i < ev.results.length; i++) {
-          const phrase = ev.results[i][0]?.transcript;
-          if (phrase) { stopPlayback(); say(phrase); }
-        }
-      };
-      // The browser stops recognition after a silence; restart while mic is on.
-      rec.onend = () => { if (recRef.current === rec && micOnRef.current && liveRef.current) { try { rec.start(); } catch { /* noop */ } } };
-      rec.onerror = () => { /* keep the session alive; the text box still works */ };
-      recRef.current = rec;
-      rec.start();
-    } catch {
-      setErrMsg("Couldn't start the mic — type to Ava instead.");
-      setMicOn(false);
-    }
-  }
+  // Browser Web Speech STT is RETIRED. The guest's voice now streams as PCM into
+  // Ava's OpenAI realtime model (see startVadGuard's capture node), which does its
+  // own Whisper transcription + server-VAD turn-taking — far more accurate and
+  // immune to speaker echo. The text box remains as a no-mic fallback.
   const toggleMic = useCallback(() => {
-    const W = window as unknown as { SpeechRecognition?: new () => SR; webkitSpeechRecognition?: new () => SR };
-    if (!(W.SpeechRecognition || W.webkitSpeechRecognition)) { setErrMsg("This browser can't capture your mic — type to Ava instead."); return; }
-    if (micOn) { setMicOn(false); stopRecog(); stopVadGuard(); return; }
+    if (!navigator.mediaDevices?.getUserMedia) { setErrMsg("This browser can't capture your mic — type to Ava instead."); return; }
+    if (micOn) { setMicOn(false); micOnRef.current = false; stopVadGuard(); return; }
     setMicOn(true);
-    startRecog();
+    micOnRef.current = true;   // set now so startVadGuard's own guard passes synchronously
+    void startVadGuard();      // echo-cancelled capture -> bff -> Ava's realtime input
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [micOn]);
 
@@ -355,12 +408,24 @@ export default function TalkToAva({ nav }: { nav: Nav }) {
   // subsequent user interaction (click / key / touch) so her voice actually plays.
   useEffect(() => {
     const resume = () => {
-      const c = audioCtxRef.current;
-      if (c && c.state === "suspended") void c.resume().catch(() => { /* keep trying on next gesture */ });
+      let c = audioCtxRef.current;
+      if (!c) { try { c = new AudioContext({ sampleRate: 24000 }); audioCtxRef.current = c; } catch { return; } }
+      if (c.state === "suspended") void c.resume().then(() => setMuted(false)).catch(() => { /* next gesture */ });
+      else setMuted(false);
     };
     const evs: Array<keyof WindowEventMap> = ["pointerdown", "keydown", "touchstart"];
     for (const ev of evs) window.addEventListener(ev, resume);
     return () => { for (const ev of evs) window.removeEventListener(ev, resume); };
+  }, []);
+
+  // Explicit "tap to hear Ava" — the reliable unlock. Creates+resumes the shared
+  // ctx synchronously inside the click gesture, so the stream engine reuses an
+  // already-running context and Ava is audible immediately.
+  const unlockAudio = useCallback(() => {
+    let c = audioCtxRef.current;
+    if (!c) { try { c = new AudioContext({ sampleRate: 24000 }); audioCtxRef.current = c; } catch { setMuted(false); return; } }
+    if (c.state === "suspended") void c.resume().then(() => setMuted(false)).catch(() => setMuted(false));
+    else setMuted(false);
   }, []);
 
   // ---- stream engine: poll /api/demo/:id/audio, schedule PCM via Web Audio -
@@ -374,9 +439,12 @@ export default function TalkToAva({ nav }: { nav: Nav }) {
     const id = sessionRef.current;
     if (!id) return;
     let stopped = false;
-    const ctx = new AudioContext({ sampleRate: 24000 });
+    // Reuse the ctx the unlock gesture already created+resumed, if any — a fresh
+    // one here would be born suspended again and stay silent until re-gestured.
+    const ctx = audioCtxRef.current ?? new AudioContext({ sampleRate: 24000 });
     audioCtxRef.current = ctx;
     if (ctx.state === "suspended") void ctx.resume().catch(() => { /* gesture may be needed */ });
+    else setMuted(false);
     streamNextTRef.current = 0;
     streamOffsetRef.current = -1;
     const loop = async () => {
@@ -386,7 +454,8 @@ export default function TalkToAva({ nav }: { nav: Nav }) {
           if (stopped) break;
           if (!r.live) {
             if (speakingRef.current) { speakingRef.current = false; setSpeaking(false); }
-            await new Promise((res) => setTimeout(res, 1500));
+            // poll fast while idle so Ava's FIRST word is caught quickly (was 1500ms)
+            await new Promise((res) => setTimeout(res, 350));
             continue;
           }
           streamOffsetRef.current = r.offset;
@@ -419,20 +488,29 @@ export default function TalkToAva({ nav }: { nav: Nav }) {
           const now = Date.now();
           const voicedRecently = now - streamVoicedAtRef.current < 900;
           if (voicedRecently !== speakingRef.current) { speakingRef.current = voicedRecently; setSpeaking(voicedRecently); }
-          // mic discipline: pause recog while she speaks, VAD guard hears you
+          // Full-duplex: the recognizer + echo-cancelled sensing run continuously
+          // the whole time your mic is on (started in toggleMic), so we no longer
+          // stop/swap them as Ava speaks — that swap is exactly what lost the start
+          // of your turns and made you repeat yourself. Just track her speaking
+          // latch for the UI; barge-in + echo-gating happen in the sensing loop.
           if (voicedRecently && !streamSpeakingRef.current) {
             streamSpeakingRef.current = true;
-            if (micOnRef.current) { stopRecog(); void startVadGuard(); }
           } else if (!voicedRecently && streamSpeakingRef.current && now - streamVoicedAtRef.current > 1200) {
             streamSpeakingRef.current = false;
-            stopVadGuard();
-            if (micOnRef.current && liveRef.current) startRecog();
           }
         } catch { /* next poll */ }
-        await new Promise((res) => setTimeout(res, 500));
+        await new Promise((res) => setTimeout(res, 180)); // tighter stream cadence (was 500ms)
       }
     };
     void loop();
+    // Ava opens the call herself: once the audio loop is live and listening,
+    // ask the bridge to fire her proactive greeting (the warm bridge suppresses
+    // its own auto-greet). Small delay so the loop has set its stream offset
+    // first, so her opening line is never missed.
+    if (!greetedRef.current) {
+      greetedRef.current = true;
+      setTimeout(() => { const gid = sessionRef.current; if (gid && !endedRef.current) demoFetch(`/api/demo/${gid}/greet`, "POST", {}).catch(() => { /* poll reconciles */ }); }, 700);
+    }
     return () => {
       stopped = true;
       speakingRef.current = false;
@@ -534,7 +612,12 @@ export default function TalkToAva({ nav }: { nav: Nav }) {
             feedRef={feedRef}
             wrapUp={wrapUp}
             speaking={speaking}
+            revealed={revealed}
           />
+        )}
+
+        {phase === "live" && muted && (
+          <SoundUnlock onUnlock={unlockAudio} />
         )}
 
         {phase === "ended" && (
@@ -665,6 +748,32 @@ function Wave({ active, color = GREEN }: { active: boolean; color?: string }) {
   );
 }
 
+// Autoplay unlock — covers the live view until the user taps once. The tap is
+// the gesture Chrome requires to let Ava's audio play; unlockAudio() runs the
+// resume synchronously inside it.
+function SoundUnlock({ onUnlock }: { onUnlock: () => void }) {
+  return (
+    <button
+      onClick={onUnlock}
+      aria-label="Tap to hear Ava"
+      style={{
+        position: "absolute", inset: 0, zIndex: 30, width: "100%", height: "100%",
+        display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 18,
+        border: "none", cursor: "pointer", color: "var(--ink1)",
+        background: "rgba(4,4,42,0.72)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)",
+      }}
+    >
+      <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 92, height: 92, borderRadius: 9999, background: GREEN, color: "#04042A", boxShadow: "0 8px 40px rgba(46,211,125,.5)", animation: "ahpPulse 1.6s ease-in-out infinite" }}>
+        <Icon name="volume_up" style={{ fontSize: 44 }} />
+      </span>
+      <span style={{ fontSize: 21, fontWeight: 800, letterSpacing: "-.02em" }}>Tap to hear Ava</span>
+      <span style={{ fontSize: 14, fontWeight: 600, color: "var(--ink2)", maxWidth: 320, textAlign: "center", lineHeight: 1.5 }}>
+        Ava is already live — your browser just needs one tap to turn her voice on.
+      </span>
+    </button>
+  );
+}
+
 function ConnectingView({ phase, queuePos }: { phase: Phase; queuePos: number | null }) {
   const queued = phase === "queued";
   return (
@@ -695,10 +804,10 @@ function ConnectingView({ phase, queuePos }: { phase: Phase; queuePos: number | 
 }
 
 function LiveView({
-  streamUrl, transcript, showTranscript, setShowTranscript, feedRef, wrapUp, speaking,
+  streamUrl, transcript, showTranscript, setShowTranscript, feedRef, wrapUp, speaking, revealed,
 }: {
   streamUrl: string; transcript: Turn[]; showTranscript: boolean;
-  setShowTranscript: (v: boolean) => void; feedRef: React.MutableRefObject<HTMLDivElement | null>; wrapUp: boolean; speaking: boolean;
+  setShowTranscript: (v: boolean) => void; feedRef: React.MutableRefObject<HTMLDivElement | null>; wrapUp: boolean; speaking: boolean; revealed: boolean;
 }) {
   const lastAva = [...transcript].reverse().find((t) => t.ava);
   let host = "ava's screen";
@@ -714,8 +823,8 @@ function LiveView({
             <span style={{ width: 9, height: 9, borderRadius: "50%", background: "#FEBC2E" }} />
             <span style={{ width: 9, height: 9, borderRadius: "50%", background: "#28C840" }} />
             <span style={{ marginLeft: 8, fontSize: 11.5, color: "var(--ink3)", fontFamily: "ui-monospace, monospace" }}>{host}</span>
-            <span style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 6, fontSize: 10.5, fontWeight: 700, color: PINK }}>
-              <Icon name="present_to_all" style={{ fontSize: 14 }} />Ava is sharing
+            <span style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 6, fontSize: 10.5, fontWeight: 700, color: revealed ? PINK : "var(--ink3)" }}>
+              <Icon name="present_to_all" style={{ fontSize: 14 }} />{revealed ? "Ava is sharing" : "Ava is live"}
             </span>
           </div>
           <div style={{ position: "relative", width: "100%", aspectRatio: "16 / 10", background: "#05070d" }}>
@@ -731,9 +840,30 @@ function LiveView({
                 Ava's screen is coming up…
               </div>
             )}
-            {/* Floating orb tile, like a Zoom self-view */}
-            <div style={{ position: "absolute", right: 12, bottom: 12, width: 92, height: 92, borderRadius: 14, background: "rgba(4,4,42,.55)", backdropFilter: "blur(6px)", display: "flex", alignItems: "center", justifyContent: "center", border: "1px solid rgba(255,255,255,.15)" }}>
-              <AvaOrb size={64} speaking={speaking} />
+            {/* Branded curtain over the stream until Ava reveals the product —
+                a clean After Human backdrop for the discovery moment (hides the
+                loader/dashboard behind it). Fades out on reveal. */}
+            <div aria-hidden style={{ position: "absolute", inset: 0, zIndex: 15, display: "grid", placeItems: "center",
+              background: "radial-gradient(ellipse at 50% 42%, #14143f 0%, #05052c 70%)",
+              opacity: revealed ? 0 : 1, transition: "opacity .55s ease", pointerEvents: "none" }}>
+              <div style={{ position: "absolute", bottom: "20%", textAlign: "center" }}>
+                <div style={{ fontSize: 14, letterSpacing: ".01em", color: "#B9B9D9" }}>Live demo · with Ava</div>
+                <div style={{ margin: "12px auto 0", width: 44, height: 4, borderRadius: 2, background: "#A342FF" }} />
+              </div>
+            </div>
+            {/* The ONE Ava orb: centered + large during discovery, glides to the
+                bottom-right self-view the instant she reveals the product. */}
+            <div style={{ position: "absolute", zIndex: 20,
+              borderRadius: revealed ? 14 : "50%",
+              background: "rgba(4,4,42,.55)", backdropFilter: "blur(6px)",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              border: "1px solid rgba(255,255,255,.15)",
+              left: revealed ? "calc(100% - 12px)" : "50%",
+              top: revealed ? "calc(100% - 12px)" : "50%",
+              width: revealed ? 92 : 168, height: revealed ? 92 : 168,
+              transform: revealed ? "translate(-100%, -100%)" : "translate(-50%, -50%)",
+              transition: "left .7s cubic-bezier(.4,0,.2,1), top .7s cubic-bezier(.4,0,.2,1), width .7s cubic-bezier(.4,0,.2,1), height .7s cubic-bezier(.4,0,.2,1), transform .7s cubic-bezier(.4,0,.2,1), border-radius .7s ease" }}>
+              <AvaOrb size={revealed ? 64 : 120} speaking={speaking} />
             </div>
           </div>
         </div>

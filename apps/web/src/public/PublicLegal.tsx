@@ -34,6 +34,7 @@ const TERMS: Section[] = [
     body: [
       `${COMPANY} builds AI "clones" of your team members from recordings of their calls and lets those clones run live video calls (for example, sales or customer-success demos) on your behalf. A clone joins a call as an AI teammate, speaks in a synthesized voice, and can drive a screen to demonstrate software.`,
       `Clones must clear an internal readiness score before they are eligible to run a live call. The readiness score is a quality signal, not a guarantee of outcome or accuracy. You are responsible for deciding when and where to deploy a clone.`,
+      `A clone is software. It is not a person, an employee, or an agent in any legal sense, and nothing in the Service creates an employment, agency, or partnership relationship. We may add, change, or remove features at any time; the Service is provided on an evolving basis.`,
     ],
   },
   {
@@ -58,64 +59,97 @@ const TERMS: Section[] = [
     ],
   },
   {
-    h: "6. Acceptable use",
+    h: "6. The clone and its outputs",
     body: [
-      `You will not use the Service to: impersonate a person without their consent; deceive participants about the AI nature of the interaction where disclosure is required; engage in fraud, harassment, or deceptive or unfair practices; violate the rights of others; or attempt to defeat platform quality, safety, or security controls. We may suspend clones or accounts that create risk to participants, third parties, or the Service.`,
+      `A clone generates responses and takes actions autonomously and may produce output that is inaccurate, incomplete, outdated, or inappropriate, including incorrect statements about your product, pricing, or commitments. You are responsible for reviewing, calibrating, and supervising each clone before and during deployment. The Service augments, and does not replace, your judgment.`,
+      `A clone cannot bind you or ${COMPANY} to a contract. Statements a clone makes do not create binding commitments on us and are your responsibility as the deploying party, and a clone will not finalize or sign a binding agreement on a call. You must not rely on a clone for decisions requiring human review without providing that review.`,
     ],
   },
   {
-    h: "7. Fees, billing, and merchant of record",
+    h: "7. Acceptable use",
     body: [
-      `The Service offers a free tier (build and rehearse a clone, with capped rehearsal usage) and paid access required to take a clone live. Pricing is shown in the product and on our pricing page and may change on notice.`,
-      `Payments are processed by Lemon Squeezy, which acts as the merchant of record for purchases made through the Service. Your purchase is therefore also subject to Lemon Squeezy's terms and privacy policy, and Lemon Squeezy (not ${COMPANY}) is the seller of record responsible for billing, tax collection, and payment handling. Fees are non-refundable except where required by law or expressly stated.`,
+      `You will not use the Service to: impersonate a person without their consent; clone a person without their consent; deceive participants about the AI nature of the interaction where disclosure is required; engage in fraud, harassment, or deceptive or unfair practices; violate the rights of others; upload content you lack the rights to, or that is unlawful, infringing, or harmful; use the Service for high-risk decisions affecting legal rights, safety, health, or finances without appropriate human oversight; or reverse-engineer, resell, or circumvent usage limits of, or otherwise attempt to defeat the quality, safety, or security controls of, the Service.`,
+      `We may suspend clones or accounts that violate this section or create risk to participants, third parties, or the Service.`,
     ],
   },
   {
-    h: "8. Your content and intellectual property",
+    h: "8. Fees, billing, and merchant of record",
     body: [
-      `As between you and us, you retain all rights to the recordings, transcripts, voice samples, and other materials you provide ("Customer Content") and to the clones built from them. You grant us a limited license to host and process Customer Content solely to provide, secure, and improve the Service as described in our Privacy Policy. We retain all rights in the Service itself, including our software, models, and platform.`,
+      `The Service offers a free tier (build and rehearse a clone, with capped rehearsal usage) and paid access required to take a clone live, charged per active clone on a subscription basis at the rate presented at sign-up or in your order. A one-time calibration fee may apply to onboarding and may be waived at our discretion. Subscriptions are billed in advance; fees are non-refundable except where required by law or expressly stated.`,
+      `We may change pricing with at least 30 days' notice; changes take effect at your next renewal. Fees are exclusive of taxes, and you are responsible for applicable taxes other than our income taxes. We may suspend or terminate clones and access for overdue amounts.`,
+      `Payments are processed by Lemon Squeezy, which acts as the merchant of record for purchases made through the Service. Your purchase is therefore also subject to Lemon Squeezy's terms and privacy policy, and Lemon Squeezy (not ${COMPANY}) is the seller of record responsible for billing, tax collection, and payment handling.`,
     ],
   },
   {
-    h: "9. Third-party services",
+    h: "9. Your content and intellectual property",
+    body: [
+      `As between you and us, you retain all rights to the recordings, transcripts, voice samples, and other materials you provide ("Customer Content") and to the specific clone configuration built from them. You grant us a limited, non-exclusive license to host and process Customer Content solely to provide, secure, and improve the Service as described in our Privacy Policy.`,
+      `You represent and warrant that you have all rights and consents necessary to provide Customer Content to us, including consent from every individual whose voice, likeness, or recorded conversation you upload. We retain all rights in the Service itself, including our software, models, and platform, and grant you a limited, non-exclusive, non-transferable, revocable right to use the Service during your subscription. Feedback you give us may be used freely.`,
+    ],
+  },
+  {
+    h: "10. Publicity and logo use",
+    body: [
+      `During sign-up and in your account settings, a clearly visible control governs whether we may feature your name and logo to factually identify you as a customer. You may change this setting at any time, and we will stop new uses within a reasonable period after you opt out. Any permitted use does not imply your endorsement of ${COMPANY} and will not be presented as an endorsement without separate written agreement. Specific publicity or case-study permissions set out in a separate partner agreement control over this section. Each party retains its own trademarks.`,
+    ],
+  },
+  {
+    h: "11. Third-party services",
     body: [
       `The Service relies on third-party providers (for example, for voice synthesis, model inference, virtual desktops, analytics, video conferencing, and payments). Your use of the Service may be subject to those providers' terms, and we are not responsible for third-party services outside our control.`,
     ],
   },
   {
-    h: "10. Disclaimers",
+    h: "12. Confidentiality",
+    body: [
+      `Each party may receive confidential information of the other. The receiving party will protect it with reasonable care and use it only to perform under these Terms. This does not apply to information that is or becomes public through no fault of the receiving party, is independently developed, or is lawfully obtained elsewhere.`,
+    ],
+  },
+  {
+    h: "13. Disclaimers",
     body: [
       `The Service is provided "as is" and "as available". AI systems can produce inaccurate, incomplete, or unexpected output; a clone may misstate facts, misunderstand a participant, or fail to complete a task. We disclaim all warranties to the fullest extent permitted by law, including implied warranties of merchantability, fitness for a particular purpose, and non-infringement. We do not warrant that the Service will be uninterrupted, error-free, or that the readiness score predicts any particular result.`,
     ],
   },
   {
-    h: "11. Limitation of liability",
+    h: "14. Limitation of liability",
     body: [
       `To the fullest extent permitted by law, ${COMPANY} will not be liable for any indirect, incidental, special, consequential, or punitive damages, or for any lost profits, revenues, data, or goodwill, arising out of or related to the Service. Our total liability for any claim relating to the Service will not exceed the amounts you paid to us for the Service in the twelve months before the event giving rise to the claim.`,
     ],
   },
   {
-    h: "12. Indemnification",
+    h: "15. Indemnification",
     body: [
-      `You will indemnify and hold harmless ${COMPANY} from claims, damages, and expenses arising out of your Customer Content, your deployment of clones, your connected systems and accounts, or your breach of these Terms or of applicable law, including laws on recording, consent, or AI disclosure.`,
+      `You will indemnify and hold harmless ${COMPANY} from claims, damages, and expenses arising out of your Customer Content, your deployment of clones, your connected systems and accounts, your failure to obtain the consents or make the disclosures required by these Terms, or your breach of these Terms or of applicable law, including laws on recording, consent, or AI disclosure.`,
     ],
   },
   {
-    h: "13. Term and termination",
+    h: "16. Term and termination",
     body: [
-      `You may stop using the Service at any time. We may suspend or terminate access if you breach these Terms or create risk to the Service or others. On termination, your right to use the Service ends; provisions that by their nature should survive (including ownership, disclaimers, limitation of liability, and indemnity) will survive.`,
+      `You may stop using the Service at any time. We may suspend or terminate access if you breach these Terms, fail to pay, or create risk to the Service or others. On termination, your right to use the Service ends and we will handle your data per our Privacy Policy; provisions that by their nature should survive (including ownership, confidentiality, disclaimers, limitation of liability, and indemnity) will survive.`,
     ],
   },
   {
-    h: "14. Changes to these Terms",
+    h: "17. Changes to these Terms",
     body: [
-      `We may update these Terms from time to time. If we make material changes we will provide reasonable notice, for example by posting the updated Terms with a new effective date. Your continued use of the Service after changes take effect constitutes acceptance.`,
+      `We may update these Terms from time to time. If we make material changes we will provide reasonable notice, for example by posting the updated Terms with a new effective date and, where appropriate, asking you to accept them again. Your continued use of the Service after changes take effect constitutes acceptance.`,
     ],
   },
   {
-    h: "15. Governing law and contact",
+    h: "18. Governing law and disputes",
     body: [
-      `These Terms are governed by the laws of the jurisdiction stated at launch (placeholder — to be set with counsel), without regard to conflict-of-laws rules.`,
+      `These Terms are governed by the laws of the jurisdiction stated at launch (placeholder — to be set with counsel), without regard to conflict-of-laws rules, and the competent courts of that jurisdiction (placeholder — to be set with counsel) have exclusive jurisdiction, except where mandatory local law provides otherwise.`,
+    ],
+  },
+  {
+    h: "19. General",
+    body: [
+      `These Terms are the entire agreement between the parties on this subject and supersede prior agreements. If any provision is unenforceable, the rest remains in effect. Our failure to enforce a provision is not a waiver. You may not assign these Terms without our consent; we may assign in connection with a merger, acquisition, or sale of assets.`,
+    ],
+  },
+  {
+    h: "20. Contact",
+    body: [
       `Questions about these Terms can be sent to ${CONTACT}.`,
     ],
   },

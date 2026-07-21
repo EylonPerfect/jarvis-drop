@@ -3,6 +3,7 @@ import type { CSSProperties } from "react";
 import { api, getAccessKey } from "../api/client";
 import PdsNav from "../components/PdsNav";
 import ReportCallModal from "../components/ReportCallModal";
+import ReferralShare from "../components/ReferralShare";
 import "../pds.css";
 
 // ============================================================
@@ -82,6 +83,21 @@ export default function Debrief() {
   const [shotUrls, setShotUrls] = useState<Record<number, string>>({});
   const shotCache = useRef<Record<string, string>>({});
   const [sel, setSel] = useState<number | null>(null);
+  // call recording (Phase 1: replay the film + transcript; audio next)
+  const [showTranscript, setShowTranscript] = useState(false);
+  const [hasRecording, setHasRecording] = useState(false);
+  const [recUrl, setRecUrl] = useState<string | null>(null);
+  const filmRef = useRef<HTMLDivElement | null>(null);
+  // "Show off this call" — floats on the right when there's margin room for it.
+  const [shareDismissed, setShareDismissed] = useState(false);
+  const [floatShare, setFloatShare] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 1240px)");
+    const on = () => setFloatShare(mq.matches); on();
+    mq.addEventListener("change", on);
+    return () => mq.removeEventListener("change", on);
+  }, []);
+  const scrollToFilm = () => filmRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   const [fixNote, setFixNote] = useState("");
   const [fixRoute, setFixRoute] = useState<"speech" | "screen">("screen");
   const [proposal, setProposal] = useState<FixProposal | null>(null);
@@ -141,9 +157,9 @@ export default function Debrief() {
   }
 
   async function loadFilm(agId: string, sourceId: string) {
-    setFilm(null); resetFilmPanel();
+    setFilm(null); resetFilmPanel(); setHasRecording(false);
     try {
-      const r = await api.get<{ events: TimelineEvent[] }>(`/api/sources/${sourceId}/timeline`);
+      const r = await api.get<{ events: TimelineEvent[]; recording?: boolean }>(`/api/sources/${sourceId}/timeline`);
       // group each action with the nearest preceding guest line, and with her
       // narration: the last maya line before the action OR (tools usually fire
       // before she speaks) the first maya line after it, whichever exists
@@ -165,7 +181,7 @@ export default function Debrief() {
           maya = "";
         }
       });
-      if (moments.length) setFilm({ agentId: agId, sourceId, moments });
+      if (moments.length) { setFilm({ agentId: agId, sourceId, moments }); setHasRecording(!!r.recording); }
     } catch { /* 404: no film for this call */ }
   }
 
@@ -191,6 +207,22 @@ export default function Debrief() {
     })();
     return () => { gone = true; };
   }, [film]);
+
+  // fetch the call recording as a blob (the endpoint needs X-API-Key)
+  useEffect(() => {
+    if (!film || !hasRecording) { setRecUrl(null); return; }
+    let gone = false; const key = getAccessKey();
+    void (async () => {
+      try {
+        const res = await fetch(`${api.base}/api/sources/${film.sourceId}/recording`, { headers: key ? { "X-API-Key": key } : {} });
+        if (!res.ok) return;
+        const url = URL.createObjectURL(await res.blob());
+        if (gone) { URL.revokeObjectURL(url); return; }
+        setRecUrl(url);
+      } catch { /* no recording then */ }
+    })();
+    return () => { gone = true; };
+  }, [film, hasRecording]);
 
   function openMoment(i: number) {
     if (sel === i) { setSel(null); return; }
@@ -248,6 +280,16 @@ export default function Debrief() {
         context={<div style={{ fontSize: 11.5, color: "var(--ink3)" }}>{data ? `${data.who} · ${new Date(data.when).toLocaleDateString()}` : "pick a call to debrief"}</div>}
       />
 
+      {/* "Show off this call" — floating share, pinned to the right of the screen */}
+      {data && floatShare && !shareDismissed && (
+        <div style={{ position: "fixed", right: 22, top: 110, width: 300, zIndex: 40 }}>
+          <button onClick={() => setShareDismissed(true)} aria-label="Dismiss" style={{ position: "absolute", top: -9, right: -9, zIndex: 1, width: 26, height: 26, borderRadius: "50%", border: "1px solid var(--border)", background: "var(--card)", color: "var(--ink3)", cursor: "pointer", display: "grid", placeItems: "center", boxShadow: "var(--shadow)", fontFamily: "inherit" }}>
+            <span className="material-symbols-rounded" style={{ fontSize: 16 }}>close</span>
+          </button>
+          <ReferralShare loop="clip" wowTrigger="live_call" variant="brag" />
+        </div>
+      )}
+
       <div style={{ maxWidth: 900, margin: "0 auto", padding: "26px 24px 140px" }}>
         {/* build picker */}
         <div style={{ ...card, display: "flex", gap: 10, alignItems: "center", marginBottom: 22, flexWrap: "wrap" }}>
@@ -297,10 +339,64 @@ export default function Debrief() {
               </div>
             )}
 
+            {/* CALL RECORDING — replay the film + transcript (Phase 1; audio next) */}
+            <div style={{ ...card, borderRadius: 18, padding: "16px 18px", marginBottom: 22 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: film && film.moments.length > 0 ? 12 : 4 }}>
+                <span className="material-symbols-rounded" style={{ fontSize: 21, color: "var(--purple-ink)" }}>smart_display</span>
+                <span style={{ fontSize: 15.5, fontWeight: 800 }}>Call recording</span>
+                <span style={{ marginLeft: "auto", fontSize: 12, color: "var(--ink3)" }}>{data.who} · {data.stats.durationMin} min</span>
+              </div>
+              {hasRecording && recUrl && (
+                <audio controls src={recUrl} style={{ width: "100%", height: 42, marginBottom: 14 }} />
+              )}
+              {film && film.moments.length > 0 ? (
+                <>
+                  <div className="pds-scroll" style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 4, marginBottom: 12 }}>
+                    {film.moments.slice(0, 10).map((m, i) => (
+                      <button key={i} onClick={() => { openMoment(i); scrollToFilm(); }} title={m.maya || "screen"} style={{ flexShrink: 0, width: 116, padding: 0, border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden", background: "var(--sunk)", cursor: "pointer" }}>
+                        {m.shot !== undefined && shotUrls[m.shot]
+                          ? <img src={shotUrls[m.shot]} alt="" style={{ display: "block", width: "100%", height: 72, objectFit: "cover" }} />
+                          : <div style={{ height: 72, display: "flex", alignItems: "center", justifyContent: "center" }}><span className="material-symbols-rounded" style={{ fontSize: 20, color: "var(--ink3)" }}>image</span></div>}
+                      </button>
+                    ))}
+                  </div>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <button onClick={() => { openMoment(0); scrollToFilm(); }} style={{ display: "flex", alignItems: "center", gap: 7, height: 40, padding: "0 18px", border: "none", borderRadius: 9999, background: "#FF0660", color: "#fff", fontSize: 13.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                      <span className="material-symbols-rounded" style={{ fontSize: 19 }}>play_arrow</span>Replay the call
+                    </button>
+                    <button onClick={() => setShowTranscript((v) => !v)} style={{ display: "flex", alignItems: "center", gap: 7, height: 40, padding: "0 16px", border: "1px solid var(--border)", borderRadius: 9999, background: "transparent", color: "var(--ink1)", fontSize: 13.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                      <span className="material-symbols-rounded" style={{ fontSize: 18 }}>description</span>{showTranscript ? "Hide transcript" : "Transcript"}
+                    </button>
+                  </div>
+                  {showTranscript && (
+                    <div className="pds-scroll" style={{ marginTop: 14, maxHeight: 320, overflowY: "auto", borderTop: "1px solid var(--border)", paddingTop: 12 }}>
+                      {film.moments.map((m, i) => (
+                        <div key={i} style={{ marginBottom: 12 }}>
+                          {m.guest && <div style={{ fontSize: 12.5, color: "var(--ink2)", marginBottom: 3, lineHeight: 1.5 }}><b style={{ color: "var(--ink3)", fontWeight: 700 }}>{data.who}:</b> {m.guest}</div>}
+                          {m.maya && <div style={{ fontSize: 12.5, color: "var(--ink1)", lineHeight: 1.5 }}><b style={{ color: "var(--purple-ink)", fontWeight: 700 }}>Clone:</b> {m.maya}</div>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div style={{ fontSize: 12.5, color: "var(--ink3)" }}>No replay was captured for this call.</div>
+              )}
+              {hasRecording && recUrl ? (
+                <a href={recUrl} download="call-recording.mp3" style={{ display: "inline-flex", alignItems: "center", gap: 6, marginTop: 12, fontSize: 12.5, fontWeight: 700, color: "var(--ink2)", textDecoration: "none" }}>
+                  <span className="material-symbols-rounded" style={{ fontSize: 16 }}>download</span>Download audio
+                </a>
+              ) : (
+                <div style={{ fontSize: 11.5, color: "var(--ink3)", marginTop: 12, display: "flex", alignItems: "center", gap: 6 }}>
+                  <span className="material-symbols-rounded" style={{ fontSize: 15 }}>graphic_eq</span>Audio replay is coming soon.
+                </div>
+              )}
+            </div>
+
             {/* film review — only when this call left a persisted timeline */}
             {film && film.moments.length > 0 && (
               <>
-                <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>Film review</div>
+                <div ref={filmRef} style={{ fontSize: 18, fontWeight: 700, marginBottom: 4, scrollMarginTop: 80 }}>Film review</div>
                 <div style={{ fontSize: 12.5, color: "var(--ink3)", marginBottom: 14 }}>scrub the call, screen by screen</div>
                 <div className="pds-scroll" style={{ display: "flex", gap: 12, overflowX: "auto", paddingBottom: 6, marginBottom: sel !== null ? 14 : 32 }}>
                   {film.moments.map((m, i) => (

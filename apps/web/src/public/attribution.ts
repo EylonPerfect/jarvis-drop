@@ -13,7 +13,7 @@
 // ============================================================
 
 const STORAGE_KEY = "ah_attribution";
-const FIELDS = ["src", "utm_source", "utm_campaign", "utm_medium", "utm_content", "utm_term"] as const;
+const FIELDS = ["src", "utm_source", "utm_campaign", "utm_medium", "utm_content", "utm_term", "ref", "ref_loop", "ref_wow"] as const;
 export type Attribution = Partial<Record<(typeof FIELDS)[number], string>> & { ts?: string };
 
 // Merge params from BOTH the pre-hash query string and any `?...` embedded in the

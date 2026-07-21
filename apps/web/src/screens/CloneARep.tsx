@@ -735,9 +735,12 @@ export default function CloneARep() {
     if (step === 3) { await commitIfDirty(); setStep(4); return; }
     // Voice (step 4) is required in both modes.
     if (step === 4 && !voiceId) { alert("Pick a voice before continuing — it's how the clone will sound on the call."); return; }
-    // Both modes stop at Demo system (step 5); guided then goes to Confirm (6),
-    // quick finishes straight from there.
-    if (step === 4) { setStep(5); return; }
+    // In the DEMO tenant, SKIP the Demo-system step (5) entirely: the built clone
+    // is never driven in the demo (calibration coaches the Ava call), so that step
+    // is pointless and eats the 6-min clock. Voice (4) -> finish -> calibratecall.
+    // (isDemoTenant is the component-scope const below.)
+    // Real tenants stop at Demo system (5); guided then goes to Confirm (6).
+    if (step === 4 && !isDemoTenant) { setStep(5); return; }
     if (step === 5 && !quick) { await persistDemoQuiet(); setStep(6); return; }
     // Finish (guided Confirm = 6, or quick straight from Demo system = 5): persist
     // the demo system, clear the resume marker so the next "Clone a rep" starts
@@ -749,9 +752,14 @@ export default function CloneARep() {
       // hand the rest to the orchestrator — grounding, rehearsal, the works
       void api.post("/api/pipeline/start", { agentId: agent.id }).catch(() => { /* Readiness shows the story either way */ });
     }
-    nav("rehearsal");
+    // Demo tenant -> coach the call we just had (instant); real tenants -> live rehearsal room.
+    nav(isDemoTenant ? "calibratecall" : "rehearsal");
   }
   const canGo = (n: number) => n <= 2 || !!spec;
+  // In the demo tenant we skip the Demo-system step (see next()), so it must not
+  // appear in the stepper either — otherwise Ava reads the chip off-screen and
+  // announces "the demo system step" right before the wizard jumps past it.
+  const isDemoTenant = (() => { try { return localStorage.getItem("jv.serviceorg") === "org_demo_northwind"; } catch { return false; } })();
 
   // Derived data
   const firstName = name.trim().split(/\s+/)[0] || "the rep";
@@ -826,7 +834,7 @@ export default function CloneARep() {
 
         {/* ============ STEPPER ============ */}
         <div className="stepper">
-          {STEP_DEFS.map((d) => {
+          {STEP_DEFS.filter((d) => !(isDemoTenant && d.n === 5)).map((d) => {
             const done = d.n < step, active = d.n === step;
             return (
               <button

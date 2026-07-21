@@ -91,3 +91,5 @@
 @media (prefers-reduced-motion: reduce) {
   .ah-public *, .ah-public *::before, .ah-public *::after { animation: none !important; }
 }
+
+@keyframes ahpPulse { 0%,100% { transform: scale(1); box-shadow: 0 8px 40px rgba(46,211,125,.5); } 50% { transform: scale(1.06); box-shadow: 0 10px 52px rgba(46,211,125,.75); } }

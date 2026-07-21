@@ -4,11 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { getIntegrationValues } from "./integrations.js";
+import { getIntegrationValues, getIntegrationSource } from "./integrations.js";
 import { bustVoiceCache } from "./voice.js";
 import { getCompany } from "./company.js";
 import { query, one } from "../db/pool.js";
-import { orgId } from "../lib/auth.js";
+import { orgId, newId } from "../lib/auth.js";
 import { agentInOrg } from "../lib/tenancy.js";
 import { observeScreens, providerChatJson, type ObservedSegment } from "../lib/callVision.js";
 
@@ -324,8 +324,8 @@ export default async function fathomRoutes(app: FastifyInstance) {
     if (!b.agentId) return reply.code(400).send({ error: "agentId required" });
     const agent = await one<{ id: string; name: string }>(`SELECT id, name FROM agents WHERE id=$1 AND org_id=$2`, [b.agentId, orgId(req)]);
     if (!agent) return reply.code(404).send({ error: "agent not found" });
-    const el = await getIntegrationValues(orgId(req), "elevenlabs");
-    const elKey = el?.apiKey?.trim();
+    const elSrc = await getIntegrationSource(orgId(req), "elevenlabs");
+    const elKey = elSrc?.values?.apiKey?.trim();
     if (!elKey) return reply.code(400).send({ error: "ElevenLabs is not connected — add the API key in Integrations" });
 
     // Tier guard FIRST — surface plan problems verbatim before any heavy work.
@@ -469,6 +469,13 @@ export default async function fathomRoutes(app: FastifyInstance) {
       if (!addR.ok) return reply.code(502).send({ error: `ElevenLabs voice add failed (${addR.status}): ${(await addR.text().catch(() => "")).slice(0, 300)}` });
       const added = (await addR.json()) as { voice_id?: string };
       if (!added.voice_id) return reply.code(502).send({ error: "ElevenLabs returned no voice_id" });
+      // OWNERSHIP LEDGER: record the voice WE created + the key-org that made it,
+      // so org/clone deletion can revoke exactly this biometric (and only ours).
+      await query(`DELETE FROM cloned_voices WHERE org_id=$1 AND agent_id=$2`, [orgId(req), b.agentId]).catch(() => {});
+      await query(
+        `INSERT INTO cloned_voices (id, org_id, agent_id, voice_id, via_org) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (voice_id) DO NOTHING`,
+        [newId("cv"), orgId(req), b.agentId, added.voice_id, elSrc?.viaOrg ?? orgId(req)],
+      ).catch(() => {});
       bustVoiceCache(); // the wizard's picker refresh must see the new voice immediately
       app.log.info({ agentId: b.agentId, voiceId: added.voice_id, sampleSeconds, rep: repName }, "real voice cloned");
       return { voiceId: added.voice_id, name: voiceName, sampleSeconds, ...(warning ? { warning } : {}) };

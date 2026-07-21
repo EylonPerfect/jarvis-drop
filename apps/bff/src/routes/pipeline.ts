@@ -3,6 +3,7 @@ import { query, one } from "../db/pool.js";
 import { orgId } from "../lib/auth.js";
 import { getSetting, setSetting } from "../lib/settingsStore.js";
 import { agentInOrg } from "../lib/tenancy.js";
+import { notify } from "../lib/notify.js";
 
 // ============================================================
 // Clone pipeline — the whole preparation flow, unattended.
@@ -330,6 +331,13 @@ async function runPipeline(app: FastifyInstance, agentId: string, org: string, r
   run.doc.updatedAt = new Date().toISOString();
   await saveDoc(org, agentId, run.doc);
   app.log.info({ agentId }, "pipeline: complete");
+  // in-app: the clone is built — bring the operator back to review + rehearse
+  void notify(org, {
+    kind: "ready_to_rehearse",
+    title: `${agent!.name || "Your clone"} is built and ready`,
+    body: score != null ? `Readiness score ${score}. Review it, rehearse turn by turn, and take it live at 70+.` : "Review it, rehearse turn by turn, and take it live at 70 or above.",
+    href: "#/readiness", severity: "info", icon: "auto_awesome", email: true, ctaLabel: "Review your clone",
+  });
 }
 
 export default async function pipelineRoutes(app: FastifyInstance) {

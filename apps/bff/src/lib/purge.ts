@@ -23,6 +23,7 @@
 import type { PoolClient } from "pg";
 import { pool, query, one, withTx } from "../db/pool.js";
 import { config } from "../config.js";
+import { getIntegrationValues } from "../routes/integrations.js";
 
 // On-disk artifact root (per-call screenshots + timelines, and the legacy
 // product-login file). Matches routes/live.ts (`AH`), overridable for tests.
@@ -37,6 +38,7 @@ const TENANT_TABLES = [
   "approvals", "settings", "agent_activity", "agent_comms", "agent_runs", "meetings",
   "integrations", "persona_versions", "calibration_sessions", "calibration_turns",
   "clone_sources", "debriefs", "live_calls", "rehearsal_grades", "company_people", "ai_providers",
+  "cloned_voices",
 ];
 
 // ---- small helpers ---------------------------------------------------------
@@ -64,21 +66,45 @@ async function writeAudit(
   else await query(sql, params);
 }
 
-// Revoke a set of ElevenLabs voice ids using the org's OWN api key. Only the
-// org's cloned/generated voices are ours to delete; premade/library ids return
-// an error which we swallow (best-effort). Returns per-voice outcomes.
-async function revokeElevenVoices(apiKey: string | undefined, voiceIds: string[]): Promise<Record<string, boolean>> {
+// Revoke the ElevenLabs voices WE cloned, each with the key that CREATED it.
+// Only voices in the ownership ledger (cloned_voices) are ours to delete — never
+// a library/platform voice the org merely SELECTED. Returns per-voice outcomes.
+interface VoiceToRevoke { voiceId: string; apiKey?: string }
+async function revokeElevenVoices(voices: VoiceToRevoke[]): Promise<Record<string, boolean>> {
   const out: Record<string, boolean> = {};
-  if (!apiKey) { for (const v of voiceIds) out[v] = false; return out; }
-  for (const vid of voiceIds) {
-    const r = await retry(`elevenlabs delete voice ${vid}`, async () => {
-      const resp = await fetch(`https://api.elevenlabs.io/v1/voices/${encodeURIComponent(vid)}`, {
+  for (const { voiceId, apiKey } of voices) {
+    if (!apiKey) { out[voiceId] = false; continue; }
+    const r = await retry(`elevenlabs delete voice ${voiceId}`, async () => {
+      const resp = await fetch(`https://api.elevenlabs.io/v1/voices/${encodeURIComponent(voiceId)}`, {
         method: "DELETE", headers: { "xi-api-key": apiKey },
       });
-      // 200 = deleted; 400/404 = already gone / not ours (premade) -> treat as settled, don't retry.
+      // 200 = deleted; 400/404 = already gone -> settled, don't retry.
       if (!resp.ok && resp.status >= 500) throw new Error(`status ${resp.status}`);
     });
-    out[vid] = r.ok;
+    out[voiceId] = r.ok;
+  }
+  return out;
+}
+
+// The voices this org (or one clone) actually cloned — from the ownership ledger
+// — each paired with the key that created it (resolved from via_org: the org's
+// own key, or the platform key). Gathered BEFORE the DB purge, like every
+// external id. A ledger row whose key can't be resolved reports revoked:false.
+async function clonedVoicesToRevoke(org: string, agentId?: string): Promise<VoiceToRevoke[]> {
+  const rows = await query<{ voice_id: string; via_org: string }>(
+    agentId
+      ? `SELECT voice_id, via_org FROM cloned_voices WHERE org_id=$1 AND agent_id=$2`
+      : `SELECT voice_id, via_org FROM cloned_voices WHERE org_id=$1`,
+    agentId ? [org, agentId] : [org],
+  );
+  const keyCache = new Map<string, string | undefined>();
+  const out: VoiceToRevoke[] = [];
+  for (const r of rows) {
+    if (!keyCache.has(r.via_org)) {
+      const v = await getIntegrationValues(r.via_org, "elevenlabs");
+      keyCache.set(r.via_org, v?.apiKey?.trim() || undefined);
+    }
+    out.push({ voiceId: r.voice_id, apiKey: keyCache.get(r.via_org) });
   }
   return out;
 }
@@ -108,28 +134,6 @@ async function rmDirs(dirs: string[]): Promise<number> {
   return removed;
 }
 
-// Collect the distinct ElevenLabs voice ids an org owns: agents.voice_id plus
-// each persona's voice.elevenlabs_voice_id.
-async function orgVoiceIds(org: string): Promise<string[]> {
-  const rows = await query<{ voice_id: string | null; persona: any }>(
-    `SELECT voice_id, persona FROM agents WHERE org_id = $1`, [org],
-  );
-  const set = new Set<string>();
-  for (const r of rows) {
-    if (r.voice_id) set.add(r.voice_id);
-    const pv = r.persona?.voice?.elevenlabs_voice_id;
-    if (typeof pv === "string" && pv) set.add(pv);
-  }
-  return [...set];
-}
-
-async function orgElevenKey(org: string): Promise<string | undefined> {
-  const row = await one<{ values: Record<string, string> }>(
-    `SELECT values FROM integrations WHERE org_id = $1 AND id = 'elevenlabs'`, [org],
-  );
-  return row?.values?.apiKey?.trim() || undefined;
-}
-
 // ---- PURGE: one org (customer leaves) --------------------------------------
 export interface PurgeResult {
   ok: boolean;
@@ -148,8 +152,7 @@ export async function purgeOrg(org: string, opts: { actor?: string; force?: bool
     throw new Error("refusing to purge the legacy org without { force: true }");
   }
   // 1) gather external identifiers BEFORE deleting the rows that hold them.
-  const elevenKey = await orgElevenKey(org);
-  const voiceIds = await orgVoiceIds(org);
+  const clonedVoices = await clonedVoicesToRevoke(org);
   const sandboxes = (await query<{ sandbox_id: string }>(
     `SELECT DISTINCT sandbox_id FROM live_calls WHERE org_id = $1 AND sandbox_id IS NOT NULL`, [org],
   )).map((r) => r.sandbox_id);
@@ -171,12 +174,12 @@ export async function purgeOrg(org: string, opts: { actor?: string; force?: bool
   });
 
   // 3) best-effort external cleanup, then a second audit row for the outcome.
-  const voices = await revokeElevenVoices(elevenKey, voiceIds);
+  const voices = await revokeElevenVoices(clonedVoices);
   const sbx = await killSandboxes(sandboxes);
   const dirsRemoved = await rmDirs(shotDirs);
   await writeAudit(null, {
     actor: opts.actor, action: "purge_org_external", org_id: org, target: org,
-    detail: { voices, sandboxes: sbx, dirsRemoved, hadElevenKey: !!elevenKey },
+    detail: { voices, sandboxes: sbx, dirsRemoved, voicesAttempted: clonedVoices.length },
   });
 
   return { ok: true, target: org, deleted, external: { voices, sandboxes: sbx, dirsRemoved } };
@@ -194,9 +197,7 @@ export async function purgeAgent(org: string, agentId: string, opts: { actor?: s
     `SELECT voice_id, persona FROM agents WHERE id = $1 AND org_id = $2`, [agentId, org],
   );
   if (!agent) return { ok: false, target: agentId, deleted: {}, external: {} };
-  const voiceIds = [agent.voice_id, agent.persona?.voice?.elevenlabs_voice_id]
-    .filter((v): v is string => typeof v === "string" && !!v);
-  const elevenKey = await orgElevenKey(org);
+  const clonedVoices = await clonedVoicesToRevoke(org, agentId);
   const sandboxes = (await query<{ sandbox_id: string }>(
     `SELECT DISTINCT sandbox_id FROM live_calls WHERE org_id = $1 AND agent_id = $2 AND sandbox_id IS NOT NULL`, [org, agentId],
   )).map((r) => r.sandbox_id);
@@ -213,7 +214,8 @@ export async function purgeAgent(org: string, agentId: string, opts: { actor?: s
     await del("calibration_turns",
       `DELETE FROM calibration_turns WHERE session_id IN (SELECT id FROM calibration_sessions WHERE agent_id = $1 AND org_id = $2)`, [agentId, org]);
     for (const t of ["agent_runs", "agent_activity", "agent_comms", "calibration_sessions",
-      "clone_sources", "persona_versions", "debriefs", "rehearsal_grades", "live_calls", "meetings"]) {
+      "clone_sources", "persona_versions", "debriefs", "rehearsal_grades", "live_calls", "meetings",
+      "cloned_voices"]) {
       await del(t, `DELETE FROM ${t} WHERE agent_id = $1 AND org_id = $2`, [agentId, org]);
     }
     // per-agent settings keys: demo_login:<id>, pipeline:<id>, fidelity_report:<id>,
@@ -224,7 +226,7 @@ export async function purgeAgent(org: string, agentId: string, opts: { actor?: s
   });
 
   // 3) best-effort external cleanup + outcome audit.
-  const voices = await revokeElevenVoices(elevenKey, voiceIds);
+  const voices = await revokeElevenVoices(clonedVoices);
   const sbx = await killSandboxes(sandboxes);
   const dirsRemoved = await rmDirs(shotDirs);
   await writeAudit(null, {

@@ -2,7 +2,21 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { query, one } from "../db/pool.js";
 import { config } from "../config.js";
 import { emit, EVENTS } from "../lib/analytics.js";
-import { lease, reap, sayTo, slotForSession, transcriptFor, poolStats, audioFor } from "../lib/demoPool.js";
+import { lease, reap, sayTo, greetTo, slotForSession, transcriptFor, transcriptForSandbox, revealedFor, poolStats, audioFor, pushMic, pullMic } from "../lib/demoPool.js";
+
+// Fire Ava's proactive opener from the SERVER once a session is live, retrying
+// until the freshly-leased bridge accepts the nudge. The FE also fires /greet,
+// but that is a single shot that can race the lease; the bridge dedupes on
+// greet_done, so whichever lands first wins and she always opens on her own.
+function autoGreet(sessionId: string): void {
+  let tries = 0;
+  const tick = (): void => {
+    void greetTo(sessionId)
+      .then((ok) => { if (!ok && tries++ < 10) setTimeout(tick, 700); })
+      .catch(() => { if (tries++ < 10) setTimeout(tick, 700); });
+  };
+  setTimeout(tick, 1200); // let the just-leased bridge settle before the first try
+}
 
 // ============================================================================
 // routes/demo.ts — PUBLIC, UNAUTHENTICATED "Talk to Ava" demo API.
@@ -87,6 +101,7 @@ export default async function demoRoutes(app: FastifyInstance) {
         [id, ORG, result.sandboxId, ip, utm, expiresAt],
       );
       void emit(EVENTS.AVA_SESSION, { orgId: ORG, callId: id, distinctId: id, props: { utm, mode: "ready" } });
+      autoGreet(id);
       return reply.code(201).send({ sessionId: id, status: "ready", streamUrl: result.streamUrl, expiresAt });
     }
     // Queued: no warm slot right now. Persist queued; the FE polls status, which
@@ -113,6 +128,7 @@ export default async function demoRoutes(app: FastifyInstance) {
         const expiresAt = new Date(Date.now() + SESSION_MS).toISOString();
         await query(`UPDATE demo_sessions SET status='live', sandbox_id=$3, started_at=now(), expires_at=$4 WHERE id=$1 AND org_id=$2`,
           [sessionId, ORG, got.sandboxId, expiresAt]);
+        autoGreet(sessionId);
         return {
           status: "live", streamUrl: got.streamUrl, remainingSec: config.demo.sessionSec,
         };
@@ -125,7 +141,9 @@ export default async function demoRoutes(app: FastifyInstance) {
       const streamUrl = slot?.streamUrl || "";
       let transcript: { role: string; text: string }[] | undefined;
       try { transcript = await transcriptFor(sessionId); } catch { transcript = undefined; }
-      return { status: "live", streamUrl, remainingSec: remainingSec(s.expires_at), transcript };
+      let revealed = false;
+      try { revealed = await revealedFor(sessionId); } catch { revealed = false; }
+      return { status: "live", streamUrl, remainingSec: remainingSec(s.expires_at), transcript, revealed };
     }
     // ended | expired
     return {
@@ -147,6 +165,19 @@ export default async function demoRoutes(app: FastifyInstance) {
     const ok = await sayTo(sessionId, text.slice(0, 500));
     if (!ok) return reply.code(502).send({ error: "could not reach the demo bridge" });
     return reply.code(200).send({ ok: true });
+  });
+
+  // ---- POST /api/demo/:sessionId/greet : fire Ava's proactive opener --------
+  // The FE calls this once the audio stream is live so Ava opens the call herself
+  // (greet + AI disclosure + first discovery question) instead of waiting.
+  app.post("/api/demo/:sessionId/greet", async (req, reply) => {
+    const { sessionId } = req.params as { sessionId: string };
+    let s = await one<DemoSession>(`SELECT * FROM demo_sessions WHERE id=$1 AND org_id=$2`, [sessionId, ORG]);
+    if (!s) return reply.code(404).send({ error: "no such demo session" });
+    s = await expireIfDue(s);
+    if (s.status !== "live") return reply.code(409).send({ error: `session is ${apiStatus(s.status)}`, status: apiStatus(s.status) });
+    const ok = await greetTo(sessionId);
+    return reply.code(200).send({ ok });
   });
 
   // ---- POST /api/demo/:sessionId/end : end + reap sandbox ------------------
@@ -201,5 +232,38 @@ export default async function demoRoutes(app: FastifyInstance) {
   });
 
   // ---- GET /api/demo/pool : lightweight pool health (ops visibility) -------
+  // ---- POST /api/demo/:sessionId/mic : guest mic PCM -> realtime -----------
+  // Body { chunk: base64 PCM16 mono 24kHz }. The FE streams the guest's echo-
+  // cancelled mic here; the bridge pulls it and appends to Ava's realtime input.
+  app.post("/api/demo/:sessionId/mic", { bodyLimit: 2 * 1024 * 1024 }, async (req, reply) => {
+    const { sessionId } = req.params as { sessionId: string };
+    const b = (req.body ?? {}) as { chunk?: string };
+    const slot = slotForSession(sessionId);
+    if (!slot?.sandboxId) return reply.code(200).send({ ok: false }); // session not live yet; drop quietly
+    const raw = (b.chunk ?? "").trim();
+    if (raw) { try { pushMic(slot.sandboxId, Buffer.from(raw, "base64")); } catch { /* bad chunk */ } }
+    return reply.code(200).send({ ok: true });
+  });
+
+  // ---- GET /api/demo/mic-pull/:sandboxId : bridge pulls buffered guest PCM ---
+  // Called by the in-sandbox bridge (knows its own sandboxId). Unauthenticated
+  // like the rest of /api/demo/*; returns only opaque audio bytes keyed by an
+  // unguessable sandbox id.
+  app.get("/api/demo/mic-pull/:sandboxId", async (req) => {
+    const { sandboxId } = req.params as { sandboxId: string };
+    const after = Number((req.query as { after?: string })?.after ?? 0) || 0;
+    return pullMic(sandboxId, after);
+  });
+
+  // ---- GET /api/demo/by-sandbox/:sandboxId/transcript : the in-sandbox app
+  // fetches the turns of the call IT is hosting, for the "calibrate the call we
+  // just had" view. Keyed by the unguessable sandbox id (same trust model as
+  // mic-pull); returns { turns:[{role,text}] }.
+  app.get("/api/demo/by-sandbox/:sandboxId/transcript", async (req) => {
+    const { sandboxId } = req.params as { sandboxId: string };
+    const turns = await transcriptForSandbox(sandboxId).catch(() => []);
+    return { turns };
+  });
+
   app.get("/api/demo/pool", async () => poolStats());
 }

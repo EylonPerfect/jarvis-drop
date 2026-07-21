@@ -6,7 +6,7 @@ import { Icon, PublicNav, PublicFooter, PublicShell, type Nav } from "./PublicCh
 // After Human — public landing page. Faithful recreation of
 // "Landing Page.dc.html": animated Zoom-style hero that cycles
 // joining -> in call (voice) -> screen share (fake
-// app.goperfect.com/pipeline dashboard), trust bar, how it
+// app.northwind.co/pipeline dashboard), trust bar, how it
 // works, three capability rows, gradient stats band, final CTA,
 // footer. All motion respects prefers-reduced-motion (handled in
 // public.css). Copy is sentence case, no exclamation marks, no
@@ -74,7 +74,7 @@ const FEATURES: Feature[] = [
     points: ["Grace window to hold any turn", "Live nudges and dual ratings", "Panic controls always in reach"],
     visualBg: "var(--panel)", visualInk: { color: "var(--ink1)" }, chipBg: "var(--card)",
     chips: [
-      { icon: "pan_tool", color: "#FF0660", title: "Hold", sub: "before Maya responds", badge: "live", badgeBg: "#FFE0EB", badgeColor: "#D8004E" },
+      { icon: "pan_tool", color: "#FF0660", title: "Hold", sub: "before Ava responds", badge: "live", badgeBg: "#FFE0EB", badgeColor: "#D8004E" },
       { icon: "ads_click", color: "#A342FF", title: "Nudge", sub: "cite the ROI number" },
       { icon: "shield", color: "#0E8A4F", title: "Grounding gate", sub: "no ungrounded numbers", badge: "on", badgeBg: "#E8F9EF", badgeColor: "#0E8A4F" },
     ],
@@ -88,7 +88,7 @@ const FEATURES: Feature[] = [
     visualBg: "var(--panel)", visualInk: { color: "var(--ink1)" }, chipBg: "var(--card)",
     chips: [
       { icon: "calendar_month", color: "#00BBFF", title: "4 calls today", sub: "next in 8 minutes" },
-      { icon: "forum", color: "#A342FF", title: "Posted to #northwind", sub: "QBR recap and next steps" },
+      { icon: "forum", color: "#A342FF", title: "Posted to #northwind", sub: "Call recap and next steps" },
       { icon: "outgoing_mail", color: "#FF0660", title: "Follow-up scheduled", sub: "sends in 3 days" },
     ],
   },
@@ -135,7 +135,7 @@ export default function PublicLanding({ nav }: { nav: Nav }) {
               Your AI sales and<br />customer success team,<br /><span style={{ fontWeight: 700 }}>cloned from your best.</span>
             </h1>
             <p style={{ margin: "22px 0 0", fontSize: 17, fontWeight: 400, color: "var(--ink2)", maxWidth: 500, lineHeight: 1.55 }}>
-              After Human clones a top rep into a digital worker that joins live calls in their voice, runs demos, and follows up. It goes live only after it clears your readiness bar, and it always says it is an AI.
+              After Human clones a top rep into a digital worker that joins live calls in their voice, runs demos, and follows up, all with a human director in the loop.
             </p>
             <form onSubmit={(e) => { e.preventDefault(); nav.go("#/auth"); }} style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 30, maxWidth: 520, flexWrap: "wrap" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 240, height: 54, padding: "0 8px 0 18px", borderRadius: 9999, background: "var(--card)", border: "2px solid var(--border)" }}>
@@ -161,7 +161,7 @@ export default function PublicLanding({ nav }: { nav: Nav }) {
                   <span style={{ width: 10, height: 10, borderRadius: "50%", background: "#FF5F57" }} />
                   <span style={{ width: 10, height: 10, borderRadius: "50%", background: "#FEBC2E" }} />
                   <span style={{ width: 10, height: 10, borderRadius: "50%", background: "#28C840" }} />
-                  <div style={{ marginLeft: 6, fontSize: 12, fontWeight: 700 }}>GoPerfect QBR</div>
+                  <div style={{ marginLeft: 6, fontSize: 12, fontWeight: 700 }}>Live call · Northwind</div>
                   <div style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 6, fontSize: 10.5, fontWeight: 700, color: "rgba(255,255,255,.6)" }}>
                     <span style={{ width: 7, height: 7, borderRadius: "50%", background: "#FF0660", animation: "ahpDot 1.4s ease-in-out infinite" }} />{ph.status}
                   </div>
@@ -170,8 +170,8 @@ export default function PublicLanding({ nav }: { nav: Nav }) {
                   {!ph.sharing && (
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, height: "100%" }}>
                       <div style={{ position: "relative", borderRadius: 14, background: "rgba(255,255,255,.05)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 9 }}>
-                        <div style={{ width: 60, height: 60, borderRadius: "50%", background: "radial-gradient(circle at 30% 30%, rgba(255,6,96,.5), rgba(163,66,255,.45))", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 18, animation: ringAnim }}>MC</div>
-                        <div style={{ display: "flex", alignItems: "center", gap: 5 }}><Icon name={micGlyph} style={{ fontSize: 14, color: "#4BE39A" }} /><span style={{ fontSize: 12, fontWeight: 700 }}>Maya</span></div>
+                        <div style={{ width: 60, height: 60, borderRadius: "50%", background: "radial-gradient(circle at 30% 30%, rgba(255,6,96,.5), rgba(163,66,255,.45))", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 18, animation: ringAnim }}>AC</div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 5 }}><Icon name={micGlyph} style={{ fontSize: 14, color: "#4BE39A" }} /><span style={{ fontSize: 12, fontWeight: 700 }}>Ava</span></div>
                         {ph.voiceOn && (
                           <div style={{ position: "absolute", bottom: 12, display: "flex", alignItems: "flex-end", gap: 3, height: 13 }}>
                             {BARS.map((d, i) => (
@@ -192,7 +192,7 @@ export default function PublicLanding({ nav }: { nav: Nav }) {
                         <div style={{ width: 7, height: 7, borderRadius: "50%", background: "#FF5F57" }} />
                         <div style={{ width: 7, height: 7, borderRadius: "50%", background: "#FEBC2E" }} />
                         <div style={{ width: 7, height: 7, borderRadius: "50%", background: "#28C840" }} />
-                        <div style={{ marginLeft: 8, flex: 1, height: 12, borderRadius: 6, background: "#EBEBEE", display: "flex", alignItems: "center", padding: "0 8px", fontSize: 7, fontWeight: 600, color: "rgba(0,0,64,.45)" }}>app.goperfect.com/pipeline</div>
+                        <div style={{ marginLeft: 8, flex: 1, height: 12, borderRadius: 6, background: "#EBEBEE", display: "flex", alignItems: "center", padding: "0 8px", fontSize: 7, fontWeight: 600, color: "rgba(0,0,64,.45)" }}>app.northwind.co/pipeline</div>
                       </div>
                       <div style={{ position: "absolute", inset: "22px 0 0", overflow: "hidden" }}>
                         <div style={{ padding: "12px 14px", animation: "ahpScreenScroll 8s ease-in-out infinite" }}>
@@ -245,17 +245,17 @@ export default function PublicLanding({ nav }: { nav: Nav }) {
                         <Icon name="arrow_selector_tool" style={{ fontSize: 17, color: "#04042A", filter: "drop-shadow(0 1px 2px rgba(255,255,255,.9))", display: "block", animation: "ahpCursorClick 8s ease-in-out infinite" }} />
                       </div>
                       <div style={{ position: "absolute", right: 10, bottom: 10, zIndex: 5, width: 50, height: 38, borderRadius: 9, background: "#0B0B30", border: "1.5px solid rgba(255,255,255,.15)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                        <div style={{ width: 26, height: 26, borderRadius: "50%", background: "radial-gradient(circle at 30% 30%, rgba(255,6,96,.5), rgba(163,66,255,.45))", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 700, color: "#fff", animation: ringAnim }}>MC</div>
+                        <div style={{ width: 26, height: 26, borderRadius: "50%", background: "radial-gradient(circle at 30% 30%, rgba(255,6,96,.5), rgba(163,66,255,.45))", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 700, color: "#fff", animation: ringAnim }}>AC</div>
                       </div>
                       <span style={{ position: "absolute", left: 10, bottom: 10, zIndex: 5, display: "inline-flex", alignItems: "center", gap: 5, fontSize: 9.5, fontWeight: 700, padding: "3px 8px", borderRadius: 9999, background: "rgba(255,6,96,.14)", color: "#D8004E" }}>
-                        <Icon name="present_to_all" style={{ fontSize: 12 }} />Maya is sharing
+                        <Icon name="present_to_all" style={{ fontSize: 12 }} />Ava is sharing
                       </span>
                     </div>
                   )}
                   {ph.connecting && (
                     <div style={{ position: "absolute", inset: 14, borderRadius: 14, background: "rgba(11,11,48,.88)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12 }}>
                       <Icon name="progress_activity" style={{ fontSize: 30, color: "#CBA3FF", animation: "ahpSpin 1.2s linear infinite" }} />
-                      <div style={{ fontSize: 13, fontWeight: 700 }}>Maya is joining the call</div>
+                      <div style={{ fontSize: 13, fontWeight: 700 }}>Ava is joining the call</div>
                     </div>
                   )}
                 </div>
@@ -289,6 +289,88 @@ export default function PublicLanding({ nav }: { nav: Nav }) {
           <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 20, fontWeight: 700, letterSpacing: "-.02em", color: "var(--ink2)" }}><Icon name="favorite" style={{ fontSize: 20, fontVariationSettings: "'FILL' 1", color: "#FF4D6D" }} />Lovable</span>
           <span style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 20, fontWeight: 700, letterSpacing: "-.02em", color: "var(--ink2)" }}><span style={{ width: 22, height: 22, borderRadius: 5, border: "1.5px solid var(--ink2)", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 800 }}>N</span>Notion</span>
           <span style={{ display: "inline-flex", alignItems: "baseline", gap: 5, fontSize: 20, fontWeight: 800, letterSpacing: "-.03em", color: "var(--ink2)" }}><span style={{ display: "inline-flex", alignItems: "center", gap: 3 }}><span style={{ width: 7, height: 7, borderRadius: "50%", background: "#FF3D57" }} /><span style={{ width: 7, height: 7, borderRadius: "50%", background: "#FFCB00" }} /><span style={{ width: 7, height: 7, borderRadius: "50%", background: "#00CA72" }} /></span>monday<span style={{ fontWeight: 500, color: "var(--ink3)" }}>.com</span></span>
+        </div>
+      </section>
+
+      {/* NOT A CHATBOT — it joins the call */}
+      <section style={{ maxWidth: 1160, margin: "0 auto", padding: "50px 24px" }}>
+        <div className="ahp-feat-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 48, alignItems: "center" }}>
+          {/* LEFT — Zoom mockup */}
+          <div style={{ borderRadius: 22, padding: 16, background: "var(--panel)", border: "1px solid var(--divider)" }}>
+            <div style={{ background: "#0B0B30", borderRadius: 16, overflow: "hidden", color: "#fff", boxShadow: "0 24px 60px rgba(0,0,64,.28)" }}>
+              {/* title bar */}
+              <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "13px 16px", background: "rgba(255,255,255,.04)", borderBottom: "1px solid rgba(255,255,255,.07)" }}>
+                <span style={{ width: 26, height: 26, borderRadius: 7, background: "#2D8CFF", display: "inline-flex", alignItems: "center", justifyContent: "center", flex: "none" }}><Icon name="videocam" style={{ fontSize: 16, color: "#fff" }} /></span>
+                <span style={{ fontSize: 13.5, fontWeight: 800 }}>Zoom</span>
+                <span style={{ fontSize: 12.5, fontWeight: 500, color: "rgba(255,255,255,.6)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>Northwind Talent · discovery call</span>
+                <span style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, fontWeight: 800, letterSpacing: ".04em", color: "rgba(255,255,255,.85)", flex: "none" }}><span style={{ width: 7, height: 7, borderRadius: "50%", background: "#FF0660", animation: "ahpDot 1.4s ease-in-out infinite" }} />LIVE</span>
+              </div>
+              {/* screen-share area: the live pipeline the clone is presenting */}
+              <div style={{ padding: 16, background: "linear-gradient(160deg, #14144a, #0B0B30)" }}>
+                <div style={{ borderRadius: 14, padding: 14, background: "#fff", color: "#0B0B30", border: "2px solid #FF0660", boxShadow: "0 0 0 4px rgba(255,6,96,.16)" }}>
+                  <div style={{ fontSize: 12.5, fontWeight: 800, marginBottom: 12 }}>Northwind Talent pipeline</div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: 10, alignItems: "center" }}>
+                    <div style={{ background: "#F5F5F8", borderRadius: 10, padding: "9px 11px" }}>
+                      <div style={{ fontSize: 9, fontWeight: 800, letterSpacing: ".06em", color: "#8A8AA0" }}>QUALIFIED</div>
+                      <div style={{ fontSize: 19, fontWeight: 800 }}>128</div>
+                    </div>
+                    <div style={{ background: "#F5F5F8", borderRadius: 10, padding: "9px 11px" }}>
+                      <div style={{ fontSize: 9, fontWeight: 800, letterSpacing: ".06em", color: "#8A8AA0" }}>AVG FIT</div>
+                      <div style={{ fontSize: 19, fontWeight: 800, color: "#FF0660" }}>86</div>
+                    </div>
+                    <div style={{ background: "#F5F5F8", borderRadius: 10, padding: "9px 11px" }}>
+                      <div style={{ fontSize: 9, fontWeight: 800, letterSpacing: ".06em", color: "#8A8AA0" }}>APPROVED</div>
+                      <div style={{ fontSize: 19, fontWeight: 800, color: "#0E8A4F" }}>41</div>
+                    </div>
+                    <div style={{ width: 52, height: 52, borderRadius: 12, background: "radial-gradient(circle at 30% 30%, rgba(255,6,96,.9), rgba(163,66,255,.85))", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: "#fff", flex: "none" }}>
+                      <span style={{ fontSize: 15, fontWeight: 800, lineHeight: 1 }}>M</span>
+                      <span style={{ fontSize: 8, fontWeight: 700, marginTop: 2 }}>Maya</span>
+                    </div>
+                  </div>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginTop: 12 }}>
+                  {[{ i: "DK", n: "Dana" }, { i: "RP", n: "Raj" }, { i: "SL", n: "Sam" }].map((p) => (
+                    <div key={p.i} style={{ borderRadius: 12, background: "rgba(255,255,255,.05)", padding: "13px 10px", display: "flex", flexDirection: "column", alignItems: "center", gap: 7 }}>
+                      <div style={{ width: 34, height: 34, borderRadius: "50%", background: "rgba(255,255,255,.12)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 800 }}>{p.i}</div>
+                      <span style={{ fontSize: 11.5, fontWeight: 700 }}>{p.n}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              {/* control bar */}
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 16, padding: "12px 0", background: "rgba(0,0,0,.25)" }}>
+                <Icon name="mic" style={{ fontSize: 20, color: "#4BE39A" }} />
+                <Icon name="videocam" style={{ fontSize: 20, color: "rgba(255,255,255,.85)" }} />
+                <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 30, height: 30, borderRadius: 8, border: "1.5px solid #FF0660" }}><Icon name="ios_share" style={{ fontSize: 16, color: "#FF0660" }} /></span>
+                <Icon name="group" style={{ fontSize: 20, color: "rgba(255,255,255,.85)" }} />
+                <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 34, height: 30, borderRadius: 8, background: "#FF0660" }}><Icon name="call_end" style={{ fontSize: 17, color: "#fff" }} /></span>
+              </div>
+            </div>
+          </div>
+
+          {/* RIGHT — copy */}
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: ".14em", textTransform: "uppercase", color: "#A342FF", marginBottom: 14 }}>Not a chatbot</div>
+            <h2 style={{ margin: 0, fontSize: 40, fontWeight: 700, letterSpacing: "-.02em", lineHeight: 1.08 }}>It joins the Zoom and runs the whole call</h2>
+            <p style={{ margin: "18px 0 0", fontSize: 16.5, color: "var(--ink2)", lineHeight: 1.6, maxWidth: 540 }}>
+              Your clone dials into the meeting as a named participant, gives the pitch in your rep's cloned voice, and screen-shares the product live, because it operates its own standalone computer like a person would.
+            </p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 22, marginTop: 34 }}>
+              {[
+                { icon: "videocam", bg: "rgba(0,187,255,.14)", color: "#00BBFF", title: "Joins the video call", body: "Enters Zoom, Meet, or Teams as a named attendee, on camera, ready when the meeting starts." },
+                { icon: "graphic_eq", bg: "rgba(255,6,96,.14)", color: "#FF0660", title: "Delivers the pitch in your voice", body: "Speaks live in your rep's cloned voice, handles objections, and reads the room in real time." },
+                { icon: "desktop_windows", bg: "rgba(163,66,255,.16)", color: "#A342FF", title: "Shares its screen from its own computer", body: "Has a dedicated standalone machine, so it opens the product and runs the demo itself, live on the call." },
+              ].map((r) => (
+                <div key={r.title} style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
+                  <div style={{ flex: "none", width: 46, height: 46, borderRadius: 13, background: r.bg, display: "flex", alignItems: "center", justifyContent: "center" }}><Icon name={r.icon} style={{ fontSize: 23, color: r.color }} /></div>
+                  <div>
+                    <div style={{ fontSize: 16.5, fontWeight: 700, marginBottom: 3 }}>{r.title}</div>
+                    <div style={{ fontSize: 14.5, color: "var(--ink2)", lineHeight: 1.55 }}>{r.body}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       </section>
 

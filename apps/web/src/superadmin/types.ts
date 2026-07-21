@@ -57,7 +57,8 @@ export interface ReportRow {
 }
 
 export interface RateCardItem { id: string; item: string; price: string; }
-export interface BillingResp { kpis?: Kpi[]; rateCard?: RateCardItem[]; }
+export interface BillingOrg { id: string; name: string; plan?: string; status?: string; mrrCents?: number; seats?: number; signupAt?: string | null; liveAt?: string | null; churnedAt?: string | null; }
+export interface BillingResp { kpis?: Kpi[]; rateCard?: RateCardItem[]; orgs?: BillingOrg[]; }
 
 export interface FeatureFlag { name: string; enabled: boolean; }
 export interface ConfigResp {

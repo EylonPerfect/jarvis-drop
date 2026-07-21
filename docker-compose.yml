@@ -52,10 +52,17 @@ services:
       LEMONSQUEEZY_VARIANT_STARTER: ${LEMONSQUEEZY_VARIANT_STARTER:-}
       LEMONSQUEEZY_VARIANT_GROWTH: ${LEMONSQUEEZY_VARIANT_GROWTH:-}
       BILLING_GATE_ENFORCED: ${BILLING_GATE_ENFORCED:-false}
+      # Transactional email (Resend). Empty -> email inert (in-app notifications
+      # still work). Set RESEND_API_KEY + a verified EMAIL_FROM domain to enable.
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      EMAIL_FROM: ${EMAIL_FROM:-}
+      APP_PUBLIC_URL: ${APP_PUBLIC_URL:-}
       DEMO_POOL_ENABLED: ${DEMO_POOL_ENABLED:-false}
       DEMO_AGENT_ID: ${DEMO_AGENT_ID:-}
       DEMO_ORG_ID: ${DEMO_ORG_ID:-}
       DEMO_POOL_SIZE: ${DEMO_POOL_SIZE:-2}
+      DEMO_PER_IP_ACTIVE: ${DEMO_PER_IP_ACTIVE:-1}
+      DEMO_PER_IP_HOUR: ${DEMO_PER_IP_HOUR:-5}
       HERMES_BASE_URL: ${HERMES_BASE_URL:-http://host.docker.internal:8642}
       HERMES_API_KEY: ${HERMES_API_KEY:-change-me}
       HERMES_SESSION_KEY: ${HERMES_SESSION_KEY:-operator-primary}
@@ -99,6 +106,24 @@ services:
       - traefik.http.routers.afterhuman.tls.certresolver=letsencrypt
       - traefik.http.routers.afterhuman.service=afterhuman
       - traefik.http.services.afterhuman.loadbalancer.server.port=80
+      # Production custom domain (GoDaddy). Separate router so a cert failure here
+      # (e.g. before DNS propagates) never jeopardizes the working srv cert. Auto-
+      # issues via Let's Encrypt HTTP-01 the moment after-human.com resolves here.
+      # www is canonical: this router serves ONLY www.after-human.com.
+      - traefik.http.routers.afterhumancom.entrypoints=websecure
+      - traefik.http.routers.afterhumancom.rule=Host(`www.after-human.com`)
+      - traefik.http.routers.afterhumancom.tls.certresolver=letsencrypt
+      - traefik.http.routers.afterhumancom.service=afterhuman
+      # Apex -> www canonical 301 redirect. ($$ escapes compose interpolation so
+      # traefik receives a single $ -> ${1} capture group.)
+      - traefik.http.routers.afterhumanapex.entrypoints=websecure
+      - traefik.http.routers.afterhumanapex.rule=Host(`after-human.com`)
+      - traefik.http.routers.afterhumanapex.tls.certresolver=letsencrypt
+      - traefik.http.routers.afterhumanapex.middlewares=apextowww
+      - traefik.http.routers.afterhumanapex.service=afterhuman
+      - traefik.http.middlewares.apextowww.redirectregex.regex=^https?://after-human\.com/(.*)
+      - traefik.http.middlewares.apextowww.redirectregex.replacement=https://www.after-human.com/$${1}
+      - traefik.http.middlewares.apextowww.redirectregex.permanent=true
       # the web IMAGE bakes an old jarvis.srv... router - bind it explicitly too
       - traefik.http.routers.jarvis.service=jarvis
 

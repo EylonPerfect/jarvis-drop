@@ -20,6 +20,8 @@ import {
 } from "../lib/billing.js";
 import { emit, EVENTS } from "../lib/analytics.js";
 import { notifyFunnelEvent } from "../lib/alerts.js";
+import { convertReferral } from "../lib/referrals.js";
+import { notify } from "../lib/notify.js";
 
 // ============================================================
 // BILLING routes — Lemon Squeezy hosted Checkout + Customer Portal + webhook,
@@ -178,7 +180,19 @@ export default async function billingRoutes(app: FastifyInstance) {
             // OBSERVABILITY: a NEW paid subscription = revenue signal + payment ping.
             void emit(EVENTS.MRR_CHANGE, { orgId: org, props: { plan: planForVariant(m.variantId) ?? null, slots: m.slots, kind: "new" } }).catch(() => {});
             void notifyFunnelEvent("payment", { orgId: org, plan: planForVariant(m.variantId) ?? null, slots: m.slots, subscriptionId: m.subId }).catch(() => {});
+            // PLG: first paid subscription = referral CONVERSION. Grants a free
+            // clone-month to BOTH the referrer and this org (idempotent; no-op if
+            // this org wasn't referred). Never blocks the webhook.
+            void convertReferral(org).then((r) => { if (r) console.log("[plg] referral converted", r.referralId, "referrer", r.referrerOrg); }).catch(() => {});
+            // in-app: you're paid, clones can go live
+            void notify(org, { kind: "went_paid", title: "You're all set — clones can go live", body: "Your subscription is active. Any clone at 70 or above can now run live calls.", href: "#/readiness", severity: "success", icon: "verified", email: true, ctaLabel: "Open your clones" });
           }
+          break;
+        }
+        case "subscription_payment_failed": {
+          // Dunning: the renewal charge failed. Tell the org before we suspend.
+          const org = await resolveOrg(event);
+          if (org) void notify(org, { kind: "payment_failed", title: "Your last payment didn't go through", body: "Update your billing details to keep your clones live — we'll retry automatically.", href: "#/billing", severity: "critical", icon: "credit_card_off", email: true, ctaLabel: "Update billing" });
           break;
         }
         case "subscription_cancelled": {

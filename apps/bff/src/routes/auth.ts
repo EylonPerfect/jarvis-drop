@@ -9,6 +9,8 @@ import { getOrgDemoLogin, setOrgDemoLogin } from "../lib/tenancy.js";
 import { setSetting } from "../lib/settingsStore.js";
 import { emit, EVENTS } from "../lib/analytics.js";
 import { notifyFunnelEvent } from "../lib/alerts.js";
+import { ensureRefCode, attachSignup } from "../lib/referrals.js";
+import { recordTosAcceptance } from "../lib/legal.js";
 
 // Normalize the optional outbound-attribution blob sent by the public signup form
 // (object, or a JSON/plain string) into a clean string→string map (empty → null).
@@ -57,11 +59,13 @@ export default async function authRoutes(app: FastifyInstance) {
   // Sign up: creates a user, a brand-new org, an owner membership, and a session.
   app.post("/api/auth/signup", async (req, reply) => {
     if (!config.auth.allowSignup) return reply.code(403).send({ error: "signup disabled" });
-    const b = (req.body ?? {}) as { email?: string; password?: string; name?: string; orgName?: string; attribution?: unknown };
+    const b = (req.body ?? {}) as { email?: string; password?: string; name?: string; orgName?: string; attribution?: unknown; tosAccepted?: boolean };
     const email = (b.email ?? "").trim().toLowerCase();
     const password = b.password ?? "";
     if (!email.includes("@")) return reply.code(400).send({ error: "valid email required" });
     if (password.length < 8) return reply.code(400).send({ error: "password must be at least 8 characters" });
+    // Every user must affirmatively accept the Terms to create an account.
+    if (b.tosAccepted !== true) return reply.code(400).send({ error: "You must accept the Terms & Conditions to create an account.", code: "tos_required" });
 
     const existing = await one<{ id: string }>(`SELECT id FROM users WHERE lower(email) = $1`, [email]);
     if (existing) return reply.code(409).send({ error: "an account with that email already exists" });
@@ -88,6 +92,29 @@ export default async function authRoutes(app: FastifyInstance) {
     const attribution = normalizeAttribution(b.attribution);
     const src = attribution ? (attribution.src || attribution.utm_source || null) : null;
     if (attribution) await setSetting(orgId, "attribution", attribution).catch(() => {});
+
+    // Record the Terms acceptance affirmed by the signup checkbox (proof: user,
+    // org, current version, ip, user-agent). Best-effort — the account is created.
+    await recordTosAcceptance(
+      userId, orgId,
+      (req.ip || "").slice(0, 64) || null,
+      (req.headers["user-agent"] as string | undefined) ?? null,
+    ).catch(() => {});
+
+    // PLG: give the new org its shareable referral code, and — if this signup
+    // carried a referral code (?ref= captured into the attribution blob) —
+    // record the referral graph edge. Both best-effort; never block signup.
+    await ensureRefCode(orgId).catch(() => {});
+    const refCode = attribution?.ref || null;
+    if (refCode) {
+      await attachSignup(orgId, refCode, {
+        referredEmail: email,
+        loop: attribution?.ref_loop || "ava",
+        channel: attribution?.utm_medium || "link",
+        wowTrigger: attribution?.ref_wow || null,
+        demoSession: attribution?.demo_session || null,
+      }).catch(() => {});
+    }
 
     const token = await createSession(userId, orgId);
     setSessionCookie(reply, token);

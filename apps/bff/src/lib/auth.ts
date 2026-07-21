@@ -92,9 +92,9 @@ export interface AuthUser { id: string; email: string; name?: string }
 export interface AuthOrg { id: string; name: string; role: string }
 
 // ---- session lifecycle -----------------------------------------------------
-export async function createSession(userId: string, orgId: string | null): Promise<string> {
+export async function createSession(userId: string, orgId: string | null, ttlMsOverride?: number): Promise<string> {
   const token = newSessionToken();
-  const ttlMs = config.auth.sessionTtlDays * 24 * 60 * 60 * 1000;
+  const ttlMs = ttlMsOverride ?? config.auth.sessionTtlDays * 24 * 60 * 60 * 1000;
   await query(
     `INSERT INTO sessions (id, user_id, org_id, expires_at) VALUES ($1,$2,$3, now() + ($4 || ' milliseconds')::interval)`,
     [token, userId, orgId, String(ttlMs)],

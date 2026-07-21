@@ -5,6 +5,8 @@ import { config } from "../config.js";
 import { getCall, endCall } from "../lib/callstate.js";
 import { createSession, setSessionCookie as setAppSessionCookie } from "../lib/auth.js";
 import { setKillSwitch } from "../lib/metering.js";
+import { setSetting, getSetting } from "../lib/settingsStore.js";
+import { pushPersonaReload } from "./live.js";
 
 // ============================================================
 // SUPER-ADMIN BACKEND — the one deliberately CROSS-ORG surface.
@@ -530,16 +532,25 @@ export default async function superadminRoutes(app: FastifyInstance) {
   // KPIs are derived from the canonical orgs (MRR/active/paying); the editable
   // rate card is settings-backed, defaulting to the Phase-3 metering rates.
   app.get("/api/superadmin/billing", async () => {
-    const orgs = await query<{ mrr_cents: number; status: string }>(`SELECT mrr_cents, status FROM orgs`).catch(() => []);
-    const mrr = orgs.reduce((a, o) => a + (Number(o.mrr_cents) || 0), 0) / 100;
-    const active = orgs.filter((o) => o.status === "active").length;
-    const paying = orgs.filter((o) => (Number(o.mrr_cents) || 0) > 0).length;
+    const rows = await query<{ id: string; name: string; plan: string | null; status: string; mrr_cents: number; seats: number; signup_at: string | null; went_live_at: string | null; churned_at: string | null }>(
+      `SELECT id, name, plan, status, mrr_cents, seats, signup_at, went_live_at, churned_at FROM orgs ORDER BY mrr_cents DESC NULLS LAST, name ASC`,
+    ).catch(() => []);
+    const mrr = rows.reduce((a, o) => a + (Number(o.mrr_cents) || 0), 0) / 100;
+    const active = rows.filter((o) => o.status === "active").length;
+    const paying = rows.filter((o) => (Number(o.mrr_cents) || 0) > 0).length;
+    const liveCount = rows.filter((o) => !!o.went_live_at && !o.churned_at).length;
     const kpis = [
       { label: "MRR", val: `$${mrr.toLocaleString()}` },
-      { label: "Active orgs", val: String(active) },
       { label: "Paying orgs", val: String(paying) },
+      { label: "Active orgs", val: String(active) },
+      { label: "Live orgs", val: String(liveCount) },
     ];
-    return { kpis, rateCard: await loadRateCard() };
+    const orgs = rows.map((o) => ({
+      id: o.id, name: o.name, plan: o.plan || "free", status: o.status,
+      mrrCents: Number(o.mrr_cents) || 0, seats: Number(o.seats) || 0,
+      signupAt: o.signup_at, liveAt: o.went_live_at, churnedAt: o.churned_at,
+    }));
+    return { kpis, orgs, rateCard: await loadRateCard() };
   });
   app.post("/api/superadmin/billing/rate-card", async (req, reply) => {
     const b = (req.body ?? {}) as { id?: string; price?: string; reason?: string };
@@ -556,6 +567,26 @@ export default async function superadminRoutes(app: FastifyInstance) {
   });
 
   // ---- GET /audit — read the append-only log ----
+  // ---- Ava demo brain (RAW golden editor) --------------------------------
+  // GET the demo host golden instructions; POST replaces them wholesale and
+  // applies to the demo agent (next lease + hot-reload of any running session).
+  app.get("/api/superadmin/demo-golden", async () => {
+    const row = await getSetting<{ instructions?: string }>(config.legacyOrgId, "demo_host_golden");
+    return { text: (row?.instructions ?? ""), agentId: config.demo.agentId, orgId: config.demo.orgId };
+  });
+  app.post("/api/superadmin/demo-golden", async (req, reply) => {
+    const b = (req.body ?? {}) as { text?: string };
+    const text = (b.text ?? "").toString();
+    if (text.trim().length < 200) return reply.code(400).send({ error: "That looks too short — paste the full instructions (200+ chars)." });
+    const cur = await getSetting<Record<string, unknown>>(config.legacyOrgId, "demo_host_golden");
+    await setSetting(config.legacyOrgId, "demo_host_golden", { ...(cur ?? {}), instructions: text });
+    await query("UPDATE agents SET golden_instructions=$1 WHERE id=$2", [text, config.demo.agentId]);
+    // hot-reload any LIVE demo session so the edit lands mid-call, not just next lease
+    let live = false;
+    try { await pushPersonaReload(config.demo.orgId, config.demo.agentId); live = true; } catch { /* no live session / best effort */ }
+    return { ok: true, length: text.length, hotReloaded: live };
+  });
+
   app.get("/api/superadmin/audit", async (req) => {
     const q = (req.query ?? {}) as { action?: string; severity?: string; limit?: string };
     const limit = Math.min(500, Math.max(1, Number(q.limit) || 100));

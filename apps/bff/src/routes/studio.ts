@@ -3,10 +3,12 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { query, one } from "../db/pool.js";
 import { orgId } from "../lib/auth.js";
+import { config } from "../config.js";
 import { getSetting, setSetting } from "../lib/settingsStore.js";
 import { agentInOrg, getOrgDemoLogin, sealDemoLogin, agentDemoKey } from "../lib/tenancy.js";
 import { getActiveProvider, completeProviderChat, streamProviderChat, cheapModel } from "../lib/providers.js";
 import { orgForAgent } from "../lib/metering.js";
+import { notifyOnce } from "../lib/notify.js";
 import { getCompany } from "./company.js";
 import { pushPersonaReload } from "./live.js";
 import {
@@ -110,10 +112,38 @@ async function autoRescore(agentId: string, org: string): Promise<void> {
     const KEY = process.env.BFF_API_KEY || "";
     const hit = (path: string) => fetch(`http://localhost:${PORT}${path}`, { method: "POST", headers: { "X-API-Key": KEY, "Content-Type": "application/json", "X-Service-Org": org }, body: "{}", signal: AbortSignal.timeout(600_000) }).then(() => undefined).catch(() => undefined); // X-Service-Org: rescore in the agent's tenant (follow-up #73)
     void (async () => {
-      try { await hit(`/api/verify/${agentId}`); await hit(`/api/redteam/${agentId}`); }
+      try {
+        await hit(`/api/verify/${agentId}`); await hit(`/api/redteam/${agentId}`);
+        // certified crossing → notify the org ONCE per agent (all gates now pass)
+        try {
+          const g = await fetch(`http://localhost:${PORT}/api/clones/${agentId}/gates`, { headers: { "X-API-Key": KEY, "X-Service-Org": org } }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+          if (g && typeof g.passed === "number" && g.total > 0) {
+            const ag = await one<any>(`SELECT name FROM agents WHERE id=$1`, [agentId]);
+            if (g.passed === g.total) {
+              await notifyOnce(org, `clone_certified:${agentId}`, { kind: "clone_certified", title: `${ag?.name || "Your clone"} is ready to go live`, body: "It cleared every quality gate — you can put it on real calls now.", href: "#/readiness", severity: "success", icon: "verified", email: true, ctaLabel: "Take it live" });
+            } else {
+              // stalled: rehearsed a few times but still not certified → nudge ONCE
+              const rc = await one<{ n: string }>(`SELECT count(*)::text AS n FROM live_calls WHERE agent_id=$1 AND mode='rehearsal'`, [agentId]);
+              if (Number(rc?.n ?? 0) >= 2) {
+                await notifyOnce(org, `stalled_below_70:${agentId}`, { kind: "stalled_below_70", title: `${ag?.name || "Your clone"} isn't reaching 70 yet`, body: "It has rehearsed a few times but hasn't cleared the bar. Add a stronger source call, or coach the weak moments.", href: "#/readiness", severity: "warning", icon: "trending_down", email: true, ctaLabel: "Improve your clone" });
+              }
+            }
+          }
+        } catch { /* best-effort */ }
+      }
       finally { _rescoreLock.delete(agentId); }
     })();
   } catch { /* best-effort */ }
+}
+
+// The public "Talk to Ava" demo restores its golden from settings.demo_host_golden
+// on EVERY warm-slot lease (see demoPool). So when the demo agent is tuned in the
+// Calibration Room, mirror the compiled golden there too — otherwise the pin is
+// wiped on the next lease. This is what lets the demo be tuned live from the room.
+async function mirrorDemoGolden(agentId: string, instructions: string): Promise<void> {
+  if (!config.demo.agentId || agentId !== config.demo.agentId) return;
+  const cur = await one<{ value: Record<string, unknown> }>(`SELECT value FROM settings WHERE org_id=$1 AND key='demo_host_golden'`, [config.legacyOrgId]);
+  await setSetting(config.legacyOrgId, "demo_host_golden", { ...(cur?.value || {}), instructions });
 }
 
 export async function recompileGolden(org: string, agentId: string): Promise<boolean> {
@@ -124,6 +154,7 @@ export async function recompileGolden(org: string, agentId: string): Promise<boo
   const instructions = compileClone(vrow.spec as PersonaSpec, playbookOf(agent), agent.name, (await getCompany(org)).name || "the company");
   await query(`UPDATE agents SET golden_instructions=$2 WHERE id=$1 AND org_id=$3`, [agentId, instructions, org]);
   await setSetting(org, "live_golden_instructions", { agentId, versionId: vrow.id, instructions });
+  await mirrorDemoGolden(agentId, instructions);
   void autoRescore(agentId, org); // improve loop: re-score so the readiness number tracks the recompiled clone
   return true;
 }
@@ -904,6 +935,7 @@ export default async function studioRoutes(app: FastifyInstance) {
       const spec = await currentPersona(org, agent);
       const instructions = compileClone(spec, playbookOf(agent), agent.name, (await getCompany(org)).name || "the company");
       await query(`UPDATE agents SET golden_persona_id=NULL, golden_instructions=$2, status='training' WHERE id=$1`, [agentId, instructions]);
+      await mirrorDemoGolden(agentId, instructions);
       void pushPersonaReload(org, agentId);
       return { ok: true, unpinned: true };
     }
@@ -914,6 +946,7 @@ export default async function studioRoutes(app: FastifyInstance) {
     const spec = vrow.spec as PersonaSpec;
     const instructions = compileClone(spec, playbookOf(agent), agent.name, (await getCompany(org)).name || "the company");
     await query(`UPDATE agents SET golden_persona_id=$2, golden_instructions=$3, status='golden' WHERE id=$1 AND org_id=$4`, [agentId, vrow.id, instructions, org]);
+    await mirrorDemoGolden(agentId, instructions);
     // Also record the last pin in a settings key. The bridge only reads this as
     // a legacy fallback when no AH_AGENT_ID env is set (manual script runs);
     // live.ts uses it to pick the default agent for joins without an explicit

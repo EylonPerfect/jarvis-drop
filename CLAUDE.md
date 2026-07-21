@@ -340,3 +340,553 @@ Overnight fixes to get here: (1) demoPool.connectSandbox reads e2b key from conf
 **OPEN (morning):** reset-on-lease is DISABLED (demoPool.ts 'if(false) void resetDemoTenant') so the demo-host golden survives — re-enable a reset that PRESERVES ava's demo-host golden (bake it into seedDemoTenant, or have resetDemoTenant re-apply it) before public/concurrent use, else prospect changes accumulate on the demo tenant.
 
 ## #78 DONE (2026-07-19): reset-on-lease re-enabled + host golden survives. Demo-host golden stored in settings(org_legacy, demo_host_golden); demoPool.lease runs resetDemoTenant().then(restoreDemoHostGolden) — reset wipes the demo-org (clean board per prospect) then restore re-pins ava.golden_instructions from the legacy-stored copy (reset never touches org_legacy). Verified via MARKER: golden 24294 survives a lease-reset. Demo is public-safe.
+
+## 2026-07-19 — TALK-TO-AVA "no audio" REAL ROOT CAUSE (was misdiagnosed as autoplay)
+Symptom: guests never heard Ava though transcript worked + /audio streamed (offsets climbed).
+Proof method: reproduced /site#/ava in a headless browser, hooked AudioBufferSourceNode.start → buffers had maxAmp=0 (pure-silence PCM). /audio windows across the whole 8.6MB file were all-zero. So NOT autoplay — the vspk PCM itself was silent.
+Root cause: demo agents were seeded with PLACEHOLDER voice_ids ('voice_demo_ava', _marcus, _hannah, _priya) in demoTenant.ts. A non-empty voice_id makes duplexnav7 pick VOICE_MODE=hybrid → EL websocket to an INVALID voice id → EL yields no audio, exception swallowed → Ava runs TEXT-ONLY (transcript fine, zero voice). Demo org also has a FAKE elevenlabs key ('demo-eleve…'); real key ('sk_0f7…') is on org_legacy.
+Fix: demoTenant.ts — all four roster voiceId → null (empty voice_id ⇒ reliable VOICE_MODE=openai, 'marin' voice via the SAME vspk player; zero EL dependency). resetDemoTenant re-seeds on every lease, so the seed file — not a one-off UPDATE — is the durable fix. Rebuilt bff, nulled agents.voice_id pre-restart to dodge the warm-race.
+VERIFIED: fresh leased session (full lease→reset→restore) → buffer maxAmp 0.66–0.76 (real speech); voice_id stays NULL after reset. Boot log now 'VOICE mode=openai (no voice_id)'.
+Also added FE 'Tap to hear Ava' unlock overlay (TalkToAva.tsx) for real-Chrome autoplay — still correct/needed, just wasn't the cause.
+FOLLOW-UP (polish, not blocking): to give Ava a branded ElevenLabs cloned voice, set a REAL EL voice_id on ag_demo_ava AND put the real EL key on org_demo_northwind (or make duplexnav7's EL key read org-scoped).
+
+## 2026-07-19 — Funnel top-of-funnel fixes (new-user pass)
+- #7 FIXED: PublicAuth.tsx 'Start the live call →' CTA pointed to #/auth (dead-ended a prospect on the signup form) → now #/ava (the live demo).
+- #6 FIXED: PublicLanding.tsx hero mockup de-branded off GoPerfect/Maya → 'Live call · Northwind', avatars AC/Ava + DK/Dana, app.northwind.co/pipeline, 'Ava is sharing/joining', 'Call recap'. Deployed + visually confirmed (hero renders Ava/Dana).
+- #80 VERIFIED (code): App.tsx firstRun effect — on auth, if org has no buildTrack==='clone' agent → nav('firstrun'); case 'firstrun' renders <FirstRun/>. FirstRun = locked funnel: Path A 'Start with a sample rep' (POST create-clone w/ sample playbook → readiness), Path B 'connect your own calls' → clonerep. org_legacy=7 agents (Eylon sees home), a fresh signup org=0 → firstrun. NOT click-tested as a real new signup (account creation is out of scope for the agent) — needs a human walkthrough.
+
+## 2026-07-19 — Custom domain after-human.com (GoDaddy)
+- Hero copy updated (PublicLanding.tsx): subhead now '…follows up, all with a human director in the loop.' (dropped readiness-bar/AI-disclosure sentence). Deployed.
+- Traefik: added router 'afterhumancom' on the web service (docker-compose.yml) — rule Host(after-human.com)||Host(www.after-human.com), certresolver=letsencrypt, service=afterhuman. SEPARATE router so cert failure pre-DNS doesn't touch the working srv cert. Traefik is retrying HTTP-01; will auto-issue once DNS points here.
+- BLOCKED ON DNS (Eylon, GoDaddy): apex + www currently resolve to GoDaddy parking (76.223.105.230 / 13.248.243.5). Need A @ → 187.124.216.33 and A www → 187.124.216.33 (optional AAAA → 2a02:4780:7:a473::1), and REMOVE GoDaddy domain forwarding/parking. VPS public IPv4 = 187.124.216.33.
+- FOLLOW-UP once live: update demoTenant.ts demo_login url + any hardcoded afterhuman.srv1797540 refs → after-human.com; decide apex↔www canonical 301.
+
+## 2026-07-19 — Domain live + root routing fix
+- after-human.com + www LIVE with valid Let's Encrypt cert (auto-renew). http→https 301. Verified serving on VPS 3/3.
+- ROOT ROUTING FIX (App.tsx): a fresh visitor to '/' was bounced to /site#/signin. Now the initial-load unauthed paths (lines ~130/133) redirect to /site#/ (marketing LANDING); the runtime session-expiry handler (line ~94, onUnauth) still → /site#/signin (operator re-auth). Deployed + browser-verified: https://www.after-human.com/ renders the landing.
+- Note: URL shows /site#/ after redirect (functional; clean bare-root landing would need serving PublicSite at '/' or moving the app to /app — deferred).
+
+## 2026-07-19 — Demo URL repoint + apex→www canonical 301 (domain polish)
+
+Two low-risk domain-polish changes. Gated on 0 active calls before each deploy; no live call/demo disturbed. Backups: `apps/bff/src/lib/demoTenant.ts.bak`, `docker-compose.yml.bak`.
+
+**1) In-demo URL repointed to the production domain.** `demoTenant.ts` all 6 `demoLogin.url` (+ org-default) `afterhuman.srv1797540.hstgr.cloud/#/echo` → `www.after-human.com/#/echo` (hostname-only, path preserved). Also UPDATEd the 7 live `settings` rows (`demo_login:%` + legacy `ag_mrqnskre`) in-place via `jsonb_set` so it took effect without waiting for a reset re-seed (each path preserved: `ag_mrqnskre` kept `/`, the rest `/#/echo`). resetDemoTenant now re-seeds the new host from the file. bff rebuilt+deployed (`compose build bff && up -d bff`), "Server listening" confirmed, healthy, 0 errors. E2E: leased ONE demo session (ds_mrs7wov2uigfu2) → live → bridge log `PRODUCT_MODE GENERIC https://www.after-human.com` (new host, GENERIC toolset, CDP connected, SESSION_READY, VOICE legacy openai untouched) → session ended, pool back to idle. Demo agent voice_id left NULL (untouched).
+
+**2) Apex→www canonical 301.** docker-compose.yml web labels: `afterhumancom` router now `Host(`www.after-human.com`)` ONLY; new `afterhumanapex` router `Host(`after-human.com`)` → `apextowww` redirectregex middleware (`^https?://after-human\.com/(.*)` → `https://www.after-human.com/$${1}`, permanent=true). `$$` escapes compose interpolation; deployed label value confirmed single-`$` `https://www.after-human.com/${1}` via `docker inspect`. `up -d web` (web-only recreate, gated). Verified: apex `/site` → `301 -> https://www.after-human.com/site`; www `/site` → 200; both www + apex certs = Let's Encrypt; OLD srv domain `/site` still 200. Traefik `afterhuman` (srv) router and infra/cert config untouched.
+
+## 2026-07-19 — Superadmin 'Enter org' completed (was a Phase-2 stub)
+- BUG: POST /api/superadmin/orgs/:id/enter only recorded the impersonation (impersonation_sessions + notify + audit) and returned metadata — it never issued an app session, so the FE 'Enter org' did nothing (mut just toasted + reloaded the SA panel).
+- FIX (bff routes/superadmin.ts enter handler): after the audit, look up the org's owner/admin membership → createSession(actAsUserId, orgId, ttlSec*1000) (TIME-BOXED to the impersonation TTL, not the default 7d) → setSessionCookie(reply). Returns {ok, redirect:'/'}. 409 if the org has no member to act as.
+- lib/auth.ts: createSession() gained an optional ttlMsOverride (default unchanged).
+- FE superadmin/panels.tsx: enter run now redirects window.location.assign('/') on success so the impersonation session takes hold in the Command Center.
+- Cookies are distinct: app session = ah_session (Path=/), superadmin = sa_session (Path=/api/superadmin) — entering an org sets ah_session without disturbing the SA login. saApi uses credentials:'same-origin' so Set-Cookie is stored.
+- Enterable orgs need a membership: org_demo_northwind (owner) + org_legacy (owner) OK; SelfTest Co has 0 members → 409.
+- FOLLOW-UP: no explicit 'exit impersonation → restore my own session' (ah_session is replaced; on expiry/logout the operator re-logs-in). Add an exit-impersonation control later.
+
+## 2026-07-19 — Superadmin 'Cost & metering' (and other admin panels) bounced to login — FIXED
+- BUG: CostPanel calls GET /api/usage (correctly requireSuperadmin-guarded in usage.ts), but the GLOBAL onRequest app-auth hook (index.ts) only bypassed /api/superadmin/* — so /api/usage was 401'd ('no session') by the app gate BEFORE its own requireSuperadmin ran. saApi turns 401→sa-unauthorized→SA login screen. Same latent bug for every requireSuperadmin route living outside /api/superadmin: /api/admin/*, /api/metrics/summary, /api/status/incidents(POST/PATCH), /api/usage, /api/usage/kill-switch, /api/usage/:orgId/billing.
+- FIX (index.ts onRequest hook): after the /api/superadmin bypass, added an explicit allowlist that lets those self-guarding routes through the app gate (they still enforce via requireSuperadmin). Kept per-org GET /api/usage/:orgId under the app gate.
+- VERIFIED via curl: /api/usage 401 body changed from {"error":"unauthorized","reason":"no session"} (app gate) → {"error":"super-admin authorization required"} (reached requireSuperadmin). So a real sa_session now passes through.
+- FOLLOW-UP: future superadmin routes placed outside /api/superadmin must be added to this allowlist (or moved under /api/superadmin).
+
+## PLG VIRAL LOOPS (2026-07-19, Eylon) — build all three, reward = free clone-month, DOUBLE-SIDED
+Wow-triggered referral / bring-a-friend / viral. Design doc: /root/jarvis-new/PLG-DESIGN.md.
+Insight: the wow IS a live AI conversation → the shared object can BE the wow (a live
+Ava/clone demo), re-triggering it in the recipient — not a discount code.
+- **M0 BACKBONE SHIPPED + VERIFIED 2026-07-19** (bff rebuilt, migrate-on-boot). ONE
+  backbone, three loops on top (loop='ava'|'team'|'clip').
+  - db/migrations/003_referrals.sql: orgs.ref_code (unique), `referrals` (graph:
+    clicked→signed_up→converted→rewarded, unique(referred_org) = attribute-once),
+    `reward_grants` (double-sided ledger, unique(referral_id,role) = idempotent).
+  - lib/referrals.ts: ensureRefCode / resolveRefCode / buildRefLink / attachSignup /
+    convertReferral / countCompedSlots / listForOrg. routes/referrals.ts (authed):
+    GET /api/referrals/me, POST /api/referrals/share.
+  - HOOKS: auth.ts signup → ensureRefCode + attachSignup (if attribution.ref);
+    billing.ts subscription_created → convertReferral(org) (idempotent);
+    lib/billing.ts orgCanGoLive → effectiveSlots = paidCloneSlots + countCompedSlots.
+  - MONEY DEFN: reward = "free clone-month" = +1 COMPED clone slot for 30d honored by
+    the live gate. CONVERSION = the referred org's FIRST paid subscription (NOT signup).
+    Both sides granted on conversion. Self-referral + attribute-once guarded.
+  - CAVEAT: BILLING_GATE_ENFORCED=false today → comped slots inert until the gate is on
+    (ledger + math correct and code-verified). FE ?ref= capture is M1 (Loop A) work.
+  - RECEIPT: 14/14 backbone assertions pass in-container; GET/POST endpoints live;
+    ref link = https://afterhuman.../?ref=CODE&utm_source=referral&utm_medium=… [#/signup].
+- [x] M1 Send-to-Ava | [x] M2 Clone-your-team | [x] M3 Brag-a-clip -- ALL DEPLOYED to prod (bundle index-CF0fosdc.js): components/ReferralShare.tsx (ava-inline + team-card in Readiness.tsx, clip-brag in Debrief.tsx), ?ref/ref_loop/ref_wow capture in public/attribution.ts, invited-by banner + reward copy in PublicAuth.tsx. VERIFIED 2026-07-20: user-facing strings in served bundle, /api/referrals/me 200, referrals+reward_grants tables live (0 rows), 2 orgs have ref_code.
+  [ ] M4 dashboard + reward-redemption UI + nurture emails -- NOT built.
+  REWARD STILL DORMANT: BILLING_GATE_ENFORCED=false => comped slots inert AND conversion (first PAID sub) impossible until the gate flips; loops are visible but nothing flows through (0 referrals/grants). Flip PLG live WITH billing.
+  HYGIENE FLAG (2026-07-20): ReferralShare.tsx is git-UNTRACKED and attribution/Readiness/Debrief are modified-uncommitted -- they are in the live bundle but at cross-session clobber risk; commit them (RehearsalRoom-saga rule).
+
+## 2026-07-19 — Super-admin FULL audit + fixes (every panel + action)
+
+Systematic audit of every super-admin FE call → route existence, reachability (app-gate vs guard), response-shape match, and mutation wiring. Backups: `apps/bff/src/routes/superadmin.ts.bak`, `apps/web/src/superadmin/panels.tsx.bak`. Both deploys gated on 0 active calls; bff boot verified ("Server listening", no errors); web `tsc --noEmit` passed.
+
+**Curl guard-distinction proven (unauth, no sa_session):** app gate = `{"error":"unauthorized","reason":"no session"}` (e.g. `/api/agents`); requireSuperadmin reached = `{"error":"super-admin authorization required"}` (all allowlisted non-superadmin routes); superadmin plugin's own gate reached = `{"error":"no session"}` (all `/api/superadmin/*`). NOTE: no sa creds (IP+password bound), so I verified requests REACH the guard, not 200s.
+
+**Reachability: all GREEN.** Every superadmin FE endpoint reaches its guard; none bounced by the app gate. The allowlist added earlier today (usage, usage/kill-switch, usage/:org/billing, admin/*, metrics/summary, status/incidents) covers all non-`/api/superadmin` calls. `/api/superadmin/*` are bypassed by the app gate and self-guard via the plugin onRequest (IP+session).
+
+**NEW BUG FIXED — dead action (same class as the Enter-org stub):** the global "Emergency stop" button (SuperAdmin.tsx) POSTed `/api/superadmin/emergency-stop`, which DID NOT EXIST (→ 404, silent no-op behind a `catch`). Added the route in superadmin.ts (after calls/:id/kill): ends EVERY live call across all orgs (same authoritative-row mechanism as calls/:id/kill — mark ended + endCall(), reaper tears sandboxes down; no direct e2b), then engages the global spend kill-switch (`setKillSwitch(true, ...)`), reason-required, audited (`platform.emergency_stop`, meta.endedCalls). Boot-verified + curl-verified reachable. NOT trigger-tested (destructive; no sa creds) — Eylon should confirm semantics on first use.
+
+**Response-shape mismatches FIXED (panels rendered blank/stale — BFF keys/fields differ from the permissive FE contract). All fixed FE-side in panels.tsx (no bff risk), mapping real backend fields (no fabrication):**
+- FLEET: FE read `data.calls`; BFF returns `{fleet:[...]}` with `health` enum + `dur` seconds + `status`=phase → panel ALWAYS showed "No live calls" and KPI counts were 0. Now maps `fleet`, `health`(enum→bar%), `dur`(secs→m:ss), and uses the health enum for the status pill + KPI counts.
+- QUALITY/readiness: FE read `data.readiness[].score`; BFF returns `{clones:[{verify,redteam,certified}]}` → always "No clones in calibration". Now maps `clones`, `score = verify ?? redteam`.
+- QUALITY/reports: rows had blank titles — BFF `call_reports` rows have `reason`/`reporter`/`severity`, not `title`/`meta`. Now `title=reason`, `meta=reporter · severity`.
+- CONFIG: FE read flat `data.certThreshold/...`; BFF wraps in `{config:{...}}` and stores flags as `featureFlags` map → panel never showed saved values (always defaults). Now reads `data.config`, maps `featureFlags`→flags array. (Minor residual: BFF default `modelTier="standard"`/`authMode="password"` don't match the FE select option values — cosmetic; save path already works.)
+- AUDIT: FE read `data.entries[].time/.actor`; BFF returns `{audit:[{created_at,actor_user_id}]}` → always "No audit entries yet". Now maps `audit`, `time=fmt(created_at)`, `actor=actor_user_id`.
+- ORGS: FE read `o.suspended` (bool); BFF returns `status` → suspend/restore toggle mislabelled for already-suspended orgs. Now derives `suspended = status==='suspended'`, `domain = slug`.
+
+**Verdicts per surface:** Fleet FIXED · Orgs(list/enter/suspend/create) OK, suspend-label FIXED · Cost&metering OK (toggles/kill-switch/breaker work + reachable — the earlier allowlist fix holds) · Quality FIXED · Billing OK (kpis+rateCard shapes already matched) · Config FIXED · Audit FIXED · global kill-switch OK · emergency-stop FIXED(new route) · login OK.
+
+**NEEDS-DECISION / not changed (cosmetic or product):**
+- Cost panel KPI tiles + per-org "Adjust cap": `/api/usage` returns `{window,topOrgs,...}` not `{kpis,rows}`, so KPI tiles show "pending backend" placeholders and the per-org usage table is empty; the "Adjust cap" button has NO onClick (POST /api/usage/:orgId/billing exists + is reachable but is unwired). Needs a product call on which spend KPIs to surface + wiring the cap editor.
+- Orgs cosmetic fields (plan/seats/usage%/health) render blank — BFF orgs SELECT omits plan/seats (columns exist). Non-functional; enrich later if desired.
+- emergency-stop semantics (kill-switch + end-all-calls) implemented minimally; confirm on first real use.
+
+## TERMS ACCEPTANCE GATE (2026-07-19, Eylon) — every user must approve the T&C
+Eylon supplied a T&C doc and required that EVERY user approve it. The consent vehicle
+per the 2026-07-18 launch decision (#2 AI disclosure: no creation checkbox, "T&C carries it").
+- **SHIPPED + VERIFIED 2026-07-19** (bff + web rebuilt; bundle index-BYOUQrl3.js).
+  - db/migrations/004_tos.sql: `tos_acceptances` (append-only proof: user_id, org_id, doc,
+    version, accepted_at, ip, user_agent; unique(user,doc,version)=idempotent).
+  - lib/legal.ts: `TOS_VERSION="2026-07-19"` (BUMP to force global re-acceptance, §18),
+    hasAcceptedTos / recordTosAcceptance. routes/legal.ts (authed): GET /api/legal/tos
+    {version,accepted,authenticated}, POST /api/legal/tos/accept. No-user (access-code/demo)
+    → accepted:true so the operator/demo is never nagged.
+  - SIGNUP GATE: auth.ts signup now REQUIRES `tosAccepted===true` (400 code=tos_required
+    otherwise) and records acceptance (ip+ua). RECEIPT: signup w/o tos → 400; w/ tos → 201 +
+    tos_acceptances row written.
+  - FE: PublicAuth.tsx = required checkbox ("I have read and agree to … Terms & Conditions
+    and Privacy Policy", links open /site#/terms|#/privacy) gating BOTH the Create-account and
+    Google buttons (disabled+dimmed until checked); passive "by creating an account…" line removed.
+  - FE existing-user GATE: components/TosGate.tsx = blocking non-dismissable overlay mounted at
+    the App root (both PDS + AppShell returns); on load GET /api/legal/tos, if authenticated &&
+    !accepted → forces "I agree" (POST accept) or log-out. Catches pre-existing users + version bumps.
+- **OPEN — CONTENT RECONCILIATION (Eylon's call).** The gate points at the EXISTING #/terms page
+  (PublicLegal.tsx TERMS[]), NOT Eylon's supplied draft, on purpose: his draft
+  (~/Downloads/after-human-terms-and-conditions.md) has [LEGAL ENTITY]/[JURISDICTION]/[DATE]/
+  [BILLING PROCESSOR] blanks + several "[To be completed with counsel]" sections, AND is MISSING
+  the launch-critical "right to automate your connected third-party accounts" representation that
+  the existing page already has (old §4). Decision needed: replace / keep / MERGE (recommended:
+  merge his structure + missing clauses into the product-accurate existing copy), then fill the
+  bracketed legal fields with counsel and BUMP TOS_VERSION to re-prompt everyone.
+
+## 2026-07-19 — Embodied clicks (cursor telegraph) in the demo bridge
+- FEATURE: before Ava clicks, a visible cursor glides to the target then clicks — makes her actions legible/human on the shared screen. Orb waveform (existing) stays for 'speaking' presence.
+- WHERE: duplexnav7.mjs OVERLAY injection (the #maya-orb overlay). Added #ah-cursor (pink dot + white border, CSS transition glide) + #ah-ring (expanding ripple) + window.__ahCursor(x,y) + window.__ahRing(x,y). LAW-18 safe (single-quote + concat, no backtick/${/backslash; node --check passes).
+- __ahClick(el): now scrollIntoView → __ahCursor(center) glide → setTimeout(fire,380ms) → ring + dispatch events. Returns true immediately (contract unchanged). vision_click coord path: __ahCursor(x,y) + asyncio.sleep(0.42) before Input dispatch, __ahRing after.
+- Tuning (my judgment, easy to change): 380ms glide, fires on EVERY __ahClick, cursor = brand-pink dot. cursor starts at viewport center on install so first glide isn't a corner-fly.
+- Bind-mounted (/root/ah-scripts) — no bff rebuild; recycled pool (bff restart) so fresh warms carry it. VERIFIED: fresh slot boots clean (BRIDGE UP, VOICE openai, SESSION_READY, no Traceback); generated /tmp/duplexnav7.py in-sandbox contains __ahCursor/__ahRing/ah-cursor. Backup: duplexnav7.mjs.pretelegraph.
+- NOT yet visually confirmed (the 380ms glide is best seen live) — pending a Talk-to-Ava run.
+- **MERGE DONE 2026-07-19** (Eylon chose merge): PublicLegal.tsx TERMS[] merged to 20 sections — kept product-accurate base (right-to-automate, readiness score, Lemon Squeezy MoR, AI disclosure) + ADDED from Eylons draft: clone-is-software (S2), NEW S6 clone outputs/no-binding-contract landmine, expanded acceptable-use (S7), calibration fee + taxes + 30-day price notice (S8), content-consent rep (S9), NEW S10 publicity/logo opt-out, NEW S12 confidentiality, NEW S19 general. Bundle index-7fZh2gdX.js verified. STILL PENDING COUNSEL: jurisdiction/courts placeholders (S18) + publicity opt-out UI control is described but not yet built; TOS_VERSION unchanged (2026-07-19, no acceptances yet) — BUMP after counsel finalizes.
+
+## HOTFIX 2026-07-20 — new signup orgs could not build a clone (extraction 502)
+SYMPTOM: real user (org_Sem0kmSBYSqp, agent ag_mrsa4p4r) got "Extraction failed: POST /api/clones/:id/persona/extract -> 502" in ~15ms (NOT a timeout).
+ROOT CAUSE: ai_providers rows exist ONLY for org_legacy; a fresh signup org has none. lib/providers.ts getActiveProvider(org) did a strict per-org lookup with NO fallback -> returned null -> chatJson/completeProviderChat null -> studio.ts:809 502 "check the AI provider". This broke EVERY LLM feature (extraction, TTS, callVision, coaching, playbook) for ALL new self-serve orgs, since they all resolve the model via getActiveProvider.
+FIX (deployed, bff rebuilt): getActiveProvider now falls back to the PLATFORM org (PLATFORM_ORG_ID, default org_legacy) active provider when the org has none. Customer own-provider still wins (no cross-tenant key spend beyond the platform default). The platform provides the model, COGS-metered — matches the self-serve/pricing model.
+RECEIPT: getActiveProvider(org_Sem0kmSBYSqp) -> OpenAI/gpt-5.5/key:yes; real extract for ag_mrsa4p4r -> 200 in 55s, persona v1 created. nginx /api proxy_read_timeout=3600s so a 1-2min extract does not gateway-502.
+FOLLOW-UP (verify, not blocking): confirm the LIVE-call bridge key path also resolves for a new org (going live is gated behind readiness>=70 which needs extraction, now fixed).
+
+## 2026-07-20 — Demo now DRIVES THE PRODUCT (service-org auth) + cursor telegraph confirmed
+- BUG: Talk-to-Ava could talk but not drive the product — the E2B sandbox browser had no session, so /#/echo bounced to the marketing landing (password-mode app requires auth). rehearsal.mjs DID run generic_gate.mjs (line 89) but its one-shot injection wasn't sticking (origin/timing, churned by the demo-URL flip-flop).
+- FIX (duplexnav7.mjs): after CDP connects, if GENERIC + SVCORG + ACCESS, inject jv.access=BFF_API_KEY + jv.serviceorg=agent org via Page.addScriptToEvaluateOnNewDocument (guarded to BASE_ORIGIN, persists across loads) + nav origin→inject→nav BASE. Node passes AH_SVCORG (agents.org_id) + AH_ACCESS (process.env.BFF_API_KEY, len 20, inherited) into the launcher env. LAW-18 safe, node --check passes.
+- VERIFIED LIVE: fresh lease → boot log 'SVCAUTH ready svcorg=org_demo_northwind' → Ava navigated into the authed Command Center (Workforce roster: Ava Chen/Marcus/Hannah/Priya/Diego, Cloning Rules) — NOT marketing. Cursor telegraph (#ah-cursor pink dot) visible on the product screen.
+- Backup: duplexnav7.mjs.presvcauth. Demo URL is reverted to afterhuman.srv1797540.hstgr.cloud/#/echo (clean-domain in-demo URL deferred — needs the injection origin to match).
+- LIVE-BRIDGE KEY PATH VERIFIED (2026-07-20): NOT blocked for new orgs. duplexnav7.mjs sources keys GLOBALLY (no org filter): OPENAI = SELECT api_key FROM ai_providers WHERE active=true LIMIT 1 (line 7); e2b = integrations WHERE id=e2b (line 6); EL = integrations WHERE id=elevenlabs (line 45). Only org_legacy has an active provider, so every org gets the platform OpenAI key + global e2b/EL keys -> a new signup can build->certify->go-live end to end. Consistent with getActiveProvider platform fallback (platform provides the model).
+  LATENT (not blocking, no customer BYO provider exists yet): the bridge OPENAI query is un-scoped + has NO ORDER BY; once a CUSTOMER org sets its OWN active provider, LIMIT 1 could pick the wrong tenant key for a live call. HARDEN before BYO-key customers: scope to the call agent org (AH_AGENT_ID->org) else platform, mirroring getActiveProvider (same for the EL integration key). Careful bridge edit (law 4).
+
+## HOTFIX 2026-07-20 (part 2) — new orgs: "ElevenLabs not connected" in the Voice wizard step
+SAME class as the extraction 502: platform-provided integrations were read ORG-SCOPED with no fallback. getIntegrationValues(org,id) (routes/integrations.ts) returned null for a new org that had not connected ElevenLabs -> /api/voice/status connected:false, /api/voice/options {voices:[],connected:false}, clone-voice 400 -> wizard step 4 showed "ElevenLabs is not connected" + no voices.
+FIX (deployed): getIntegrationValues now falls back to the PLATFORM org (config.legacyOrgId) for a WHITELIST of platform-infra ids = {e2b, elevenlabs} ONLY. Customer-owned connectors (notetaker/slack/gmail/...) never fall back. Customer BYO key still wins. Fixes voice list + clone-voice + TTS for every new org in one place.
+RECEIPT: getIntegrationValues(new org, elevenlabs|e2b) -> platform key; notetaker -> null (correct). Live: /api/voice/status connected:true elevenlabs; /api/voice/options 29 voices for org_Sem0kmSBYSqp.
+LATENT (not blocking, pre-BYO-key): (a) voice.ts voiceCache is MODULE-scoped (not per-org) -> once orgs bring their own EL key it leaks voices across tenants; key the cache by org/apiKey. (b) purge.ts:128 revokes cloned EL voices via the org-scoped EL key -> a new-org voice cloned under the PLATFORM key would not be revoked on purge; revoke via the platform key when the voice was created under it. Both fine today (all orgs use the platform EL key).
+
+## PLATFORM-READ SWEEP (2026-07-20) — result: clone-creation critical path fully covered
+Audited every credential/config read that a NEW self-serve org touches. ALL of them now route through the two fixed resolvers or are intentionally platform-scoped:
+- getActiveProvider (ai_providers) -> platform fallback [FIXED]. Callers: studio extract, coach, live coverage judge, tts, callVision, workstation, call.ts, present. aicore.ts CRUD is CORRECTLY org-scoped (managing own providers; empty is fine). system.ts is a count display only.
+- getIntegrationValues (integrations) -> platform fallback for WHITELIST {e2b, elevenlabs} [FIXED]. Covers: voice/status+options, fathom clone-voice, voicechat ConvAI Talk (self-provisions its agent under the platform EL key), tts, workstation e2b. live.ts/demoPool read e2b platform-scoped already.
+- Customer-OWNED connectors correctly DO NOT fall back: notetaker, crm, slack, gmail, google_calendar, notion, stripe, demo. Verified notetaker returns null for a new org.
+RESIDUAL (both OFF the clone critical path):
+  1. recall (Recall.ai meeting bot) — present.ts + meetings.ts read getIntegrationValues(org,recall) with NO fallback. Same class (platform infra), but LEGACY ops-console (Meetings/Presenter, being split out) — self-serve users do not reach it. DECISION (cost): add recall to PLATFORM_INTEGRATIONS so new orgs share the platform Recall account, OR leave (do not offer Meetings/Presenter to self-serve). Not a blocker.
+  2. purge.ts:128 revokes cloned EL voices via the org-scoped EL key -> a new-org voice cloned under the PLATFORM key is not revoked on org delete. Data-governance hardening (revoke via the platform key when the voice was created under it).
+CONCLUSION: no remaining blockers for a new org to build->calibrate->certify->go-live. The two residuals are non-blocking + off-path.
+- CORRECTION (2026-07-20, Eylon): recall is NOT a product dependency — DO NOT whitelist. The clone joins via E2B + NATIVE Zoom client (call_up.mjs installs zoom_amd64.deb + joins; duplexnav7 drives it). Recall.ai is legacy Meetings/Presenter only (ops console being split out), connected solely on org_legacy as leftover. live.ts recall mentions are COMMENTS (auth-exemption naming), not code paths. Recall item CLOSED. Only real residual left = purge.ts EL-voice revoke (deletion-time governance, not a launch blocker).
+
+## HOTFIX 2026-07-20 (part 3) — purge EL-voice revoke gap CLOSED (last residual)
+GAP: purge revoked cloned EL voices via the ORG-scoped EL key (orgElevenKey) -> a new-org voice cloned under the PLATFORM key was never revoked on delete (biometric retained); and using the platform key naively would risk deleting a library/platform voice the org merely SELECTED.
+FIX (deployed, bff rebuilt): OWNERSHIP LEDGER. db/migrations/005_cloned_voices.sql = cloned_voices(org_id, agent_id, voice_id, via_org). Both creators (fathom.ts clone-voice + voice.ts clone-sample) now record each voice WE create + via_org (the key-org that made it, from new getIntegrationSource). purge.ts revokes ONLY ledger voices, each via getIntegrationValues(via_org) — never a selected/library voice. cloned_voices added to TENANT_TABLES (purgeOrg) + purgeAgent delete loop. orgVoiceIds/orgElevenKey removed.
+RECEIPT: getIntegrationSource(new org,elevenlabs)->viaOrg org_legacy+key; purgeOrg test: external.voices = EXACTLY the 1 ledger voice, selected voice never scanned, ledger purged with org. All modules tsx-clean.
+RESIDUAL (minor, noted): pre-ledger voices on org_legacy/demo are not in cloned_voices (no backfill) — those orgs are force-guarded/special; new orgs are fully covered going forward. voice.ts voiceCache still module-scoped (pre-BYO-key).
+=> ALL platform-read + data-governance residuals from the 2026-07-20 sweep are now CLOSED.
+
+## VOICE PICKER ISOLATION + SAMPLE HANDLING (2026-07-20, Eylon)
+1. PICKER ISOLATION [FIXED, bff]. Bug: self-serve orgs share ONE platform ElevenLabs account (via getIntegrationValues fallback), so GET /v1/voices returned EVERY orgs cloned voices in the wizard step-4 picker. Fix: /api/voice/options now, when on the SHARED platform key (src.viaOrg!=org), shows ONLY premade template voices + THIS orgs own clones (cloned_voices ledger); on the orgs OWN key, shows all (its account). Also fixed the module-scoped voiceCache -> now a Map keyed by apiKey (per-account) + org filter applied per-request (the cache itself was a cross-tenant leak). RECEIPT: new org -> 21 premade, 0 other-org custom; legacy (own key) -> 30 incl its 9 custom.
+2. ERASE CLEAN SAMPLE. Finding: the backend NEVER stores the recorded sample (clone-sample = memory-only -> uploaded to EL -> discarded; no files/DB/disk write). The ONLY retention is ElevenLabs, which keeps the sample AS the instant-clone voice. TESTED: deleting the sample from an IVC voice BREAKS it (TTS 400 "contains no samples") — so we CANNOT delete the EL sample without destroying the clone. It IS purged when the org/clone is deleted (voice DELETE cascades its samples — see purge fix part 3). Browser: setSampleBlob(null) already cleared the blob on success; ADDED recChunks.current=[] so the raw recording is fully released from browser memory after cloning. Net: we retain nothing; EL retains it as the required voice model, purged on deletion. Stronger erasure would need Professional Voice Cloning (deletable post-training) — heavier, deferred.
+
+## 2026-07-20 — Pitch-me-now (no-notetaker cloning) — SHIPPED end-to-end
+- WHY: 'clone from calls' assumed everyone has recordings. Pitch-me-now: the user PITCHES, Ava plays a skeptical prospect, and the transcript feeds the EXISTING extraction to draft a clone. No links/uploads.
+- BACKEND: new route apps/bff/src/routes/mockcall.ts → POST /api/mockcall/reply (stateless prospect role-play over completeProviderChat; scripted-buyer fallback; body {history,repName,product}; returns {reply,done,turns}). Registered in index.ts. Reuses studio.ts path for the clone: POST /api/agents → /api/clones/:id/sources (kind default, >200 chars) → /api/clones/:id/persona/extract (PersonaSpec + auto-draft CallPlaybook, works on ONE transcript). cloneCalls.ts is the WRONG path (4-transcript floor, no persona).
+- FRONTEND: apps/web/src/screens/MockCall.tsx (view id 'mockcall'; registered App.tsx switch + PDS_VIEWS + AppShell ViewId). FirstRun.tsx third card 'No recordings? Pitch me'. Chat UI: intro (name/product) → live turns via /reply → 'Build my clone' orchestrates create+source+extract → nav('readiness'). Text chat; voice is a later layer over Talk-to-Ava.
+- VERIFIED LIVE (browser, service-org auth into org_legacy): screen renders, Ava opens in-character using the rep name, multi-turn realistic objections (named Clari/Gong/Salesforce unprompted), turn counter + build gating work, web tsc+build pass. Earlier API proof produced a real draft clone 'Jordan Blake (pitch-me demo)' in org_legacy (persona: 20 signature phrases, 8 objection few-shots, sliders; 7-stage playbook).
+- FOLLOW-UP: extraction sys-prompt is GoPerfect/'Eli'-hardcoded — clear rep labeling works, but a mock-call variant would be cleaner; company name defaults to the org's (showed 'GoPerfect' facts in org_legacy). Voice pitch (reuse Talk-to-Ava loop w/ prospect persona) is the next layer. Test clone ag_mrsb520k can be deleted.
+
+## 2026-07-20 — Pitch-me-now VOICE version — SHIPPED
+- MockCall.tsx now voice-capable: mic→text via useSpeech hook (../hooks/useSpeech, Web Speech STT; supported+secure gated, text fallback), Ava's replies spoken via POST /api/voice/speak (routes/voice.ts; {text}→MP3 blob; server resolves voice, EL turbo → OpenAI TTS fallback; auth via X-API-Key/getAccessKey). Mic PAUSED during playback (echo), resumed on audio ended. Barge-in: new rep turn cuts Ava (audio.pause + speechSynthesis.cancel). Intro auto-detects voice: 'Start the call' + mic UI when supported, else 'Start the pitch' text. Composer: mic toggle + voice-status strip (Listening/interim/Ava speaking/Mic paused). Build-clone path unchanged.
+- VERIFIED LIVE (service-org auth, org_legacy has EL voice 7RlY4AeWZEyb…): voice intro renders; Start → mic engages (device blocked in headless pane only) + prospect opener SPOKEN (ttsCalls/audioPlays incremented per turn, 2/2); replies dynamic+in-character (Salesforce/Clari objections). /api/voice/speak returns 200 audio/mpeg ~59KB via ElevenLabs. web tsc+build pass.
+- LIMITS: browser STT is Chromium+HTTPS only (Safari/Firefox → text fallback, handled). Full VAD barge-in (cut Ava mid-word while rep talks over her) not ported — v1 uses mic-pause + new-turn-cut; RehearsalRoom.startVadGuard is the upgrade path. Voice input not literally mic-tested (no mic in headless pane; useSpeech is proven infra from RehearsalRoom).
+
+## PLG LOOPS — VISIBLE LAYER SHIPPED (2026-07-20, web)
+One reusable components/ReferralShare.tsx drives all 3 loops (loop=ava|team|clip, variant=card|inline|brag), reward-forward ("give a colleague a free clone-month, get one yourself"), rides GET /api/referrals/me + POST /api/referrals/share. Mounts: Readiness LIVE hub = team card (ready-agent hub); Readiness BUILDING (score>0) = ava inline (watched-your-clone wow); Debrief = clip brag (after live call). Recipient: public/attribution.ts FIELDS += ref/ref_loop/ref_wow (captures ?ref= -> signup attribution -> backbone attachSignup); PublicAuth.tsx shows a reward-forward INVITED banner when ?ref present (captureAttribution in a mount effect so it renders reliably). VERIFIED in-browser: invited banner renders on /site?ref=CODE#/auth. Authed ReferralShare mounts are code-verified + in bundle; in-app eyeball is Eylons (login gate). Actions: Copy link / Email (mailto) / LinkedIn (share-offsite), each attributed via utm_medium. NOTE: share links carry ref_loop+utm_medium but not ref_wow (minor analytics gap). REMAINING (optional): TalkToAva post-call ANONYMOUS share (top-of-funnel spread, sharer not logged in -> no reward) — the one placement not yet built.
+
+## 2026-07-20 — Demo Ava reworked: discovery-first + never-go-silent (Eylon call feedback)
+- FEEDBACK: latest Talk-to-Ava demo felt bad — delayed responses + Ava didn't do discovery / find root cause / brainstorm.
+- ROOT CAUSE (both in the golden persona): (1) Behavior Rule 1 EXPLICITLY forbade discovery ('No long discovery — guided product tour, start driving within your first couple of lines') + Rule 2 locked a fixed 4-beat tour. (2) Latency was mostly DEAD AIR — the say→click→read_screen→speak loop + 'one holding line then silence' meant Ava went quiet while acting; reads as lag.
+- FIX (settings demo_host_golden + agents.golden_instructions for ag_demo_ava, via rework_golden.mjs, 5 verified string edits, 24294→25423 chars): Rule 1 → discovery-first (60-90s of real questions, listen, reflect root problem, name gaps, THEN share screen). Rule 2 → guided path is a BACKBONE, tailor to their problem, tie every screen to what they said. Rule 3 → NARRATE CONTINUOUSLY, never go silent, talk through loads/reads (perceived-latency fix). Rule 4 → be a CONSULTANT: react, push back, brainstorm WITH them.
+- Direction confirmed by Eylon: discovery-first w/ tour as backbone; persona anti-dead-air first, measure real latency later.
+- Deployed: closed a stale phantom live_call (lc_mrsbl1xj, agent standby 1h) that blocked the gate, recycled pool. VERIFIED: fresh slot's /tmp/ah_instr.txt contains DISCOVER FIRST + NEVER GO SILENT + be a CONSULTANT; clean GENERIC boot.
+- NEXT if still slow after test: measure real turn latency (say→audio) on a live call, optimize read_screen serialization / realtime turn-taking.
+
+## DEBRIEF "CALL RECORDING" (2026-07-20, Eylon) — replay+transcript now, audio next
+Gap: no recording link on the Debrief/Insights page. Reality: no video ever captured; a finished call leaves a transcript (live_call source) + a FILM REVIEW (keyframes+narration, already on the page lower down) + LIVE audio (room_audio.raw in the sandbox, thrown away on teardown).
+PHASE 1 SHIPPED (web, Debrief.tsx): a "Call recording" card at the TOP of the debrief (after summary stats): keyframe preview strip (first 10 film shots), "Replay the call" (openMoment(0) + smooth-scroll to the existing Film review via filmRef), "Transcript" toggle (built from film.moments guest+clone lines), "Audio replay is coming soon" note. Reuses film/shotUrls/openMoment; no new endpoint. Bundle index-BLbefRsj.js verified. Empty state when no film.
+PHASE 2 (audio, next): before sandbox teardown in live.ts end, d.files.read /tmp/room_audio.raw (s16le PCM, already captured live.ts:325) -> ffmpeg (in bff) to mp3 -> persist (files/disk) -> audio player on the card + Download. CHECK: confirm the capture device (vspk/zout.monitor) is the FULL call mix (clone + guest), not just the clone; else also capture the inbound leg.
+
+## 2026-07-20 — Ava demo: latency measured + 3 more fixes (Eylon 2nd call feedback)
+- LATENCY MEASURED (measure_latency.mjs, live call): time from /say → first audible vspk audio = 2914ms (first substantive turn) / 966ms (follow-up). Server turn is ~1-3s (OpenAI realtime). The rest of perceived 'huge delay' = FE pipeline: audio loop polled every 500ms live / 1500ms idle + 120ms lookahead, PLUS browser SpeechRecognition waiting for trailing silence (~1-1.5s) before /say fires.
+- FE TRIM (TalkToAva.tsx audio loop): idle poll 1500→350ms (catch her FIRST word fast), live poll 500→180ms (tighter stream). Deployed. Does NOT touch the 1-3s server turn or Web-Speech finalization — those need an architecture change (native streaming voice / ElevenLabs ConvAI, no SpeechRecognition→text→/say hop) to hit sub-second.
+- PERSONA #2 (golden +628 chars, rework_golden2.mjs): step-one 'fill in BOTH name and role, confirm before advancing'; new Rule 8 'COMPLETE EACH STEP + KNOW THE NO-RECORDINGS PATH' — when prospect has no recordings/note-taker, Ava proactively offers the pitch-me-now path (pitch her live, clone builds from the mock call). (The step-two inline edit self-skipped on a prefix false-match; Rule 8 covers it.)
+- VERIFIED: fresh slot /tmp/ah_instr.txt has DISCOVER FIRST + NEVER GO SILENT + COMPLETE EACH STEP + 'fill in BOTH the name' + 'pitch YOU right now'. Pool ready=2.
+
+## DEBRIEF CALL RECORDING — PHASE 2 (AUDIO) SHIPPED 2026-07-20
+Full-call audio recording, persisted + played on the Debrief card.
+- AUDIO GRAPH FINDING: vspk.monitor = CLONE voice only; zout.monitor = GUEST/Zoom-incoming. room_audio.raw (vspk, on-demand) was clone-only. FIX = capture the FULL MIX.
+- PIPELINE (call_up.mjs + call_wake.mjs): after audio setup, load module-null-sink recmix + 2x module-loopback (vspk.monitor + zout.monitor -> recmix), then background pacat --record recmix.monitor -> /tmp/call_mix.raw for the whole call. All || true / best-effort. Added ffmpeg to the call_up apt install. (call_wake = standby path, currently INACTIVE: no standby.txt; ffmpeg-in-standby-body is a follow-up if pre-warm is enabled.)
+- TEARDOWN (live.ts end, before d.kill, best-effort): ffmpeg -f s16le -ar 24000 -ac 1 -i /tmp/call_mix.raw -q:a 6 /tmp/call.mp3 IN the sandbox -> d.files.read -> writeFileSync ${AH}/shots/${sourceId}/call.mp3 (next to the film).
+- SERVE: GET /api/sources/:sourceId/recording (audio/mpeg) + timeline response now carries recording:boolean. FE Debrief: fetches the mp3 as an auth blob (X-API-Key, like shots) -> <audio controls> hero on the Call recording card + Download; falls back to "Audio replay is coming soon" when absent.
+- VERIFIED: ffmpeg encode of s16le PCM -> valid mp3; scripts node --check; live.ts transpile; endpoint 404 (route live); player in bundle index-DzLICzQ8.js. bff+web deployed, no live call disturbed.
+- NOT YET LIVE-CONFIRMED (needs ONE real Zoom call): that the recmix loopback capture + teardown encode actually yield a full-mix mp3 on a real sandbox. Built defensively so failure is graceful (no mp3 -> coming-soon note; never blocks the call/teardown). CHECK on first live call: /tmp/call_mix.raw grows, call.mp3 persists, both voices audible.
+
+## 2026-07-20 — Ava stall fix: follow-through safety net (announced action, no tool)
+- BUG: Ava said 'let me show you my screen' then went silent + waited for the guest. Root cause: duplexnav7 response.done only continues the turn when had_fc (a function_call) is present; if she SPEAKS an intent-to-act with no tool call → TURN_END → waits.
+- FIX (duplexnav7.mjs response.done else-block + follow_tries[0] state): capture her spoken text (said); if no tool call AND said matches an action-intent (show you / pull up / share my screen / take you to / let me navigate / …) AND not step_mode AND follow_tries<2 → inject a system nudge ('you said you'd show X but called no tool — DO IT NOW: goto/click/read_screen, then narrate; don't wait') + create_response(starts_turn). Capped at 2 so a genuine question/handoff still ends the turn. Resets on any real tool call.
+- LAW-18 safe (hyphens not em-dashes, no backtick/${/backslash), node --check passes. Deployed (bind-mount) + pool recycled; fresh slot boots clean (BRIDGE UP, SESSION_READY) with FOLLOW-THROUGH in /tmp/duplexnav7.py.
+- LIVE TEST: asked 'show me the product' → she TOOLCALL goto → dashboard → SAY 'let me take you straight in' → read_screen. Drove the screen, no stall. (Nudge itself not observed firing since she acted on her own; it's the backstop.)
+
+## 2026-07-20 — Ava opens the call herself (proactive greet)
+- BUG: at the start of a demo call Ava waited for the guest to speak first instead of opening. ROOT CAUSE: rehearsal.mjs launches the demo bridge with 'nogreet' (correct for rehearsal, where the human drives) → duplexnav7 greeted=[True] → the whole auto-greet/disclosure block is skipped.
+- FIX (proactive-greet trigger, race-safe): new nudge kind 'greet' in duplexnav7 nudges() (guarded by greet_done[0]) fires ONE opening turn: greet in identity + one AI disclosure + one discovery question, regardless of nogreet. bff: demoPool.greetTo(sessionId) writes {kind:'greet'} to nudges.jsonl; route POST /api/demo/:id/greet (live-gated). FE TalkToAva.tsx: greetedRef fires /greet ~700ms after the audio loop goes live (loop has set its offset, so her opener is never missed).
+- Files: duplexnav7.mjs, apps/bff/src/lib/demoPool.ts, apps/bff/src/routes/demo.ts, apps/web/src/public/TalkToAva.tsx. node --check + web tsc pass, bff boots clean.
+- VERIFIED: leased a demo, POST /greet, sent NO /say → NUDGE greet logged + audible opener audio at 2881ms. She opens on her own.
+
+## 2026-07-20 — No-recordings path pivoted: pitch-me-now → AUTO-DRAFT (Eylon decision)
+- DECISION: replace the live mock-pitch with auto-generate; ground on role + company only (no website research).
+- BACKEND: POST /api/mockcall/generate {name, role, company} → LLM (completeProviderChat, discovery-first structured prompt) → realistic ~2-3k-char labelled transcript. FE then runs the existing create-agent → sources → persona/extract path. (Old /api/mockcall/reply left dormant, not deleted.)
+- FE: apps/web/src/screens/MockCall.tsx REWRITTEN to the auto-draft form (name/role/company → 'Draft my clone' → building → readiness); chat/voice/useSpeech removed. FirstRun.tsx PATH-C card → 'No recordings? Draft one' (auto_awesome). web tsc+build pass; screen renders.
+- DEMO PERSONA (golden rework #3): rule 8 no-recordings offer changed from 'pitch YOU live' to 'give role + what you sell, we DRAFT a sample call in a few seconds and build a starter clone; then rehearse/refine or add real calls'.
+- STEP-ONE COMPLETENESS (Eylon pt 1): persona rule 'fill in BOTH name and role, confirm before advancing' (from rework #2) stands; the draft form collects name+role+company (all fields).
+- VERIFIED: /generate for 'AE · customer-support automation platform' → discovery-first 5350-char transcript ('Before I show you anything, can I ask a couple questions…') → extracted persona (warm/consultative + real signature phrases). Draft clone created. Positioned as a synthetic STARTER to refine (honesty).
+
+## 2026-07-20 — Ava demo: she no longer waits for the guest to speak first (robust proactive open)
+- SYMPTOM (Eylon, recurring): Talk-to-Ava sat silent until he spoke; the FE greet nudge rode a 2s poll and could be silently dropped.
+- ROOT CAUSES in /root/ah-scripts/duplexnav7.mjs (bind-mounted to jarvis-new-bff-1:/app/ah, NO rebuild needed): (1) nudges() polled /tmp/nudges.jsonl every 2s; (2) create_response() drops the instructions payload when a response is already active (server-VAD race), so the greet became a contentless turn; (3) single-shot, no retry if the turn never produced audio.
+- FIX: added fire_open() = robust opener that cancels any stray active response then sends response.create DIRECTLY (bypasses the drop). greet nudge handler now calls fire_open() + arms open_watchdog() (re-fires up to 2x, 4.5s apart, only if spoke[0] still False). spoke[0] set in set_speaking(True). nudges poll 2s to 0.4s. Gated by AH_AUTOGREET, passed from Node only when AGENT_ID is ag_demo_ava (demo only; rehearsal untouched). Watchdog armed by the CONNECT event (greet nudge), never at warm-pool boot, so it cannot burn the opener on an empty slot.
+- NOT a boot-time auto-greet: warm slots idle silent; opener fires on lease/connect.
+- VERIFIED end-to-end (leased a live demo, fired greet, polled transcript): first turn at ~t+4s with NO user input: "Hi there, this is Ava, your AI teammate. What would you like to explore today" (greet + AI disclosure + one discovery question). node --check + py_compile clean; LAW-18 clean; bff restarted (live count 0) to recycle the warm pool; Server listening confirmed.
+
+## IN-APP NOTIFICATION CENTER SHIPPED (2026-07-20, Eylon) — first channel; keeps + daily digest
+Decided: build in-app FIRST (Slack + email layer later); ship the ~10 keeps + the daily digest; DROP approval-before-send (contradicts full-autonomy at 70); defer per-call + dedicated-inbox. Grounding: NO email provider is wired (cannot send email today); alerts.ts has Slack+webhook (operator-only); org_notifications existed (super-admin transparency) -> extended into the center.
+- BACKBONE: 006_notifications.sql extends org_notifications (+title/href/severity/icon). lib/notify.ts = notify() + notifyOnce(org,dedupeKind,...) (once-ever/period) + listNotifications + markRead, ALL best-effort (never breaks caller). routes/notifications.ts: GET /api/notifications {notifications,unread}, POST /api/notifications/read {id|all}. RECEIPT: 2 written (dup notifyOnce suppressed), unread 2->1->0 via markRead.
+- EVENTS WIRED: studio.ts autoRescore -> clone_certified (notifyOnce per agent when gates 7/7); reports.ts -> call_reported; live.ts end -> call_bailed + first_live_call (notifyOnce per agent); billing.ts -> went_paid (subscription_created) + payment_failed (NEW subscription_payment_failed case).
+- DAILY DIGEST: lib/digest.ts runDailyDigest() = per-org last-24h live calls + open reports -> one notification/org/day (notifyOnce daily_digest:<date>). Scheduled in index.ts: hourly setInterval, fires at UTC hour==14 (unref).
+- BELL UI: components/PdsNav.tsx = notifications bell + unread badge on EVERY hub; dropdown (severity icon tiles, title/body/relative-time, unread dot), Mark all read, click -> markRead + nav to href. 45s poll for the badge. Bundle index-CUFbr1tC.js.
+- DEFERRED (need hooks): ready_to_rehearse (pipeline-done), stalled_below_70, weekly_summary. NEXT CHANNELS: Slack (per-org; alerts.ts plumbing) then email (needs a provider: Resend/Postmark) for the critical few (payment_failed, certified, weekly). In-app eyeball is Eylons (login gate); API+backbone proven.
+
+## 2026-07-20 — Demo wizard: voice-library hang + fill-all-fields + proactive extraction (Eylon's 3 screenshots)
+- (1) VOICE LIBRARY STUCK ON "Loading..." (step 4): ROOT CAUSE = demo seed (demoTenant.ts) planted a FAKE elevenlabs key ("demo-elevenlabs-key", connected:true) on org_demo_northwind, which shadowed the platform key in getIntegrationSource -> ElevenLabs 401 -> {voices:[], connected:true, error}. FE (CloneARep.tsx) only showed an error when !connected, so connected:true + empty voices spun forever.
+  - FIX A (data): demoTenant.ts elevenlabs seed -> ["elevenlabs", {}, false, "using platform voice library"] so the demo org falls back to the platform EL key (org_legacy) and the library populates (21 voices). Also ran a one-off DB UPDATE integrations SET connected=false for the current northwind row.
+  - FIX B (FE, protects real self-serve users too): CloneARep voice-options handler now ALWAYS resolves the loading state - surfaces a friendly "continue with account default" message on !connected, on error, or on empty voices. No more infinite spinner.
+- (2) "she needs to fill ALL fields" on step 1: golden rework #4 - Identity line now says fill EVERY field shown (full name, role, company, team, time zone), not just name+role; Rule 8 adds it too.
+- (3) "on Extract she waits for me to say go ahead": golden rework #4 - added DRIVE PROACTIVELY (she clicks Extract/Create/Continue herself, never asks permission for her own demo steps, pauses only for the prospect's questions) + extraction line now "I'll run it right now rather than wait". Golden 26163 -> 26760; mirrored to agents.golden_instructions (ag_demo_ava).
+- DEPLOY: docker compose build web bff (tsc gate passed) + up -d; bff Healthy + Server listening; /app/ah bind-mount intact (auto-greet bridge preserved, AH_AUTOGREET present). Verified: demo /api/voice/options -> 21 voices @200; golden has all 3 new rules; E2E lease -> Ava still opens proactively at t+4s ("Hi there, this is Ava, your AI teammate. What would you like to explore or see today?").
+- DEFERRED EVENTS WIRED 2026-07-20: (1) ready_to_rehearse — pipeline.ts runPipeline done -> notify(clone built + readiness score, href readiness). (2) stalled_below_70 — studio.ts autoRescore: when gates NOT 7/7 AND the agent has >=2 rehearsal runs (live_calls mode=rehearsal) -> notifyOnce stalled (nudge to add a stronger source call / coach). Both best-effort; smoke-tested; bff redeployed. Notification-center event set now complete for launch (certified, reported, bailed, first-call, went-paid, payment-failed, ready-to-rehearse, stalled, daily-digest).
+
+## EMAIL PROVIDER WIRED (2026-07-20, Eylon) — Resend; inert until keyed
+The platform can now SEND transactional email (previously NO provider existed). Platform infra, env-configured (not per-org).
+- config.ts email:{ apiKey RESEND_API_KEY, from EMAIL_FROM, appUrl APP_PUBLIC_URL }. compose passes RESEND_API_KEY/EMAIL_FROM/APP_PUBLIC_URL (all empty default -> INERT).
+- lib/email.ts: sendEmail() -> Resend HTTP API (POST api.resend.com/emails; the ONLY provider touchpoint, swap here for Postmark/SES). emailConfigured() gate. renderNotificationEmail() = branded email-safe HTML (tables+inline, system fonts): dark #04042A header, severity accent bar, pink CTA, footer. Never throws.
+- lib/notify.ts: NotifyInput +email?:boolean +ctaLabel?. notify() fans out to email when email:true AND emailConfigured() — resolves the org OWNER email (memberships role=owner JOIN users) -> renders -> sendEmail. Fire-and-forget. notifyOnce dedupe covers email too (only first fires).
+- EMAIL-ENABLED events (re-engagement + billing + wow): went_paid, payment_failed, clone_certified, stalled_below_70, ready_to_rehearse, first_live_call. In-app-only: call_reported, call_bailed, daily_digest (add email flag if wanted).
+- RECEIPT: emailConfigured()=false w/o key; template renders (1833B, CTA+header); modules smoke-clean; bff healthy; RESEND_API_KEY env passthrough present.
+- OPS TO ACTIVATE (Eylon): 1) Resend account; 2) verify a sending domain (DNS SPF/DKIM); 3) set RESEND_API_KEY + EMAIL_FROM (e.g. AfterHuman <notifications@after-human.com>) + APP_PUBLIC_URL (prod app URL for CTA links) in host env; 4) docker compose up -d bff. NEXT: weekly-summary email job; per-user unsubscribe/prefs (footer promises settings — not built).
+- EMAIL KEYED + LIVE 2026-07-20: RESEND_API_KEY (send-only key) set in /root/jarvis-new/.env (chmod 600 — NOT in this map/logs); EMAIL_FROM=AfterHuman <notifications@after-human.com>; APP_PUBLIC_URL=https://afterhuman.srv1797540.hstgr.cloud. emailConfigured()=true after bff redeploy. Direct-API test delivered to the account owner eylon@after-human.com (onboarding@resend.dev sender, id eab6a2fa). REMAINING GATE (Eylon): verify after-human.com in Resend (add SPF/DKIM DNS) — until then platform sends FROM notifications@after-human.com 403 (best-effort; in-app notifications unaffected). Then all 6 email events flow with zero further config. HYGIENE: rotate the key (pasted in chat).
+
+## 2026-07-20 — "I have to repeat everything to Ava" — root causes + fixes (Talk-to-Ava mic)
+- SYMPTOM: guest must repeat most utterances before Ava reacts.
+- ROOT CAUSE A (FE, dominant): TalkToAva.tsx ran HALF-DUPLEX - it STOPPED the SpeechRecognition recognizer whenever Ava was voicing and only restarted it REACTIVELY when your barge-in was detected. SpeechRecognition has startup lag, so the opening of every barge-in utterance was lost; plus a 1200ms dead window right after Ava stopped where nothing captured you; plus fragile stop/start swaps that could error the recognizer dead (onerror was a no-op).
+- ROOT CAUSE B (bridge): a guest turn never cancelled Ava's in-flight SERVER response - barge-in only muted LOCAL audio - so your words queued behind the tail of her old (muted) turn and she felt unresponsive.
+- FIX A (apps/web/src/public/TalkToAva.tsx, FULL-DUPLEX): recognizer now runs CONTINUOUSLY while mic is on (never stopped for Ava). The echo-cancelled getUserMedia analyser runs continuously too as the source of truth for "you are speaking": it (1) does instant barge-in (stopPlayback), (2) stamps userSpokeAtRef. onresult is GATED - a phrase is only sent to /say if the cancelled analyser heard YOU in the last 2.5s (drops Ava's speaker echo bleeding into the raw recognizer mic), and ungated if the analyser isn't available (no regression for no-mic-permission). Removed the recognizer onspeechstart barge (would let Ava cut herself off now that it runs during her speech). Removed the audio-loop stop/start swap. Net: never misses the start of your turn, no dead window, echo-safe on laptop speakers.
+- FIX B (/root/ah-scripts/duplexnav7.mjs guest handler, bind-mounted): on a guest turn, if a response is active -> response.cancel + clear active/pending + 0.2s, THEN create the user item + respond. She stops and answers you immediately (mirrors the fire_open barge pattern).
+- DEPLOY: web rebuilt (tsc gate passed) + up -d; bff restarted (no live calls) to recycle the pool onto the new bridge; Server listening confirmed; bridge has BARGE-IN (grep=1). VERIFIED via harness: guest turn still answered (no regression) - "That is exactly the problem we solve...". CAVEAT: the mic-capture path itself can't be tested headlessly (browser pane blocks the microphone) - FE fix validated by the type-check + logic; needs a real-mic run to confirm the "repeat" symptom is gone.
+- EMAIL_FROM set to onboarding@resend.dev (2026-07-20, Eylons call) — platform email path VERIFIED end-to-end (emailConfigured true; platform sendEmail -> true; branded template delivered to owner eylon@after-human.com). CAVEAT: onboarding@resend.dev ONLY delivers to the Resend account owner (eylon@after-human.com) — customer/other-recipient emails 403 until a real domain is verified. TO GO LIVE FOR CUSTOMERS: verify the sending domain in Resend (updates.after-human.com pending) then switch EMAIL_FROM back to notifications@<verified domain>. Dual-spelling verify poll still running to auto-detect.
+
+## 2026-07-20 — "It says I'm in the queue, won't let me in" — E2B sandbox leak exhausted the cap
+- SYMPTOM: Talk-to-Ava stuck "in the queue"; pool showed ready:0 warming:2 for 150s+ (slots never became ready).
+- ROOT CAUSE: E2B RateLimitError "maximum number of concurrent E2B sandboxes (20)". rehearsal.mjs creates sandboxes with timeoutMs=55min. Each bff restart/crash ORPHANED its warm sandboxes (in-memory slot tracking lost; the SIGTERM hook called app.close() but never tore down the pool, and killSlot fired its kill fire-and-forget so nothing awaited it). My ~7 deploy restarts today stacked ~18 orphans -> hit the 20 cap -> new warm slots couldn't create -> pool never ready -> every session queued forever. The FE queue->live promotion logic is fine; it just never got a ready slot.
+- IMMEDIATE FIX: manual reap of 18+ leaked sandboxes (Sandbox.list + static Sandbox.kill with the org_legacy e2b_ key). Pool warmed to 2/2.
+- DURABLE FIX (apps/bff/src/lib/demoPool.ts): reapUntracked() runs at pool START (before refill) - lists all E2B sandboxes and kills any NOT referenced by a live/connecting/queued demo_session or an active (ended_at IS NULL) live_call. SAFE: only reaps untracked orphans, never a live call's sandbox. Self-heals after restarts AND crashes. Also added drainDemoPool() to the SIGTERM hook (index.ts) as belt-and-suspenders (though reap-on-boot is the reliable guard).
+- DEPLOY: docker compose build bff + up -d; Server listening; boot log "reapUntracked: 4 alive, kept 0, killed 4 orphan(s)". PROVEN no-leak: E2B sandbox count stayed at 2 across a graceful restart (was climbing 2->4 before the fix). Pool 2/2 ready.
+- OPS NOTE: the account cap is 20 concurrent E2B sandboxes; each demo/rehearsal sandbox has a 55-min timeout. Avoid rapid repeated bff restarts; reap-on-boot now bounds accumulation to the live set + pool target.
+
+## 2026-07-20 — "let me share my screen" but screen already shared -> REVEAL ON CUE
+- SYMPTOM: Ava said "let me share my screen" while the demo panel was already showing the product. Cause: "share my screen" is a Zoom-ism baked into the golden (distilled from real Zoom calls); the Talk-to-Ava panel is always embedded. AND the branded curtain that should hide the product until reveal was NOT going up.
+- ROOT CAUSE of missing curtain (duplexnav7.mjs ~588): curtain gate was `if _u0 == BASE or about:` - after the demo's service-auth the SPA settles on a sub-route (not exactly BASE), so the gate missed and the product showed from the start.
+- FIX (bridge, bind-mounted, new leases): (1) curtain gate now also raises for GENERIC (the public demo is always a fresh boot, never a mid-call revive) - verified "CURTAIN up (overlay)" now logs. (2) curtain lifts on her FIRST real tool action (added an idempotent ah-curtain remove at the top of the function_call dispatch, in addition to the existing lift inside cdp_nav) - so whatever her first move is (goto/click/etc.), the product reveals exactly then.
+- FIX (golden rework #5, DB, live next lease): retired all "share my screen"/"share your screen" phrasings -> reveal cues that pair with the lift: signature phrase + situation line -> "Let me pull it up and walk you through it."; Rule 1 -> "ONLY THEN bring up the product on screen". Residual share-screen phrases: none. Golden 26760 -> 26777.
+- NET: panel sits on the branded After Human curtain through her discovery questions, then lifts the instant she says "let me pull it up" and acts - the words are now true and it reinforces discovery-first.
+- DEPLOY/VERIFY: bridge pushed (node --check + py_compile + LAW-18 clean); bff restarted to recycle pool onto new bridge+golden (reap-on-boot killed 2 orphans, no leak); Server listening; "CURTAIN up (overlay)" confirmed in a leased session log; clean E2E lease -> Ava opens proactively at t+4s. Pool 2/2 ready.
+
+## 2026-07-20 — "Ava unable to go live, lack of capacity" = per-IP RATE LIMIT, not real capacity
+- ROOT CAUSE: NOT E2B/pool capacity (pool was 2/2 ready). Eylons IP (79.177.143.242) hit DEMO_PER_IP_HOUR (was 5 starts/IP/hour) from repeated testing -> /api/demo/start returned 429 -> TalkToAva.tsx catch showed the generic "Ava is at capacity right now" for ANY start error, masking the real (rate-limit) reason.
+- FIX 1 (caps, .env + docker-compose bff env): DEMO_PER_IP_HOUR 5 -> 25, DEMO_PER_IP_ACTIVE 1 -> 2 (sane launch values; still abuse-protective). Verified: start from Eylons IP now returns status:ready (was 429).
+- FIX 2 (TalkToAva.tsx UX): demoFetch now carries HTTP status + backend {error,code}; start() catch distinguishes 429 ip_active ("you already have a demo open in another tab") and 429 ip_hour ("you have reached the demo limit for now, try again in a few minutes") from a real capacity/endpoint error. A rate-limited prospect no longer thinks the product is overloaded.
+- DEPLOY: web rebuilt (tsc gate) + up -d web; bff up -d (new caps env); Server listening; reap-on-boot clean; pool 2/2 ready.
+- TUNABLE: DEMO_PER_IP_HOUR / DEMO_PER_IP_ACTIVE in .env.
+
+## 2026-07-20 — Cost & metering (superadmin /api/usage) STILL bounced to login — REAL fix + root cause
+
+The 2026-07-19 "Cost & metering FIXED" entry was WRONG for the browser: it only moved the 401 from the app gate to requireSuperadmin and "verified" via curl, which IGNORES cookie Path and can send server secrets — so it MASKED the real bug. In a real logged-in browser the panel still bounced to login.
+
+TWO-LAYER ROOT CAUSE (there are TWO separate superadmin auth systems):
+1. `/api/usage` (+ /kill-switch, /:orgId/billing), `/api/metrics/summary`, `/api/status/incidents` guard with `requireSuperadmin` -> `isSuperadmin()`, which ONLY accepts the `SUPERADMIN_API_KEY` header/bearer (server-to-server). The browser can NEVER hold that secret; the SA FE's stored token is the literal placeholder "session" -> bearer!==SA_KEY -> 401 -> saApi bounces to SA login. The panels that WORK (Fleet/Orgs/Billing/Audit) live under /api/superadmin and auth via the sa_session COOKIE + the plugin onRequest gate.
+2. The sa_session cookie was `Path=/api/superadmin`, so the browser never even SENT it to /api/usage (curl masked this).
+3. In password mode the global app gate 401s any !authed request before requireSuperadmin runs; the 2026-07-19 allowlist meant to let these through was NEVER committed and got lost (the untracked-file clobber risk, again).
+
+FIX (2026-07-20, deployed + git-committed on deploy):
+- `lib/superadmin.ts`: requireSuperadmin now passes on isSuperadmin(header key) OR a valid sa_session cookie (readSaCookie + SELECT FROM superadmin_sessions WHERE token=$1 AND revoked_at IS NULL AND expires_at>now()). Header/cron path preserved.
+- `routes/superadmin.ts`: sa_session cookie Path `/api/superadmin` -> `/` (HttpOnly + SameSite=Strict + Secure kept) so the browser sends it to /api/usage. OPERATORS MUST RE-LOGIN ONCE to mint the new-path cookie (the natural bounce->login flow self-heals it).
+- `index.ts`: app-gate allowlist for the requireSuperadmin routes OUTSIDE /api/superadmin, enumerated EXACTLY: GET /api/usage, POST /api/usage/kill-switch, POST /api/usage/:orgId/billing, GET /api/metrics/summary, POST /api/status/incidents, PATCH /api/status/incidents/:id. DELIBERATELY EXCLUDED (stay under the app gate — need app-session org context): per-tenant /api/admin/reset + DELETE /api/admin/org/:id, and per-org GET /api/usage/:orgId.
+
+VERIFIED (no SA password; minted a temp superadmin_sessions row, deleted after): A) GET /api/usage w/ sa_session cookie -> 200 real data; B) no creds -> 401 "super-admin authorization required" (reaches the guard, still protected); C) X-Superadmin-Key header -> 200 (cron path intact); D) POST /api/usage/kill-switch w/ cookie -> 200 {ok}; E) GET /api/usage/:orgId -> 401 app-gate "no session" (correctly NOT over-allowlisted). Backups: apps/bff/src/{lib/superadmin,routes/superadmin,index}.ts.bak-satcost.
+
+DEPLOY NOTE: the bff app source is BAKED into the image (compose mounts only /root/ah-scripts:/app/ah) — a source edit needs `docker compose build bff` THEN `up -d --no-deps bff`; a plain `up -d bff` reuses the OLD image. (deploy-bff-gated.sh only does `up` — build first.)
+
+LESSON: verifying a browser-auth fix with curl is INVALID — curl ignores cookie Path and can present server secrets a browser can't. FOLLOW-UP: the security.ts /api/admin/* guarded routes (lockdown / incident-scan / security config) still accept ONLY the header key and are NOT app-gate-allowlisted -> same latent bug if ever driven from the browser; and Cost-panel KPI tiles + "Adjust cap" wiring remain (shape mismatch noted 2026-07-19).
+
+## 2026-07-20 — Curtain UX: wrong logo -> centered Ava waveform that glides to bottom-right on reveal
+- FEEDBACK (Eylon): before screen-share the panel showed the wrong logo ("perfect"/GoPerfect); it should show the Ava waveform CENTERED, and once she starts sharing the waveform should move to the bottom-right.
+- DESIGN: FE now owns the pre-share curtain (was relying on the sandbox-side "perfect" curtain). One Ava orb: centered+large during discovery, glides to the bottom-right self-view the instant she reveals the product.
+- SIGNAL (reveal-on-cue, cross-boundary): bridge writes /tmp/ah_revealed on her FIRST real tool action (duplexnav7.mjs, next to the curtain-lift). Backend demoPool.revealedFor(sessionId) does a cheap `test -f /tmp/ah_revealed`; /api/demo/:id/status now returns `revealed`. FE polls it (sticky true), resets on (re)start.
+- FE (TalkToAva.tsx LiveView): branded After Human backdrop (radial #14143f->#05052c + "Live demo · with Ava") over the iframe while !revealed, fades out on reveal; the Ava orb container transitions left/top/width/height/transform (.7s) from center(168px, translate -50%,-50%) to bottom-right(92px, calc(100%-12px), translate -100%,-100%); AvaOrb 120->64; chrome label "Ava is live" -> "Ava is sharing" on reveal. No "perfect" logo anywhere in the FE curtain.
+- VERIFIED (data): E2E lease -> during discovery revealed=false (curtain stays up); guest asks to see product -> she acts -> revealed=true at ~t+6s (curtain lifts, orb glides). tsc gate passed for web+bff. Bridge node --check + py_compile clean. NOTE: the visual glide itself can't be checked headlessly (browser pane blocks the E2B origin) - verified by the signal + FE logic; needs a real-eyes pass.
+- DEPLOY: web+bff rebuilt + up -d; Server listening; reap-on-boot clean; pool auto-refills.
+
+## 2026-07-20 — Demo polish: one-sentence intake, keep-driving between beats, echo-gate no longer drops guest speech
+- #1 (golden #6): identity step now asks for ALL fields in ONE sentence (full name, company, role, time zone, team) - never one-at-a-time/back-and-forth - then fills + confirms briefly. Saves demo time.
+- #2 (golden #6b): added "KEEP DRIVING between steps" to Rule 3 - after finishing one screen she rolls straight into the next guided-path step and calls the next tool in the SAME turn; only pauses after SHE asked a real question. Fixes "explained the dashboard then waited" -> now goes straight into the wizard.
+- #3 ("she doesnt hear me"): ROOT CAUSE likely the echo-gate added with full-duplex - it dropped the guest transcript when the echo-cancelled VAD didnt cross threshold. FIX (TalkToAva.tsx onresult): gate now applies ONLY while Ava is voicing (streamSpeakingRef) - when she is silent, accept ALL recognizer results (no echo possible), so quiet speech is never dropped. Also loosened barge-in VAD 0.055 -> 0.045 and widened accept window to 3s.
+- DEPLOY: golden live in DB (settings + ag_demo_ava); web rebuilt (tsc) + up -d; bff recycled onto new golden; Server listening; reap-on-boot clean; pool re-warming. FE mic path still needs a real-mic pass (cannot test headlessly).
+
+## 2026-07-20 — Voice input inaccurate: Ava's own echo transcribed as the guest + garbled speech
+- EVIDENCE (live transcript): guest turn "yes I'm right here with you what's on your mind" was VERBATIM Ava's prior line -> her speaker audio was picked up by the browser SpeechRecognition mic and sent back as the guest, so she answered her own echo. Also real speech garbled ("John cement's role ... companies Google TV sales").
+- ROOT CAUSE: guest STT is the browser Web Speech API on the RAW system mic; on laptop speakers Ava's voice bleeds in. My prior echo-gate ("accept when Ava not voicing") let the echo through because the recognizer FINALIZES the captured echo a beat AFTER she stops (streamSpeakingRef already false -> accepted).
+- FIX (TalkToAva.tsx, band-aid): echo defense is now AUTHORITATIVE on the echo-cancelled sensing loop - accept a phrase ONLY if that cancelled-mic analyser heard YOU in the last 2.5s (Ava's echo is stripped by echo cancellation so it won't trip it). VAD threshold 0.045->0.03, hot>=3->2 so quiet real speech still registers and isn't dropped. web rebuilt + up -d (guest must RELOAD to get the new bundle).
+- REAL FIX (recommended, not yet built): stop using browser Web Speech entirely - stream the guest mic PCM into the sandbox's OpenAI realtime session (input_audio_buffer.append), which already has whisper-1 + server_vad. That gives provider-grade transcription, native barge-in, and no speaker-echo-as-input. Mirror of the existing audio-OUT pipeline in reverse (FE mic -> /api/demo/:id/mic -> sandbox -> bridge appends to realtime ws). Bigger build; the definitive answer to accuracy.
+- IMMEDIATE user-side mitigation: headphones eliminate the speaker->mic echo entirely.
+
+## 2026-07-20 — REAL FIX: guest voice -> OpenAI realtime (retire browser Web Speech STT)
+- WHY: browser Web Speech mis-heard clear English AND transcribed Ava's own speaker echo back as the guest (she answered herself). Web Speech is a low-ceiling STT; echo + accents break it.
+- ARCHITECTURE: the bridge already fed guest audio to realtime via send_audio -> input_audio_buffer.append (that's how the Zoom demo works, capturing zout.monitor). The web demo just had no audio in that capture. Now the browser streams the guest's ECHO-CANCELLED mic PCM to the bff; the in-sandbox bridge PULLS it and appends to the realtime session. Whisper (server-side, input_audio_transcription) + server_vad handle transcription + turn-taking natively. Echo-cancelled source => Ava's voice is never sent back to her.
+- FE (TalkToAva.tsx): startVadGuard now also runs a ScriptProcessor on the echo-cancelled 24kHz stream -> Float32->PCM16->base64 -> POST /api/demo/:id/mic (~6/s). Web Speech (SpeechRecognition/startRecog/onresult/echo-gate) REMOVED entirely; text box kept as fallback; local barge-in (stopPlayback on VAD) kept.
+- BFF: demoPool pushMic/pullMic - in-memory ring buffer per sandboxId (6s cap, trims on pull). Routes: POST /api/demo/:sessionId/mic (FE push, maps session->sandbox via slotForSession), GET /api/demo/mic-pull/:sandboxId (bridge pull, cursored).
+- BRIDGE (duplexnav7.mjs): AH_MIC_PULL + AH_SANDBOX(=SID) envs (set when AGENT_ID===ag_demo_ava). send_audio MIC_PULL branch: poll BASE_ORIGIN/api/demo/mic-pull/<SID>?after=N via urllib -> input_audio_buffer.append. Skips the zout.monitor capture in this mode. LAW-18 clean; node --check + py_compile OK.
+- VERIFIED: web+bff tsc gate passed; deployed; reap-on-boot clean; leased a session -> POST /mic {ok:true} -> bridge log "MIC_PULL on sandbox=<id>" (pulling). Real-speech->transcription accuracy needs a real-mic pass (cannot test headlessly), but STT is now OpenAI Whisper, not browser.
+- GUEST MUST RELOAD Talk-to-Ava to get the new FE. Headphones no longer required (echo-cancelled + server-side), still nice.
+
+## 2026-07-20 — Regression fix: Ava waits instead of opening -> SERVER-DRIVEN proactive open
+- SYMPTOM: after the realtime-mic change, Ava waited for the guest to speak instead of opening.
+- ROOT CAUSE: the proactive open depended on a SINGLE FE POST /api/demo/:id/greet fired once at +700ms. If that one shot raced the lease (greetTo returns ok:false when the slot isn't "leased" yet / bridge not settled), she never opened - and the auto_open watchdog is armed by the greet nudge, so no nudge => no open. (Confirmed: greet at t=0 -> ok:false; at +900ms -> ok:true + opens.)
+- FIX (demo.ts): added server-side autoGreet(sessionId) - fires greetTo ~1.2s after a session goes live and RETRIES every 700ms (up to 10x) until the bridge accepts. Wired into BOTH lease paths (/start success + queued->live promotion). Bridge dedupes via greet_done, so the server greet + the FE greet can't double-open. Now the open never depends on one FE POST landing perfectly.
+- VERIFIED: leased a session and fired NO client greet -> she opened on her own at t+6s ("Hi there, this is Ava..."). bff tsc gate passed; deployed; reap-on-boot clean; pool re-warming.
+
+## 2026-07-20 — "she doesnt speak at all" = mic stream interrupting her (fix: gate mic to real speech)
+- DIAGNOSIS: server produces + records voiced audio (audio_test: 8589 voiced samples), and the FE playback loop runs (browser pane: she opened "Hey, this is Ava..." + /audio polls 200 with advancing offset). So output works with NO mic. The break appears only with the mic ON.
+- ROOT CAUSE: the new realtime-mic pipeline streamed the guest mic CONTINUOUSLY into input_audio_buffer. With server_vad interrupt_response:True, ambient noise / residual echo kept tripping speech-detection and INTERRUPTING Ava mid-utterance -> she never completed audio -> "doesnt speak at all."
+- FIX (TalkToAva.tsx): stream mic PCM to /mic ONLY while the echo-cancelled VAD says YOU are speaking (userSpokeAtRef within 1.2s) - with a 1-frame lead-in so the start isnt clipped and a ~1.2s tail so server_vad still sees trailing silence and closes the turn. Raised VAD gate 0.03/hot>=2 -> 0.045/hot>=3 so Avas residual echo cant falsely trigger a send. When you are silent, NOTHING is sent - is never interrupted.
+
+## 2026-07-20 — "she doesnt speak at all" = mic stream interrupting her (fix: gate mic to real speech)
+- DIAGNOSIS: server produces + records voiced audio (audio_test: 8589 voiced samples); FE playback loop runs (browser pane: she opened "Hey, this is Ava..." + /audio polls 200 with advancing offset). Output works with NO mic. Break appears only with mic ON.
+- ROOT CAUSE: the new realtime-mic pipeline streamed the guest mic CONTINUOUSLY into input_audio_buffer. With server_vad interrupt_response:True, ambient noise / residual echo kept tripping speech detection and INTERRUPTING Ava mid-utterance so she never completed audio.
+- FIX (TalkToAva.tsx): stream mic PCM to /mic ONLY while the echo-cancelled VAD says the guest is speaking (userSpokeAtRef within 1.2s), with a 1-frame lead-in and a ~1.2s tail so server_vad still sees trailing silence and closes the turn. Raised gate 0.03/hot>=2 to 0.045/hot>=3 so Ava's residual echo cannot falsely trigger a send. Silent guest => nothing sent => Ava never interrupted.
+- VERIFIED: web tsc gate passed; deployed. Server-driven open confirmed. Real-mic interruption needs a real-ear pass. RELOAD required for the new bundle.
+
+## 2026-07-20 — Browser-verified: Talk-to-Ava opens + PLAYS audio on a clean load
+- Drove the deployed page in a real browser. Clean single fresh load (query-before-hash to force a true reload): state LIVE, she opened on her own ("Hey there, I am Ava..."), and the FE scheduled 15 Web-Audio buffers in ~20s (patched AudioContext.prototype.createBufferSource to count) => audio IS playing, no autoplay gate shown.
+- The earlier "0 buffers / doesnt speak" readings were a TEST ARTIFACT: repeated Talk-again/Try-again + hash-only URL changes never remounted the SPA, so multiple overlapping sessions desynced sessionRef and the audio loop polled a dead session. Also confirmed server produces voiced audio (16817 voiced samples on a /say-triggered turn).
+- NET: pipeline healthy end-to-end - autoGreet open + realtime voice + FE playback. Real "doesnt speak" cause was the mic-continuous-stream interrupting her (fixed last turn: mic gated to actual speech).
+
+## 2026-07-20 — Raw golden editor (self-serve Ava tuning) in super-admin
+- WHY: stop the back-and-forth of me hand-editing the golden per request; give Eylon a direct editor.
+- BFF (superadmin.ts, sa-gated): GET /api/superadmin/demo-golden -> {text,agentId,orgId}; POST /api/superadmin/demo-golden {text} -> writes settings.demo_host_golden (org_legacy) + agents.golden_instructions (ag_demo_ava) + pushPersonaReload (hot-reloads a LIVE demo session). 200+ char guard.
+- FE (superadmin/SuperAdmin.tsx): new "Ava's brain" section (psychology icon) = full-height monospace textarea, Save+apply / Revert / char count / "Open Talk to Ava" link. Dirty-state highlight.
+- ACCESS: super-admin panel -> "Ava's brain". Edits apply to the next Talk-to-Ava lease and hot-reload any call in progress.
+- VERIFIED: web+bff tsc gate passed; deployed; route returns 401 without sa-token (registered + gated). Server listening.
+
+## 2026-07-20 — Talk-to-Ava "Ava cant hear the guest" = pool leased a DEAD sandbox (FIXED)
+Live-audited a real Ava call: guest mic POSTs arrived (POST /api/demo/:id/mic, ~2/s) but the bound sandbox NEVER pulled them (0 GET /api/demo/mic-pull/<sbx> in 120s) and e2b Sandbox.connect returned "Paused sandbox not found". Guest audio streamed into a paused/reaped sandbox -> Ava deaf + mute, while demo_sessions.status stayed 'live'. INTERMITTENT (some leases got a live sandbox) => the "used to work, now flaky" report.
+ROOT CAUSE (apps/bff/src/lib/demoPool.ts): a slot goes state='ready' on PHASE READY and stays ready in memory indefinitely; e2b pauses/reaps the idle sandbox (20-min cap + idle auto-pause), but lease() handed out slot.sandboxId with NO liveness check -> stale ready slot -> dead lease.
+FIX (commit 0577d80 on deploy; backup demoPool.ts.bak-poolfix):
+ - isSlotAlive(slot): connectSandbox + `echo ok` (6s timeout) -> false on any error.
+ - lease(): loops ready slots, evicts dead ones (killSlot), hands out ONLY a verified-alive sandbox; all-dead -> queued (FE warms).
+ - maintain() sweepReadyHealth(): every ~15s/slot, probe ready slots, evict dead -> refill; DOUBLES as a keepalive vs e2b idle-pause.
+ - maintain(): expire stale 'live' demo_sessions past expires_at (no more "live but dead" rows).
+VERIFIED: bff rebuilt (source is BAKED -> `compose build bff` then gated up, NOT plain up) + deploy-bff-gated.sh; "Server listening"; reapUntracked killed 2 orphans; pool warmed to ready=2 healthy (sweep evicts nothing = slots alive). Dead session ds_mrtocuieoqbnz5 ended manually.
+STILL OPEN (follow-ups):
+ (a) sandbox dying AFTER lease (mid-call) is NOT yet recovered -> ties to the error/recovery-states work (graceful bail + rebind + user-visible state).
+ (b) SEPARATE, secondary (not the dead-sandbox bug): client-side VAD send-gate in public/TalkToAva.tsx (`speaking = Date.now()-userSpokeAtRef < 1200`, ~170ms lookback) clips speech onsets -> mishearing ("clone myself people"); stacked client 1.2s tail + server_vad 700ms add latency; ScriptProcessorNode + fire-and-forget unordered mic POSTs degrade under load. See the 2026-07-20 mic-path brainstorm.
+ (c) demo transcripts NOT persisted (demo_sessions.transcript stays []) -> a call cannot be reviewed after the 6-min lease ends; the only transcript source is the sandbox bridge log, which dies with the sandbox. Reading it needs connectSandbox from /app (node_modules) with the real e2b_ key; helper at /root/read_sbx_log.mjs.
+NOTE: the demo pool is LIVE + PUBLIC (DEMO_POOL_ENABLED, multiple concurrent stranger sessions observed) on both www.after-human.com and the old srv domain.
+
+## 2026-07-21 — FIXES: type_text honesty (#1) + Sources sample-draft button (#2)
+From the live Ava-call audit.
+#1 type_text (duplexnav7.mjs type_text_js): the tool SET the field value correctly but its result reported nm(best) = the field PLACEHOLDER ('typed:e g goperfect'), not the typed value -> uninformative, defeated verify-after-act, drove confabulation ("All set: John Simmons at Google" while confirmations showed placeholders). FIX: read back the field ACTUAL value after setting; report 'typed ok field=<name> got=<value>' or 'typed MISMATCH ...'; async handler WARNS + says do-not-claim-success + retype on MISMATCH. LAW-18 safe. Deployed ah-scripts + /root mirror, container node --check OK. Backup duplexnav7.mjs.bak-typetext. NEW sessions only.
+#2 Sources step could not draft a sample (script promised it; /api/mockcall/generate + MockCall screen existed but were NOT wired into CloneARep -> she jumped to Extract on empty sources -> blocked + confabulated). FIX (CloneARep.tsx): new "Draft a sample call" button in Sources -> POST /api/mockcall/generate {name,role,company} -> pushes transcript into pending -> Extract passes its !sources.length gate. Web built (tsc) + deployed --no-deps; string in bundle. Ava GOLDEN updated in BOTH settings.demo_host_golden snapshot AND agents.golden_instructions (SAMPLE-CALL PATH: click Draft-a-sample -> confirm -> Extract; never Extract with 0 sources) so it survives lease resets. Backup CloneARep.tsx.bak-sample.
+VERIFY next call: type_text results show 'got=<real value>'; no-transcript path clicks Draft-a-sample then Extract. (ah-scripts is NOT git-tracked; .bak is rollback.)
+
+## 2026-07-21 — VERIFICATION (live call ds_mrtrg4u0nbkee6) + #2 completion
+#1 type_text: VERIFIED WORKING live — results now report the real value: "typed ok field=e g goperfect got=Google", got=John Simmons / Account Executive / Sales / America-Los Angeles. Confirms the tool always typed correctly; the bug was purely the placeholder-echo report. Honest now, no confabulation. (Leftover: first attempt still nofield's on the 'FULL NAME' LABEL — type_text matches by placeholder/aria-name, not the visible label above the field; she read_screen + self-recovers. Follow-up: match on nearby label text too.)
+#2 Draft-a-sample: the button shipped + Ava CLICKED it (golden update worked) + she HONESTLY reported the failure (no confab) — but POST /api/mockcall/generate returned 404: mockcall.ts defined mockcallRoutes but index.ts NEVER registered it (the standalone MockCall screen was dead too). FIX: registered import+await app.register(mockcallRoutes) in index.ts (commit + bff rebuilt/gated-deployed). VERIFIED: direct POST as org_demo_northwind -> 200, 5864-char transcript; getActiveProvider falls back to PLATFORM_ORG (org_legacy gpt-5.5) so the provider-less demo org works. Backup index.ts.bak-mockcall.
+HEARING: 0 DEAF ticks / 31 — pool fix + keepalive solid.
+STILL OPEN (unaddressed): front-loaded discovery (deflects even when guest pushes to just see it); a responsiveness gap (guest had to say "Are you there?"); nofield-first-attempt on labeled fields; whisper hallucination (earlier calls). NOTE: recorder IP allowlist now = {31.154.54.130, 79.177.143.242} (Eylon switches networks).
+
+## 2026-07-21 — Prompt change: LONG SERVER-SIDE WAITS (Eylon chose prompt over mechanism)
+Observed stall: on the extraction wait (~60s) Ava ended her turn ("we will let it complete") + went silent; guest had to prompt "what is now" / "you are in voice". NOTE: her golden ALREADY had "never go silent / keep driving between steps" (line 24) + "processing waits are normal" (line 116), and the bridge screen-watcher->create_response + watchdog exist — yet neither re-fired during the animated extraction loader (watchdog reads the animation as progress; screen events dedupe). Eylon chose to fix via PROMPT (not the watchdog). Added a specific LONG-WAIT rule to BOTH settings.demo_host_golden (snapshot) AND agents.golden_instructions (ag_demo_ava): stay in the same turn, read_screen->one short progress line->read_screen loop until the step changes, announce the new step BY NAME + act; banned: ending the turn / "I will update you" then silence / waiting for the guest to notice the step finished. New sessions only. UNVERIFIED — needs a live call hitting the extraction wait; if she still yields the turn, that is the model-not-obeying limit and the watchdog wait-aware fix is the fallback.
+
+## 2026-07-21 — CORRECTION: wait-stall fixed by EDITING existing golden lines (not an appended block)
+Reverted the appended "LONG SERVER-SIDE WAITS" block. Per Eylon: go line by line and change the actual instructions. Root of the stall was IN the prompt: line 116 (Ava-Chen ABSOLUTE RULES) told her to "ask one discovery question" during a processing wait, and line 24 (rule 3) says the ONE time she may pause is right after she asks a question -> those two combined = licensed the extraction park; line 150 coached "give it a moment" with no resume. In-place edits (agent + snapshot): 116 -> drop the ask-a-question fallback, add "KEEP RE-READING THE SCREEN until the step finishes, announce the next step by name, keep driving, do not hand back to the customer"; 150 -> after "giving it a moment" add "keep watching and continue the instant it is ready; never wait for the customer"; 24 -> add "a loading/building/extraction wait is NOT such a time: keep watching and continue when it finishes". New sessions only; UNVERIFIED live.
+
+## 2026-07-21 — Ava opener rewritten (Eylon, Option A) + posture flip to FRAME-THEN-SHOW
+New first line (set in all 3 spoken spots: signature phrases L15, HOW-YOU-RESPOND L45, Ava-Chen Beat-1 sample L124): "Hi, I am Ava, After Human AI teammate. This call itself is the demo - a live AI rep running the conversation and driving the product, the same way one of yours would. Let me show you the After Human platform and how you would build a digital workforce of your own." Rule 1 (L22) changed GREET-THEN-DISCOVER-FIRST -> FRAME-THEN-SHOW (frame what you are, go straight to showing, weave discovery in AS you demo; no up-front interrogation) — this is the fix for the recurring front-loaded "what is the demo bottleneck" complaint; that phrase removed from signatures + opening line ("demo bottleneck" now absent from golden). Applied to agents.golden_instructions AND settings.demo_host_golden (snapshot == agent, verified). Method: re-dumped current golden (preserving the L116/150/24 wait-fix), edited the 4 spots locally, pushed full text via dollar-quoted UPDATE + copied to snapshot. New sessions only; UNVERIFIED live.
+
+## 2026-07-20 — Billing & revenue: clickable KPIs + per-org drill-down table
+- ASK: clicking Paying/Active orgs KPIs should show the actual org list; page needed more to navigate.
+- BFF (/api/superadmin/billing): now returns per-org rows (id,name,plan,status,mrrCents,seats,signupAt,liveAt,churnedAt) sorted by MRR desc, plus KPIs MRR / Paying / Active / Live orgs.
+- FE (superadmin panels.tsx BillingPanel): 4 KPI tiles are now CLICKABLE -> filter the new per-org table (Org·Plan·Status·MRR·Seats·Signed-up) below; each row has an Enter-org action (reuses the impersonation confirm+redirect). "Clear filter" chip. Rate card kept below. types.ts: BillingResp gains orgs: BillingOrg[].
+- DEFERRED (data not captured yet, flagged not faked): MRR trend over time (needs historical snapshots), trials-ending / past-due payments (needs billing-provider webhooks). Current KPIs/orgs are all real from the orgs table.
+- DEPLOY: web+bff tsc gate passed (fixed a StateBlock missing-error-prop TS2741); deployed; Server listening; billing route 401-gated.
+
+## 2026-07-21 — ALL FIXES VERIFIED LIVE (call ds_mrtu3xu1zj7udt, 3:57, 0 DEAF)
+The opener needed a BRIDGE edit, not just the golden: the demo greet is fired by duplexnav7 _open (~L1777) + _greet_plain (~L1631), which HARD-CODED "greet + ask ONE discovery question", overriding the golden opener. Changed both to "deliver your OPENING FRAMING LINE from your instructions; do NOT ask a discovery question; go straight to showing." Deployed ah-scripts + /root mirror (node --check OK both), backup .bak-opener. New-boot only -> refreshed warm pool so fresh sandboxes pick up new bridge + golden (verified warm: greet=2 opener=3 olddisc=0 before the verify call). RACE NOTE: after any golden/bridge edit the warm pool must be refreshed AND you must lease a post-refresh sandbox; several verify calls failed because they leased pre-edit warm sandboxes.
+VERIFIED on ds_mrtu3xu1zj7udt: (1) OPENER=new framing, no discovery Q; (2) FRAME-THEN-SHOW straight to dashboard; (3) type_text got=Jamie Taylor/Northwind/Sales/America-New York (#1); (4) Draft-a-sample->5.1k added->Extract (#2); (5) WAIT-FIX: narrated through extraction, filled wait with a question, polled read_screen, AUTO-ADVANCED to Voice on her own (no "you are in voice" prompt); (6) voice pick Matilda. Leftovers (minor, self-recover): first type_text nofield on the FULL NAME label; occasional "and" filler.
+
+## 2026-07-21 — SHIPPED: "Calibrate the call we just had" + identity choice (Eylon)
+#1 CALIBRATE-THIS-CALL (replaces the slow GoPerfect rehearsal at Beat 3). Layers: (a) bff GET /api/demo/by-sandbox/:sandboxId/transcript -> demoPool.transcriptForSandbox (reads the bridge log SAY/GUEST); (b) bridge SVCAUTH now injects localStorage jv.democall=AH_SANDBOX so the in-sandbox app knows which call to render; (c) web screens/CalibrateCall.tsx (ViewId+route "calibratecall", in PDS_VIEWS) reads jv.democall, fetches the turns, renders Ava/you bubbles with thumbs-down -> coach box -> illustrative "version N+1" (NO host-golden write, NO sandbox boot -> instant, kills the "signing in to demo system" wait); (d) golden Beat 3 -> "goto #/calibratecall, narrate the meta (you just talked to me, here is that call), demonstrate coaching a line; do NOT open the live rehearsal". Design: meta-loop (coach Avas own lines from THIS call), illustrative fix, Ava demonstrates, Beat 4 live-drive stays distinct.
+#2 IDENTITY CHOICE (Option A) in golden: offer "real rep vs sample" in one line; if vague/you-decide -> IMMEDIATELY use sample + proceed (no second ask, no wait).
+DEPLOY: bff+web built (tsc clean) + deployed; bridge both copies node-check OK; golden agent+snapshot. Warm pool refreshed + VERIFIED fresh sandboxes carry golden_calibrate=2 golden_opener=3 bridge_democall=1 bridge_greet=2. Backups *.bak-cal. UNVERIFIED live (pending a call). Route reachable via goto arbitrary same-origin URL (generic bridge). Illustrative coach = safe; if real coaching ever wanted, wire thumbs-down -> /api/rehearsal/fix on a NON-host clone.
+
+## 2026-07-21 — SHIPPED: silence-engagement beat + calibration entry-path fix
+CALIBRATION ENTRY-PATH FIX (last round Ava clicked the wizard "Enter the Calibration Room" -> old RehearsalRoom -> GoPerfect drive, never #/calibratecall). Fix (CloneARep.tsx finish handler): nav(isDemoTenant ? "calibratecall" : "rehearsal") where isDemoTenant = localStorage jv.serviceorg===org_demo_northwind. Reliable regardless of Avas nav. Golden Beat-3 goto #/calibratecall kept as reinforcement. Web rebuilt+deployed (org_demo_northwind in bundle).
+SILENCE-ENGAGEMENT (Eylon idea; Q3=fire during processing waits too). Bridge duplexnav7 watchdog: on a benign lull (not active/muted/stepped/carded, turn_seq>=1, >7s since last TURN_END) fire ONE rotating reaction question about how they feel about an AI rep like Ava; capped 2/call, 120s cooldown, yields on guest speech (VAD->active), handles skepticism with disclosure/70-gate/control/handoff. Added last_turn_end ts (set at TURN_END) + ENGAGE_QS/MAX/IDLE. Golden unchanged (bridge instruction is self-contained). node --check OK both copies; deployed ah-scripts+/root. Backups .bak-engage.
+WARM-POOL GOTCHA: after bridge/golden edits, refresh the pool AND ensure NO stale warm sandbox lingers (one orphan with no session row survived 2 refreshes and had engage=0/golden_cal=0; killed it directly - lease() only rejects DEAD sandboxes, not alive-but-stale-code ones). Verified fresh warm: engage=1 framing=2 golden_cal=2. UNVERIFIED live (pending a call on a fresh sandbox).
+
+## 2026-07-21 — Whisper-as-silence fix + lease decision
+WHISPER FIX: quiet/whispered speech read as silence (and tripped the new silence-engagement). Root cause: client mic send-gate in public/TalkToAva.tsx required rms>0.045 (a loud bar) to count as speech -> whispers never sent. Fix: rms>0.045 -> rms>0.02 (client, web deployed) + server_vad threshold 0.6 -> 0.45 (bridge, both occurrences, fresh sandboxes). Backups .bak-vad. Trade-off: lower = catches whispers but more ambient-noise risk; 0.02 is the middle, can drop to 0.015 if still missed. noiseSuppression already on.
+LEASE DECISION (Eylon): do NOT bump DEMO_SESSION_SEC (360s/6min). The demo must FIT in 6 min, not get more time. Consequence: the full flow (opener->dashboard->wizard->sample->EXTRACTION WAIT->voice->demo-system->calibration) keeps getting cut off at calibration (dead last) by lease expiry - calibratecall never reached live yet in 3 attempts (last call ENDED at demo-system, one step away). The Calibrate-this-call feature REMOVES the calibration warmup (instant, no GoPerfect drive), so calibration itself no longer eats time; the remaining sink is the EXTRACTION wait (~1-2min). Real fix for "too long" = extraction/warmup LATENCY, not lease. calibratecall redirect (CloneARep demo-tenant nav) is deployed + reliable but UNVERIFIED live (timing).
+
+## 2026-07-21 — Demo skips Demo-system step (step 5)
+Motivation: every recent Ava demo (ds_mrtwsf31s2pu32 5:49, bpkfxiw8k) died narrating
+'now the demo system step' right at the 6-min lease — calibrate=0 every time. The built
+clone is never driven in the demo (Calibrate-this-call coaches the Ava conversation, not
+the built clone), so step 5 is pure waste + eats the clock.
+Change:
+- apps/web/src/screens/CloneARep.tsx next(): isDemoTenant computed at top of the finish
+  path; `if (step===4 && !isDemoTenant) setStep(5)`. In the demo tenant Voice(4) falls
+  straight through to finish -> nav('calibratecall'). Real tenants unchanged (still 4->5->6).
+  Backup: CloneARep.tsx.bak.step5.
+- Golden (both agents.golden_instructions AND settings.demo_host_golden.instructions,
+  patched via /root/golden_skip_step5.sql): removed 'Step five is the demo system...' and
+  the demo-system click-through beats (lines 59/136/138/141). After Voice she now says the
+  clone is saved and goes straight into the calibration room. 0 'Step five is the demo
+  system' hits remain in both.
+Golden reaches the sandbox via restoreDemoHostGolden() inside lease() (reads the snapshot at
+call-start, restamps agents) — so NO pool refresh needed for golden-only edits; next call
+picks it up. Web redeployed (tsc passed). Still-unverified-live after this: the calibration
+view itself + whether the demo now reaches it inside 6 min. The bigger remaining time sink is
+the real ~1-2min persona extraction, which in the demo is theatre (built clone unused) and
+could be stubbed to a few seconds.
+
+## 2026-07-21 — Adaptive (SNR) mic gate — fix over-sensitivity to breath/clicks
+The whisper fix (client gate 0.045->0.02, server_vad 0.6->0.45) over-corrected: a breath,
+a mouse/button click, or fan noise cleared the fixed 0.02 floor for ~48ms and opened the
+1.2s send window, flooding Ava's server_vad -> she interrupted herself / took phantom turns.
+Root cause = a FIXED absolute floor is wrong for any given room. Fix (apps/web/src/public/
+TalkToAva.tsx tick loop, backup TalkToAva.tsx.bak.vad): SNR-based gate — learn room ambient
+as an EMA over non-speech frames (noiseFloor), require rms > max(0.03, noiseFloor*2.8) for
+>=6 sustained frames (~100ms) before marking speech. Quiet room -> floor dominates, whispers
+still pass; noisy room -> bar rises with ambient, noise stops opening the mic; long sustain
+rejects transient clicks. Client-only (served by web, tcs passed, redeployed) — the client
+gate is the MASTER switch (proc.onaudioprocess only streams when userSpokeAtRef is fresh), so
+server_vad (still 0.45, baked in bridge) was left untouched; no pool refresh needed. Takes
+effect on the NEXT page load / new call, not a call already open.
+
+## 2026-07-21 — Hide Demo-system chip from stepper in demo (finish skip-step-5)
+Call ds_mrtxnm0ahefnx8 reached calibration (skip-step-5 + calibrate-this-call verified live
+for the first time), but Ava still SAID 'proceed to the demo system step' — she read the
+'5 Demo system' chip off the stepper (STEP_DEFS still rendered it). Fix (CloneARep.tsx):
+component-scope isDemoTenant const; stepper render now
+STEP_DEFS.filter(d => !(isDemoTenant && d.n===5)).map(...). Removed the duplicate inner
+isDemoTenant in next() (component-scope one covers it; next() only runs on click, after
+init). tsc passed, web redeployed. Now the demo stepper shows Identity/Sources/Extraction/
+Voice/Confirm only. (Hardcoded 'Step 4 of 5' headers left as-is — cosmetic, no demo-system
+mention.)
+
+## 2026-07-21 — SELF-ADVANCE ON SILENCE (the real fix for 'she waits for my voice')
+Root cause (from call ds_mrtxnm0ahefnx8): after a turn, Ava only auto-continued if she used a
+whitelisted phrase ('let me show you','pull up'); on any OTHER transition she called no tool,
+TURN_END'd, and WAITED. The only idle reflex that fired was the 7s lull-ENGAGEMENT *question*,
+and the stuck-recovery that pushes her forward doesn't arm until 45s. Net: during silence she
+sat waiting for the guest's voice to trigger her, and the system's reflex was to interview the
+guest, not advance.
+Fix (duplexnav7.mjs watchdog): new advance_watch() task — polls every 1s; when idle >2.5s past
+last_turn_end, not active/muted/step-gated/bailed, and the wizard is being driven (tool_n>0,
+turn_seq>=1), it sends a SYSTEM nudge 'the prospect is silent, do NOT wait, take the next action
+NOW' + create_response(starts_turn=True). 7s cooldown. Also raised ENGAGE_IDLE 7->25 so the
+lull-question can't fire during normal transitions (advance owns them now); hoisted  to
+shared scope so advance_watch can read it. Added advance_watch() to both asyncio.gather() calls.
+Embedded Python py_compile-OK (1971 lines). Bridge is baked at warm-boot (rehearsal.mjs:97 runs
+node /app/ah/duplexnav7.mjs), and /app/ah = bind-mount of /root/ah-scripts — so this needed a
+POOL REFRESH: restarted bff (bind-mount, no rebuild), reapUntracked killed the 2 old-bridge warm
+slots and re-warmed 2 fresh. Also synced the /root/duplexnav7.mjs mirror. Backup duplexnav7.mjs.bak.advance.
+Proof pending: next call's audit log should show 'ADVANCE nudge (silence -> keep driving)' lines
+and far fewer 'you are at step X / Go!' guest reactions.
+
+## 2026-07-21 — Unified Ava orb + classic arrow cursor (bridge overlay)
+Two overlays the bridge injects into the SANDBOX screen were fine-tuned (duplexnav7.mjs OVERLAY):
+1. Cursor: the pink CIRCLE (#ah-cursor) is now a classic pink ARROW (clip-path polygon + white
+   drop-shadow edge), same glide/transition. Applies everywhere.
+2. Waveform: retired the little maya bar-badge; #maya-orb is now the Ava GRADIENT ORB (matches
+   the frontend AvaOrb radial-gradient), showing the agent FIRST name (AGENT_NAME already =
+   row.name.split by space, injected as __ANAME__), with a breathe/speaking pulse. In the WEB
+   demo (MIC_PULL) the in-screen orb is hidden (frontend draws its own on top -> no duplicate
+   behind it); in rehearsal/raw view the in-screen Ava orb shows, agent-named -> same everywhere.
+Frontend untouched: TalkToAva AvaOrb stays 'Ava' (it IS the demo-host page); dynamic naming lives
+in the bridge orb which is what shows for cloned reps in rehearsal.
+Applied via /root/patch_orb_cursor.py (4 exact-match repls). Validated: embedded py_compile-OK,
+both new CSS lines have balanced single quotes (JS strings intact). Bridge baked at warm-boot ->
+gated bff restart re-warmed 2 fresh slots. Mirror /root/duplexnav7.mjs synced. Backup .bak.orb.
+STILL PENDING (user brainstorm, not yet built): cough/whisper false-interrupt recovery (interrupt_response
+cancels her line on any noise incl. cough; self-advance then skips ahead -> she must resume the cut-off
+line, optionally asking 'did you want to jump in?'); + gate self-advance right after she asks a direct
+question (call ds_mrtxnm0ahefnx8 'why didnt you wait'). Awaiting: ask-then-resume vs silent-resume.
+
+## 2026-07-21 — Cough/whisper false-interrupt recovery + advance-after-question gate
+Problem: interrupt_response:True cancels her line on ANY detected sound (incl. a cough/whisper);
+self-advance then skipped ahead -> content lost. Also call ds_mrtxnm0ahefnx8: advance fired right
+after she asked 'which do you prefer?' -> guest 'why didnt you wait'.
+Fix (duplexnav7.mjs, patch_interrupt.py, 5 edits): flags barge_at/resume_pending/last_was_q.
+- speech_started -> barge_at=now. response.done -> last_was_q = said endswith '?'.
+- transcription.completed: if barge within 5s AND transcript empty/junk (no real letters, or in a
+  small hallucination set: bye/cut/thanks/thank you/you/yeah/okay/hmm/uh/um) -> resume_pending=now.
+- advance_watch: if resume_pending recent(<15s) -> RESUME nudge ('ask: did you want to jump in? then
+  resume+finish the exact line, do not skip') instead of ADVANCE; if last_was_q and idle<7s -> wait
+  (give a real question time to be answered); else normal ADVANCE. User chose ASK (not silent resume).
+py_compile-OK (1998 lines). Gated bff restart re-warmed 2 fresh slots. Mirror synced. Backup .bak.interrupt.
+DONE this session (all live): skip-step-5, calibrate-this-call, self-advance-on-silence, adaptive mic
+gate, arrow cursor, unified agent-named Ava orb, false-interrupt recovery. Waveform/pointer thread CLOSED.

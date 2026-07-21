@@ -22,6 +22,23 @@ const bar = (pct: number, color: string, h = 7): React.ReactNode => (
   </div>
 );
 
+// Shape adapters — the BFF returns richer/differently-keyed payloads than the
+// permissive FE contract types; normalise here so every panel renders real data
+// (no fabrication — all values are derived from real backend fields).
+const fmtDur = (s: number | string): string => {
+  if (typeof s !== "number") return String(s ?? "");
+  const sec = Math.max(0, Math.round(s));
+  const m = Math.floor(sec / 60);
+  return m > 0 ? `${m}:${String(sec % 60).padStart(2, "0")}` : `${sec}s`;
+};
+const healthPct = (h: string | number): number =>
+  typeof h === "number" ? h : h === "healthy" ? 100 : h === "stalling" ? 60 : 20;
+const fmtTime = (iso?: string): string => {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? String(iso) : d.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+};
+
 async function mut(ctx: PanelCtx, path: string, body: unknown, okMsg: string, reload?: () => void): Promise<void> {
   try {
     await saApi.post(path, body);
@@ -35,7 +52,15 @@ async function mut(ctx: PanelCtx, path: string, body: unknown, okMsg: string, re
 // ─── 1. LIVE FLEET ──────────────────────────────────────────────────────────
 export function FleetPanel({ ctx }: { ctx: PanelCtx }) {
   const { data, loading, error, reload } = useSa<FleetResp>("/api/superadmin/fleet");
-  const calls = data?.calls ?? [];
+  // BFF returns { fleet: [{ health: enum, dur: seconds, status: phase }] }.
+  const rawCalls = ((data as any)?.calls ?? (data as any)?.fleet ?? []) as any[];
+  const calls: LiveCall[] = rawCalls.map((c) => ({
+    ...c,
+    health: healthPct(c.health),
+    dur: fmtDur(c.dur),
+    // The health enum drives both the pill (statusMeta) and the KPI counts.
+    status: ["healthy", "stalling", "bailing"].includes(c.health) ? c.health : (c.status ?? "healthy"),
+  }));
   const kpis: Kpi[] = useMemo(() => {
     if (data?.kpis?.length) return data.kpis;
     const n = (s: string) => calls.filter((c) => c.status === s).length;
@@ -105,14 +130,21 @@ export function FleetPanel({ ctx }: { ctx: PanelCtx }) {
 // ─── 2. ORGS & USERS ────────────────────────────────────────────────────────
 export function OrgsPanel({ ctx }: { ctx: PanelCtx }) {
   const { data, loading, error, reload } = useSa<OrgsResp>("/api/superadmin/orgs");
-  const orgs = data?.orgs ?? [];
+  // BFF returns orgs with `status`/`slug`; derive the fields this panel renders.
+  const orgs: Org[] = ((data?.orgs ?? []) as any[]).map((o) => ({
+    ...o,
+    suspended: typeof o.suspended === "boolean" ? o.suspended : o.status === "suspended",
+    domain: o.domain ?? o.slug,
+  }));
   const [createOpen, setCreateOpen] = useState(false);
 
   const enter = (o: Org) =>
     ctx.openConfirm({
       title: `Enter ${o.name} as support?`, icon: "login", danger: false, cta: "Enter org",
       body: `You will impersonate an admin of ${o.name}. The org is notified, your session is fully recorded, and every action is attributed to you in their audit trail.`,
-      run: (reason) => mut(ctx, `/api/superadmin/orgs/${o.id}/enter`, { reason }, `Entered ${o.name} (impersonation)`, reload),
+      // On success the BFF sets a time-boxed session cookie scoped to this org;
+      // redirect into the Command Center so the impersonation actually takes hold.
+      run: (reason) => mut(ctx, `/api/superadmin/orgs/${o.id}/enter`, { reason }, `Entering ${o.name}…`, () => { window.location.assign("/"); }),
     });
   const suspend = (o: Org) => {
     const on = !!o.suspended;
@@ -277,8 +309,17 @@ export function CostPanel({ ctx, killOn, onSyncKill, onToggleKill }: { ctx: Pane
 export function QualityPanel({ ctx, threshold }: { ctx: PanelCtx; threshold: number }) {
   const rd = useSa<{ readiness?: ReadinessRow[] } | ReadinessRow[]>("/api/superadmin/readiness");
   const rp = useSa<{ reports?: ReportRow[] } | ReportRow[]>("/api/superadmin/reports");
-  const readiness: ReadinessRow[] = Array.isArray(rd.data) ? rd.data : rd.data?.readiness ?? [];
-  const reports: ReportRow[] = Array.isArray(rp.data) ? rp.data : rp.data?.reports ?? [];
+  // BFF returns { clones: [{ verify, redteam, certified }] } and report rows with
+  // `reason`/`reporter`/`severity` — map onto the fields this panel renders.
+  const readiness: ReadinessRow[] = ((Array.isArray(rd.data) ? rd.data : (rd.data as any)?.readiness ?? (rd.data as any)?.clones ?? []) as any[]).map((r) => ({
+    ...r,
+    score: typeof r.score === "number" ? r.score : (r.verify ?? r.redteam ?? 0),
+  }));
+  const reports: ReportRow[] = ((Array.isArray(rp.data) ? rp.data : (rp.data as any)?.reports ?? []) as any[]).map((q) => ({
+    ...q,
+    title: q.title ?? q.reason ?? "Reported call",
+    meta: q.meta ?? [q.reporter, q.severity].filter(Boolean).join(" · "),
+  }));
 
   const triage = (q: ReportRow) =>
     ctx.openConfirm({
@@ -338,6 +379,18 @@ export function BillingPanel({ ctx }: { ctx: PanelCtx }) {
   const [rateCard, setRateCard] = useState<RateCardItem[]>(DEFAULT_RATE_CARD);
   const [editId, setEditId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
+  const [filter, setFilter] = useState<"all" | "active" | "paying" | "live">("all");
+  const orgs = data?.orgs ?? [];
+  const filterFor = (label: string): "all" | "active" | "paying" | "live" => /pay|mrr/i.test(label) ? "paying" : /active/i.test(label) ? "active" : /live/i.test(label) ? "live" : "all";
+  const shown = orgs.filter((o) => filter === "all" ? true : filter === "active" ? o.status === "active" : filter === "paying" ? (o.mrrCents || 0) > 0 : (!!o.liveAt && !o.churnedAt));
+  const money = (c?: number) => (c ? `$${(c / 100).toLocaleString()}` : "—");
+  const dfmt = (v?: string | null) => { if (!v) return "—"; try { return new Date(v).toLocaleDateString(); } catch { return "—"; } };
+  const bcols = "1.6fr .8fr .9fr .8fr .5fr 1fr auto";
+  const enterOrg = (o: { id: string; name: string }) => ctx.openConfirm({
+    title: `Enter ${o.name} as support?`, icon: "login", danger: false, cta: "Enter org",
+    body: `You will impersonate an admin of ${o.name}. The session is recorded and every action is attributed to you.`,
+    run: (reason: string) => mut(ctx, `/api/superadmin/orgs/${o.id}/enter`, { reason }, `Entering ${o.name}\u2026`, () => window.location.assign("/")),
+  });
 
   useEffect(() => { if (data?.rateCard?.length) setRateCard(data.rateCard); }, [data]);
 
@@ -353,7 +406,38 @@ export function BillingPanel({ ctx }: { ctx: PanelCtx }) {
   return (
     <>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 14, marginBottom: 18 }}>
-        {kpis.length ? kpis.map((k, i) => <KpiTile key={i} k={k} big={26} />) : [0, 1, 2, 3].map((i) => <KpiTile key={i} k={{ label: ["MRR", "Net revenue retention", "Gross margin", "At-risk MRR"][i], val: "—", sub: loading ? "loading" : "pending backend", color: "var(--ink3)" }} big={26} />)}
+        {(kpis.length ? kpis : [{ label: "MRR", val: "—" }, { label: "Paying orgs", val: "—" }, { label: "Active orgs", val: "—" }, { label: "Live orgs", val: "—" }]).map((k, i) => {
+          const f = filterFor(k.label || "");
+          const on = filter !== "all" && filter === f;
+          return (
+            <div key={i} onClick={() => { if (f !== "all") setFilter(on ? "all" : f); }} title={f === "all" ? "" : "Click to list these orgs"} style={{ cursor: f === "all" ? "default" : "pointer", borderRadius: 16, outline: on ? `2px solid ${C.pink}` : "none", outlineOffset: 2 }}>
+              <KpiTile k={k} big={26} />
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ ...card, marginBottom: 18 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 18px", borderBottom: "1px solid var(--divider)" }}>
+          <div style={{ fontSize: 14, fontWeight: 700 }}>{filter === "all" ? "All organizations" : filter === "paying" ? "Paying organizations" : filter === "active" ? "Active organizations" : "Live organizations"}</div>
+          <div style={{ fontSize: 12, color: "var(--ink3)" }}>{shown.length}</div>
+          {filter !== "all" && <button onClick={() => setFilter("all")} style={{ ...outlineBtn, height: 28, marginLeft: 8 }}>Clear filter</button>}
+        </div>
+        <div style={{ ...th, display: "grid", gridTemplateColumns: bcols, gap: 12 }}>
+          <div>Organization</div><div>Plan</div><div>Status</div><div>MRR</div><div>Seats</div><div>Signed up</div><div />
+        </div>
+        <StateBlock loading={loading} error={null} empty={shown.length === 0} emptyLabel="No orgs in this view.">
+          {shown.map((o) => (
+            <div key={o.id} style={{ display: "grid", gridTemplateColumns: bcols, gap: 12, alignItems: "center", padding: "12px 18px", borderBottom: "1px solid var(--divider)" }}>
+              <div style={{ fontSize: 13, fontWeight: 700, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{o.name}</div>
+              <div style={{ fontSize: 12.5, color: "var(--ink2)", textTransform: "capitalize" }}>{o.plan || "free"}</div>
+              <div><span style={{ fontSize: 11.5, padding: "3px 9px", borderRadius: 9999, fontWeight: 700, background: o.churnedAt ? "rgba(255,107,132,.16)" : o.status === "active" ? "rgba(46,211,125,.14)" : "rgba(255,255,255,.1)", color: o.churnedAt ? "#FF6B84" : o.status === "active" ? "#4BE39A" : "var(--ink2)" }}>{o.churnedAt ? "churned" : (o.status || "—")}</span></div>
+              <div style={{ fontSize: 13, fontWeight: 700, fontVariantNumeric: "tabular-nums", color: (o.mrrCents || 0) > 0 ? "#fff" : "var(--ink3)" }}>{money(o.mrrCents)}</div>
+              <div style={{ fontSize: 13, fontVariantNumeric: "tabular-nums", color: "var(--ink2)" }}>{o.seats || 0}</div>
+              <div style={{ fontSize: 12.5, color: "var(--ink3)" }}>{dfmt(o.signupAt)}</div>
+              <button onClick={() => enterOrg(o)} style={{ ...outlineBtn, height: 30, justifySelf: "end", display: "inline-flex", alignItems: "center", gap: 6 }}><Icon name="login" size={15} />Enter</button>
+            </div>
+          ))}
+        </StateBlock>
       </div>
       <div style={{ background: "var(--card)", border: "1px solid var(--border)", borderRadius: 18, padding: 20 }}>
         <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 14 }}>Rate card</div>
@@ -397,10 +481,17 @@ export function ConfigPanel({ ctx, onThreshold }: { ctx: PanelCtx; onThreshold: 
 
   useEffect(() => {
     if (!data) return;
-    if (typeof data.certThreshold === "number") { setThreshold(data.certThreshold); onThreshold(data.certThreshold); }
-    if (data.modelTier) setModelTier(data.modelTier);
-    if (data.authMode) setAuthMode(data.authMode);
-    if (data.flags?.length) setFlags(data.flags);
+    // BFF wraps the config under `config` and stores flags as `featureFlags` (a map).
+    const cfg: any = (data as any).config ?? data;
+    if (typeof cfg.certThreshold === "number") { setThreshold(cfg.certThreshold); onThreshold(cfg.certThreshold); }
+    if (cfg.modelTier) setModelTier(cfg.modelTier);
+    if (cfg.authMode) setAuthMode(cfg.authMode);
+    const beFlags: FeatureFlag[] | null = Array.isArray(cfg.flags)
+      ? cfg.flags
+      : cfg.featureFlags && typeof cfg.featureFlags === "object"
+        ? Object.entries(cfg.featureFlags).map(([name, enabled]) => ({ name, enabled: !!enabled }))
+        : null;
+    if (beFlags?.length) setFlags(beFlags);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data]);
 
@@ -458,7 +549,13 @@ export function ConfigPanel({ ctx, onThreshold }: { ctx: PanelCtx; onThreshold: 
 // ─── 7. AUDIT LOG ───────────────────────────────────────────────────────────
 export function AuditPanel() {
   const { data, loading, error } = useSa<AuditResp | AuditEntry[]>("/api/superadmin/audit");
-  const entries: AuditEntry[] = Array.isArray(data) ? data : data?.entries ?? [];
+  // BFF returns { audit: [{ actor_user_id, created_at, ... }] }.
+  const rawEntries = (Array.isArray(data) ? data : (data as any)?.entries ?? (data as any)?.audit ?? []) as any[];
+  const entries: AuditEntry[] = rawEntries.map((a) => ({
+    ...a,
+    time: a.time ?? fmtTime(a.created_at),
+    actor: a.actor ?? a.actor_user_id ?? "system",
+  }));
   return (
     <div style={card}>
       <div style={{ ...cardHead, gap: 8 }}>

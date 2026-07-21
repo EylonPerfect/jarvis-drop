@@ -3,6 +3,7 @@ import { query, one } from "../db/pool.js";
 import { emit, EVENTS } from "../lib/analytics.js";
 import { checkBailAndReportSpikes } from "../lib/alerts.js";
 import { orgId } from "../lib/auth.js";
+import { notify } from "../lib/notify.js";
 
 // REPORT-THIS-CALL — the self-serve support surface for launch (docs + debrief
 // + "report this call" button). A rep who sees a live or finished call go wrong
@@ -66,6 +67,8 @@ export default async function reportsRoutes(app: FastifyInstance) {
     // + opportunistic spike detector. Both best-effort so a report never fails on them.
     void emit(EVENTS.CALL_REPORT, { orgId: org, agentId, callId, props: { reason: reason.slice(0, 200), severity } }).catch(() => {});
     void checkBailAndReportSpikes().catch(() => {});
+    // in-app notification: the owner should know a call was flagged for review
+    void notify(org, { kind: "call_reported", title: "A call was reported for review", body: reason.slice(0, 140), href: "#/debrief", severity: "warning", icon: "flag" });
 
     const row = await one(`SELECT * FROM call_reports WHERE id = $1`, [rid]);
     return reply.code(201).send({ ok: true, report: row });

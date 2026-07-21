@@ -401,8 +401,16 @@ export async function revealedFor(sessionId: string): Promise<boolean> {
 export async function transcriptFor(sessionId: string): Promise<{ role: string; text: string }[]> {
   const slot = slots.find((s) => s.sessionId === sessionId && s.state === "leased");
   if (!slot?.sandboxId) return [];
+  return transcriptForSandbox(slot.sandboxId);
+}
+
+// Same parse, keyed by sandbox id — lets the in-sandbox app fetch the turns of
+// the call it is itself hosting (the "calibrate the call we just had" view),
+// which knows its own sandbox id but not the guest session id.
+export async function transcriptForSandbox(sandboxId: string): Promise<{ role: string; text: string }[]> {
+  if (!sandboxId) return [];
   try {
-    const d = await connectSandbox(slot.sandboxId);
+    const d = await connectSandbox(sandboxId);
     const r = await d.commands.run("cat /tmp/duplexnav7.log 2>/dev/null | tail -c 40000", { timeoutMs: 12000 });
     const out: { role: string; text: string }[] = [];
     for (const ln of ((r.stdout || "") + "").split("\n")) {

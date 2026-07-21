@@ -23,6 +23,7 @@
 // ============================================================
 import { query, one } from "../db/pool.js";
 import { config } from "../config.js";
+import { countCompedSlots } from "./referrals.js";
 
 export const PAID_PLANS = ["starter", "growth", "enterprise"] as const;
 export type Plan = "free" | (typeof PAID_PLANS)[number];
@@ -169,14 +170,18 @@ function activePaid(state: OrgBillingState): boolean {
 export async function orgCanGoLive(orgId: string, agentId: string): Promise<GoLiveDecision> {
   try {
     const state = await getOrgBillingState(orgId);
-    const base = { plan: state.plan, status: state.status, slots: state.paidCloneSlots };
+    // PLG: earned free clone-months add COMPED slots on top of paid slots, so a
+    // referral reward is real live entitlement (see lib/referrals.ts).
+    const comped = await countCompedSlots(orgId);
+    const effectiveSlots = state.paidCloneSlots + comped;
+    const base = { plan: state.plan, status: state.status, slots: effectiveSlots };
 
     if (!config.billing.gateEnforced) {
       const liveClones = await countLiveClones(orgId);
       return { allowed: true, code: "gate_disabled", reason: "billing gate disabled", ...base, liveClones };
     }
 
-    if (!activePaid(state)) {
+    if (!activePaid(state) && comped <= 0) {
       const liveClones = await countLiveClones(orgId);
       return {
         allowed: false,
@@ -190,16 +195,18 @@ export async function orgCanGoLive(orgId: string, agentId: string): Promise<GoLi
     const alreadyLive = await agentIsLive(agentId, orgId);
     const liveClones = await countLiveClones(orgId);
     const required = liveClones + (alreadyLive ? 0 : 1);
-    if (required > state.paidCloneSlots) {
+    if (required > effectiveSlots) {
+      const compedNote = comped > 0 ? ` (incl. ${comped} free clone-month${comped > 1 ? "s" : ""})` : "";
       return {
         allowed: false,
         code: "no_slot",
-        reason: `All ${state.paidCloneSlots} paid clone slot(s) are in use. Add a clone to your plan to put another one live.`,
+        reason: `All ${effectiveSlots} clone slot(s)${compedNote} are in use. Add a clone to your plan to put another one live.`,
         ...base,
         liveClones,
       };
     }
-    return { allowed: true, code: "ok", reason: "active subscription with an available clone slot", ...base, liveClones };
+    const okReason = comped > 0 ? "available clone slot (referral reward applied)" : "active subscription with an available clone slot";
+    return { allowed: true, code: "ok", reason: okReason, ...base, liveClones };
   } catch (err) {
     // Fail-OPEN: never block a live call on a billing-lookup error.
     console.warn("[billing] orgCanGoLive failed (fail-open, allowing):", (err as Error).message);

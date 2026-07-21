@@ -1,9 +1,9 @@
 import type { FastifyInstance } from "fastify";
-import { getIntegrationValues } from "./integrations.js";
+import { getIntegrationValues, getIntegrationSource } from "./integrations.js";
 import { getActiveProvider } from "../lib/providers.js";
-import { orgId } from "../lib/auth.js";
+import { orgId, newId } from "../lib/auth.js";
 import { resolveElevenVoiceId } from "../lib/tts.js";
-import { one } from "../db/pool.js";
+import { one, query } from "../db/pool.js";
 
 // Server-side voice so an agent can actually SPEAK (demos, calls). Prefers
 // ElevenLabs when connected; otherwise falls back to OpenAI-compatible TTS using
@@ -14,8 +14,12 @@ const OA_DEFAULT_VOICE = "alloy"; // OpenAI TTS
 // 10-min voice-library cache — module scope so other routes can bust it (the
 // fathom clone-voice endpoint must make its freshly created voice visible to
 // the wizard's picker refresh immediately).
-let voiceCache: { at: number; voices: unknown[] } | null = null;
-export function bustVoiceCache(): void { voiceCache = null; }
+// Cache the RAW ElevenLabs voice library PER account key — different accounts
+// (a customer's own key vs the platform key) must never share a cache entry, and
+// the org-specific visibility filter is applied per-request AFTER the cache.
+type CachedVoice = { id: string; name: string; tagline: string; gender: string; accent: string; age: string; category: string; previewUrl: string };
+const voiceCache = new Map<string, { at: number; voices: CachedVoice[] }>();
+export function bustVoiceCache(): void { voiceCache.clear(); }
 
 export default async function voiceRoutes(app: FastifyInstance) {
   // Reports whether voice is available and via which provider (no keys exposed).
@@ -27,28 +31,44 @@ export default async function voiceRoutes(app: FastifyInstance) {
     return { connected: false, provider: "none", voiceId: OA_DEFAULT_VOICE };
   });
 
-  // The account's ElevenLabs voice library with labels (gender/accent/age) and
-  // preview mp3s — powers the voice picker in the clone wizard. Cached 10 min.
+  // The ElevenLabs voice library for the picker. VISIBILITY: when this org rides
+  // the SHARED platform key (self-serve fallback), the account holds voices cloned
+  // by MANY orgs — so show only ElevenLabs template (premade) voices + THIS org's
+  // OWN cloned voices (from the ownership ledger), never another org's clone. When
+  // the org uses its OWN key, the account is theirs, so show everything.
   app.get("/api/voice/options", async (req) => {
-    const el = await getIntegrationValues(orgId(req), "elevenlabs");
-    if (!el?.apiKey?.trim()) return { voices: [], connected: false };
-    if (voiceCache && Date.now() - voiceCache.at < 10 * 60_000) return { voices: voiceCache.voices, connected: true };
+    const org = orgId(req);
+    const src = await getIntegrationSource(org, "elevenlabs");
+    const apiKey = src?.values?.apiKey?.trim();
+    if (!apiKey) return { voices: [], connected: false };
+    const sharedAccount = src!.viaOrg !== org; // platform fallback => filter to own + templates
+    let ownVoiceIds: Set<string> | null = null;
+    if (sharedAccount) {
+      const rows = await query<{ voice_id: string }>(`SELECT voice_id FROM cloned_voices WHERE org_id=$1`, [org]);
+      ownVoiceIds = new Set(rows.map((r) => r.voice_id));
+    }
     try {
-      const r = await fetch("https://api.elevenlabs.io/v1/voices", { headers: { "xi-api-key": el.apiKey.trim() } });
-      if (!r.ok) return { voices: [], connected: true, error: `ElevenLabs error (${r.status})` };
-      const j = (await r.json()) as { voices?: { voice_id?: string; name?: string; category?: string; preview_url?: string; labels?: Record<string, string> }[] };
-      const voices = (Array.isArray(j.voices) ? j.voices : []).map((v) => {
-        const [name, tagline] = String(v.name || "").split(/\s+-\s+/);
-        const l = v.labels || {};
-        return {
-          id: v.voice_id || "", name: name || v.voice_id || "", tagline: tagline || "",
-          gender: l.gender || "", accent: l.accent || "", age: (l.age || "").replace(/_/g, " "),
-          category: v.category || "", previewUrl: v.preview_url || "",
-        };
-      }).filter((v) => v.id)
+      let cached = voiceCache.get(apiKey);
+      if (!cached || Date.now() - cached.at >= 10 * 60_000) {
+        const r = await fetch("https://api.elevenlabs.io/v1/voices", { headers: { "xi-api-key": apiKey } });
+        if (!r.ok) return { voices: [], connected: true, error: `ElevenLabs error (${r.status})` };
+        const j = (await r.json()) as { voices?: { voice_id?: string; name?: string; category?: string; preview_url?: string; labels?: Record<string, string> }[] };
+        const mapped: CachedVoice[] = (Array.isArray(j.voices) ? j.voices : []).map((v) => {
+          const [name, tagline] = String(v.name || "").split(/\s+-\s+/);
+          const l = v.labels || {};
+          return {
+            id: v.voice_id || "", name: name || v.voice_id || "", tagline: tagline || "",
+            gender: l.gender || "", accent: l.accent || "", age: (l.age || "").replace(/_/g, " "),
+            category: v.category || "", previewUrl: v.preview_url || "",
+          };
+        }).filter((v) => v.id);
+        cached = { at: Date.now(), voices: mapped };
+        voiceCache.set(apiKey, cached);
+      }
+      const voices = cached.voices
+        .filter((v) => !ownVoiceIds || v.category === "premade" || ownVoiceIds.has(v.id))
         // custom (cloned/generated/professional) voices first, then the library
         .sort((a, b) => Number(a.category === "premade") - Number(b.category === "premade"));
-      voiceCache = { at: Date.now(), voices };
       return { voices, connected: true };
     } catch (e) {
       return { voices: [], connected: true, error: `Could not reach ElevenLabs: ${(e as Error).message}` };
@@ -74,8 +94,8 @@ export default async function voiceRoutes(app: FastifyInstance) {
     if (sample.length < 40_000) return reply.code(400).send({ error: "that sample is too short — record about 60–90 seconds of clean speech" });
     if (sample.length > 11 * 1024 * 1024) return reply.code(400).send({ error: "that sample is too large — keep it under ~90 seconds" });
 
-    const el = await getIntegrationValues(orgId(req), "elevenlabs");
-    const elKey = el?.apiKey?.trim();
+    const elSrc = await getIntegrationSource(orgId(req), "elevenlabs");
+    const elKey = elSrc?.values?.apiKey?.trim();
     if (!elKey) return reply.code(400).send({ error: "ElevenLabs is not connected — add the API key in Integrations" });
 
     // Tier guard — surface plan problems verbatim before uploading.
@@ -105,6 +125,13 @@ export default async function voiceRoutes(app: FastifyInstance) {
     if (!addR.ok) return reply.code(502).send({ error: `ElevenLabs voice add failed (${addR.status}): ${(await addR.text().catch(() => "")).slice(0, 300)}` });
     const added = (await addR.json()) as { voice_id?: string };
     if (!added.voice_id) return reply.code(502).send({ error: "ElevenLabs returned no voice_id" });
+    // OWNERSHIP LEDGER: record the voice WE created + the key-org that made it,
+    // so org/clone deletion can revoke exactly this biometric (and only ours).
+    await query(`DELETE FROM cloned_voices WHERE org_id=$1 AND agent_id=$2`, [orgId(req), b.agentId]).catch(() => {});
+    await query(
+      `INSERT INTO cloned_voices (id, org_id, agent_id, voice_id, via_org) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (voice_id) DO NOTHING`,
+      [newId("cv"), orgId(req), b.agentId, added.voice_id, elSrc?.viaOrg ?? orgId(req)],
+    ).catch(() => {});
     bustVoiceCache(); // the wizard's picker refresh must see the new voice immediately
     app.log.info({ agentId: b.agentId, voiceId: added.voice_id, bytes: sample.length, source: "clean-sample" }, "real voice cloned from clean sample");
     return { voiceId: added.voice_id, name: voiceName, sampleSeconds: Math.round(Number(b.seconds) || 0) || undefined, source: "clean-sample" };

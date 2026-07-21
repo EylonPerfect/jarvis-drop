@@ -246,6 +246,21 @@ export default function FirstRun() {
               Connect your calls
             </button>
           </div>
+
+          {/* PATH C — no recordings: Ava auto-drafts a sample call from role + company */}
+          <div className="card" style={{ borderRadius: 22, padding: 28, display: "flex", flexDirection: "column" }}>
+            <div style={{ width: 56, height: 56, borderRadius: 16, background: "linear-gradient(140deg,#FF0660,#FFB020)", color: "#fff", display: "grid", placeItems: "center", marginBottom: 18 }}>
+              <span className="material-symbols-rounded" style={{ fontSize: 28 }}>auto_awesome</span>
+            </div>
+            <div style={{ fontSize: 19, fontWeight: 800, letterSpacing: "-.02em", marginBottom: 8 }}>No recordings? Draft one</div>
+            <p style={{ fontSize: 13.5, color: "var(--ink2)", lineHeight: 1.55, margin: "0 0 20px", flex: 1 }}>
+              No call recordings handy? Just tell us the rep's role and what they sell — Ava writes a realistic sample call and builds a starter clone from it in seconds. Refine it, or add real calls later.
+            </p>
+            <button onClick={() => nav("mockcall")} className="btn" style={{ width: "100%", justifyContent: "center" }}>
+              <span className="material-symbols-rounded" style={{ fontSize: 18 }}>auto_awesome</span>
+              Draft a clone
+            </button>
+          </div>
         </div>
 
         {err && (

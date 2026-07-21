@@ -5,6 +5,7 @@ import { query, one } from "../db/pool.js";
 import { config } from "../config.js";
 import { getCompany } from "./company.js";
 import { getActiveProvider, completeProviderChat } from "../lib/providers.js";
+import { notify, notifyOnce } from "../lib/notify.js";
 import { purgeCall } from "../lib/purge.js";
 import { checkCapsForAgent, orgForAgent, recordLiveCallMinutes } from "../lib/metering.js";
 import { compileClone } from "@jarvis/shared";
@@ -522,7 +523,17 @@ export default async function liveRoutes(app: FastifyInstance) {
     const { sourceId } = req.params as { sourceId: string };
     const f = `${AH}/shots/${sourceId.replace(/[^a-zA-Z0-9_-]/g, "")}/timeline.json`;
     if (!existsSync(f)) return reply.code(404).send({ error: "no film for this call" });
-    return JSON.parse(readFileSync(f, "utf8"));
+    const clean = sourceId.replace(/[^a-zA-Z0-9_-]/g, "");
+    const tl = JSON.parse(readFileSync(f, "utf8"));
+    return { ...tl, recording: existsSync(`${AH}/shots/${clean}/call.mp3`) };
+  });
+  // ---- call recording: the full-mix audio (clone + guest) mp3 for this call ----
+  app.get("/api/sources/:sourceId/recording", async (req, reply) => {
+    const { sourceId } = req.params as { sourceId: string };
+    const f = `${AH}/shots/${sourceId.replace(/[^a-zA-Z0-9_-]/g, "")}/call.mp3`;
+    if (!existsSync(f)) return reply.code(404).send({ error: "no recording" });
+    reply.header("Content-Type", "audio/mpeg").header("Cache-Control", "public, max-age=86400").header("Accept-Ranges", "bytes");
+    return reply.send(readFileSync(f));
   });
   app.get("/api/sources/:sourceId/shot/:n", async (req, reply) => {
     const { sourceId, n } = req.params as { sourceId: string; n: string };
@@ -624,6 +635,16 @@ export default async function liveRoutes(app: FastifyInstance) {
                 } catch { /* a shot may not exist */ }
               }
             } catch { /* film material is best-effort */ }
+            // CALL RECORDING: encode the full-mix audio (clone + guest, captured to
+            // /tmp/call_mix.raw by the pipeline) to a small mp3 IN the sandbox, then
+            // pull it next to the film. Best-effort — never blocks teardown.
+            try {
+              const recDir = `${AH}/shots/${sourceId}`;
+              mkdirSync(recDir, { recursive: true });
+              await d.commands.run("ffmpeg -y -f s16le -ar 24000 -ac 1 -i /tmp/call_mix.raw -codec:a libmp3lame -q:a 6 /tmp/call.mp3 2>/dev/null", { timeoutMs: 90000 }).catch(() => {});
+              const mp3 = await d.files.read("/tmp/call.mp3", { format: "bytes" }).catch(() => null);
+              if (mp3 && mp3.length > 800) writeFileSync(`${recDir}/call.mp3`, Buffer.from(mp3));
+            } catch { /* recording is best-effort */ }
           }
         } catch { /* transcript capture is best-effort */ }
         await d.kill().catch(() => {});
@@ -644,6 +665,9 @@ export default async function liveRoutes(app: FastifyInstance) {
     if (row.mode === "zoom") {
       void emit(EVENTS.LIVE_CALL_COMPLETED, { agentId: row.agent_id, callId: row.id, props: { outcome } }).catch(() => {});
       if (outcome === "bailed") void emit(EVENTS.CALL_BAIL_OUT, { agentId: row.agent_id, callId: row.id }).catch(() => {});
+      // in-app notifications: bail-out (safety) + the first live call (wow moment)
+      if (outcome === "bailed") void notify(org, { kind: "call_bailed", title: "Your clone bailed out of a call", body: "It hit repeated trouble and handed off gracefully. Review the debrief to see what happened.", href: "#/debrief", severity: "warning", icon: "pan_tool" });
+      if (row.agent_id) void notifyOnce(org, `first_live_call:${row.agent_id}`, { kind: "first_live_call", title: "Your clone just ran its first live call", body: "See how it went in the debrief — and share the win.", href: "#/debrief", severity: "success", icon: "play_circle", email: true, ctaLabel: "See the debrief" });
     }
     // fire-and-forget: build the debrief so it's waiting when the operator lands there
     if (sourceId && row.agent_id) {

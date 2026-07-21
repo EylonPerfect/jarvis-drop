@@ -38,12 +38,33 @@ export function cheapModel(p: AiProviderRow): string {
   return config.models.cheapTier || p.model;
 }
 
+// The platform's default tenant. Orgs that have not configured their OWN model
+// provider fall back to this org's active provider, so every self-serve org gets
+// a working model out of the box (the platform provides the model, COGS-metered).
+// Override with PLATFORM_ORG_ID if the operator tenant is not org_legacy.
+const PLATFORM_ORG = (process.env.PLATFORM_ORG_ID ?? "org_legacy").trim();
+
+async function activeProviderForOrg(org: string): Promise<AiProviderRow | null> {
+  return (await one<AiProviderRow>(`SELECT * FROM ai_providers WHERE org_id = $1 AND active = true ORDER BY created_at DESC LIMIT 1`, [org])) ?? null;
+}
+
 /**
- * The provider the given org's Command Center chat should use, if its operator
- * set one. Org-scoped so one tenant never spends another tenant's provider key.
+ * The model provider the given org should use. Prefers the org's OWN active
+ * provider (a tenant that set its own key/model in AI Core); if it has none,
+ * falls back to the PLATFORM default provider so self-serve orgs work without
+ * bringing their own key. Returns null only if neither exists.
+ *
+ * The customer's own provider always wins, so this never spends a tenant's key
+ * for another tenant — the only shared key is the platform's own default.
  */
 export async function getActiveProvider(org: string): Promise<AiProviderRow | null> {
-  return (await one<AiProviderRow>(`SELECT * FROM ai_providers WHERE org_id = $1 AND active = true ORDER BY created_at DESC LIMIT 1`, [org])) ?? null;
+  const own = await activeProviderForOrg(org);
+  if (own) return own;
+  if (org !== PLATFORM_ORG) {
+    const platform = await activeProviderForOrg(PLATFORM_ORG);
+    if (platform) return platform;
+  }
+  return null;
 }
 
 // Pull a human error message out of an OpenAI-style error body.

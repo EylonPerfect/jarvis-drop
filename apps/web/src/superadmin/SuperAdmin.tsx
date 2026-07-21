@@ -21,7 +21,7 @@ import {
   modalScrim, modalCard, modalCancel, modalConfirm,
 } from "./panels";
 
-type SectionKey = "fleet" | "orgs" | "cost" | "quality" | "billing" | "config" | "audit";
+type SectionKey = "fleet" | "orgs" | "cost" | "quality" | "billing" | "config" | "audit" | "ava";
 
 const NAV: { key: SectionKey; label: string; icon: string }[] = [
   { key: "fleet", label: "Live fleet", icon: "sensors" },
@@ -30,6 +30,7 @@ const NAV: { key: SectionKey; label: string; icon: string }[] = [
   { key: "quality", label: "Quality & incidents", icon: "gpp_maybe" },
   { key: "billing", label: "Billing & revenue", icon: "account_balance" },
   { key: "config", label: "Config & flags", icon: "tune" },
+  { key: "ava", label: "Ava's brain", icon: "psychology" },
   { key: "audit", label: "Audit log", icon: "history" },
 ];
 const TITLES: Record<SectionKey, string> = {
@@ -39,6 +40,7 @@ const TITLES: Record<SectionKey, string> = {
   quality: "Quality & incidents",
   billing: "Billing & revenue",
   config: "Global config & flags",
+  ava: "Ava's brain · raw golden editor",
   audit: "Audit log",
 };
 
@@ -239,6 +241,7 @@ function Console({ onLock }: { onLock: () => void }) {
             {section === "quality" && <QualityPanel ctx={ctx} threshold={threshold} />}
             {section === "billing" && <BillingPanel ctx={ctx} />}
             {section === "config" && <ConfigPanel ctx={ctx} onThreshold={setThreshold} />}
+            {section === "ava" && <AvaBrainPanel ctx={ctx} />}
             {section === "audit" && <AuditPanel />}
           </div>
         </div>
@@ -273,6 +276,55 @@ function Console({ onLock }: { onLock: () => void }) {
           {toast.kind === "ok" && <span style={{ fontSize: 12, color: "var(--ink3)" }}>· written to audit log</span>}
         </div>
       )}
+    </div>
+  );
+}
+
+function AvaBrainPanel({ ctx }: { ctx: { toast: (m: string, k?: "ok" | "error") => void } }) {
+  const [text, setText] = useState("");
+  const [orig, setOrig] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    saApi.get<{ text: string }>("/api/superadmin/demo-golden")
+      .then((r) => { setText(r.text || ""); setOrig(r.text || ""); })
+      .catch((e) => ctx.toast(`Could not load Ava\u2019s brain \u00b7 ${String(e)}`, "error"))
+      .finally(() => setLoading(false));
+  }, []);
+  const dirty = text !== orig;
+  const save = async () => {
+    if (!dirty || saving) return;
+    setSaving(true);
+    try {
+      const r = await saApi.post<{ ok: boolean; length: number; hotReloaded: boolean }>("/api/superadmin/demo-golden", { text });
+      setOrig(text);
+      ctx.toast(r.hotReloaded ? "Saved \u00b7 live session hot-reloaded" : "Saved \u00b7 applies on the next demo");
+    } catch (e) { ctx.toast(`Save failed \u00b7 ${String(e)}`, "error"); }
+    finally { setSaving(false); }
+  };
+  const inpBg = "var(--card)";
+  return (
+    <div style={{ maxWidth: 940 }}>
+      <div style={{ fontSize: 13, color: "var(--ink3)", marginBottom: 14, lineHeight: 1.5 }}>
+        This is the DEMO Ava\u2019s full instruction set (the golden persona). Edit it directly and Save \u2014 it applies to the next Talk-to-Ava session, and hot-reloads any call in progress. Changes are immediate; there is no undo beyond your own edits, so keep a copy of anything you are unsure about.
+      </div>
+      <textarea
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        spellCheck={false}
+        placeholder={loading ? "Loading\u2026" : ""}
+        style={{ width: "100%", height: "60vh", padding: 16, borderRadius: 14, border: `1px solid ${dirty ? "#FF0660" : "var(--border)"}`, background: inpBg, color: "var(--ink1)", fontSize: 13, lineHeight: 1.6, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", resize: "vertical", outline: "none", boxSizing: "border-box" }}
+      />
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 14 }}>
+        <button onClick={() => void save()} disabled={!dirty || saving} style={{ height: 42, padding: "0 22px", border: "none", borderRadius: 11, background: dirty ? "#FF0660" : "var(--card)", color: dirty ? "#fff" : "var(--ink3)", fontSize: 13.5, fontWeight: 700, cursor: dirty && !saving ? "pointer" : "default", opacity: saving ? 0.6 : 1 }}>
+          {saving ? "Saving\u2026" : dirty ? "Save + apply" : "Saved"}
+        </button>
+        <button onClick={() => setText(orig)} disabled={!dirty} style={{ height: 42, padding: "0 18px", border: "1px solid var(--border)", borderRadius: 11, background: "transparent", color: "var(--ink2)", fontSize: 13.5, fontWeight: 600, cursor: dirty ? "pointer" : "default", opacity: dirty ? 1 : 0.5 }}>Revert</button>
+        <a href="/site#/ava" target="_blank" rel="noreferrer" style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 7, height: 42, padding: "0 18px", borderRadius: 11, border: "1px solid var(--border)", color: "var(--ink1)", fontSize: 13.5, fontWeight: 600, textDecoration: "none" }}>
+          <Icon name="open_in_new" size={17} />Open Talk to Ava
+        </a>
+      </div>
+      <div style={{ marginTop: 10, fontSize: 12, color: "var(--ink3)", fontVariantNumeric: "tabular-nums" }}>{text.length.toLocaleString()} characters{dirty ? " \u00b7 unsaved changes" : ""}</div>
     </div>
   );
 }

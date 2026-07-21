@@ -2,7 +2,16 @@ import type { FastifyInstance } from "fastify";
 import { query, one } from "../db/pool.js";
 import { orgId } from "../lib/auth.js";
 import { hermes } from "../hermes.js";
+import { config } from "../config.js";
 import type { Integration, IntegrationField, IntegrationTestResult } from "@jarvis/shared";
+
+// PLATFORM-PROVIDED infra integrations: an org that has not connected its own
+// falls back to the platform's credential (the platform supplies voice + desktop
+// as COGS, like the model provider — see lib/providers.ts getActiveProvider).
+// Customer-OWNED connectors (notetaker, slack, gmail, …) NEVER fall back — those
+// must be the customer's own account.
+const PLATFORM_INTEGRATIONS = new Set(["e2b", "elevenlabs"]);
+const PLATFORM_ORG = config.legacyOrgId;
 
 // ============================================================
 // Real integration credential store. Follows the ai_providers pattern:
@@ -241,9 +250,25 @@ export async function getConnectedIntegrationIds(org: string): Promise<Set<strin
 }
 
 // Raw stored values for one of an org's integrations (server-side use only).
-export async function getIntegrationValues(org: string, id: string): Promise<Record<string, string> | null> {
+// Like getIntegrationValues, but also reports WHICH org's credential was used
+// (viaOrg) — the org's own, or the platform (for whitelisted infra). Callers
+// that create an external resource (e.g. an ElevenLabs cloned voice) record
+// viaOrg so it can later be revoked with the SAME key that created it.
+export async function getIntegrationSource(org: string, id: string): Promise<{ values: Record<string, string>; viaOrg: string } | null> {
   const row = await stateFor(org, id);
-  return row?.connected ? row.values ?? {} : null;
+  if (row?.connected) return { values: row.values ?? {}, viaOrg: org };
+  // Platform-provided infra: fall back to the platform's credential so a new
+  // self-serve org gets voice/desktop out of the box (customer BYO key wins above).
+  if (PLATFORM_INTEGRATIONS.has(id) && org !== PLATFORM_ORG) {
+    const platform = await stateFor(PLATFORM_ORG, id);
+    if (platform?.connected) return { values: platform.values ?? {}, viaOrg: PLATFORM_ORG };
+  }
+  return null;
+}
+
+export async function getIntegrationValues(org: string, id: string): Promise<Record<string, string> | null> {
+  const s = await getIntegrationSource(org, id);
+  return s ? s.values : null;
 }
 
 export default async function integrationsRoutes(app: FastifyInstance) {

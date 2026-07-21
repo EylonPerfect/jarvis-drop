@@ -140,6 +140,15 @@ export const config = {
   // per-plan LS Variant ids the operator creates (Starter = a tiered/graduated
   // variant: 1st clone ~\$2000 then ~\$1500/ea; Growth = flat ~\$1500/unit);
   // the checkout quantity = certified/live clone slots.
+  // Transactional email (Resend). Platform infra — the app sends on its own
+  // behalf from a verified domain, NOT per-org. INERT until apiKey + from are set
+  // (a verified sending domain in Resend), like billing/demo. Swappable provider:
+  // lib/email.ts is the only place that talks to Resend's HTTP API.
+  email: {
+    apiKey: process.env.RESEND_API_KEY ?? "",
+    from: process.env.EMAIL_FROM ?? "AfterHuman <notifications@after-human.com>",
+    appUrl: (process.env.APP_PUBLIC_URL ?? "https://afterhuman.srv1797540.hstgr.cloud").replace(/\/$/, ""),
+  },
   billing: {
     apiKey: process.env.LEMONSQUEEZY_API_KEY,
     storeId: process.env.LEMONSQUEEZY_STORE_ID,

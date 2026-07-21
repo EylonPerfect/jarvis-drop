@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { AppShell, type ViewId } from "./components/AppShell";
 import { AboutModal } from "./screens/AboutModal";
 import LoginGate from "./screens/LoginGate";
+import TosGate from "./components/TosGate";
 import { getAccessKey, api } from "./api/client";
 import CommandCenter from "./screens/CommandCenter";
 import AICore from "./screens/AICore";
@@ -33,8 +34,10 @@ import LandingPage from "./screens/LandingPage";
 import PricingPage from "./screens/PricingPage";
 import AgentsHome from "./screens/AgentsHome";
 import FirstRun from "./screens/FirstRun";
+import MockCall from "./screens/MockCall";
 import EchoDashboard from "./screens/EchoDashboard";
 import CloneARep from "./screens/CloneARep";
+import CalibrateCall from "./screens/CalibrateCall";
 import DrillMode from "./screens/DrillMode";
 import MomentTrainer from "./screens/MomentTrainer";
 import Certification from "./screens/Certification";
@@ -127,10 +130,10 @@ export function App() {
         const me = await api.get<{ authenticated?: boolean }>("/api/auth/me");
         if (cancelled) return;
         if (me?.authenticated) setAuthed(true);
-        else window.location.replace("/site#/signin");
+        else window.location.replace("/site#/");
       } catch {
         // 401 (or network) - no valid session; go sign in.
-        if (!cancelled) window.location.replace("/site#/signin");
+        if (!cancelled) window.location.replace("/site#/");
       }
     })();
     return () => { cancelled = true; };
@@ -240,11 +243,17 @@ export function App() {
     case "firstrun":
       body = <FirstRun />;
       break;
+    case "mockcall":
+      body = <MockCall />;
+      break;
     case "echo":
       body = <EchoDashboard />;
       break;
     case "clonerep":
       body = <CloneARep />;
+      break;
+    case "calibratecall":
+      body = <CalibrateCall />;
       break;
     case "pdsstudio":
       // The studio was absorbed into the Calibration Room — old links land there.
@@ -336,7 +345,7 @@ export function App() {
 
   // The Perfect app is its own product surface — full screen, no HUD chrome.
   // A small corner pill drops back into the legacy ops console.
-  const PDS_VIEWS: ViewId[] = ["firstrun", "agentshome", "echo", "readiness", "connections", "clonerep", "pdsstudio", "drillmode", "momenttrainer", "certification", "precall", "director", "democanvas", "debrief", "screenmap", "workspace", "modelsettings", "landing", "pricing", "billing", "rehearsal", "trust", "dpa", "retention"];
+  const PDS_VIEWS: ViewId[] = ["firstrun", "mockcall", "agentshome", "echo", "readiness", "connections", "clonerep", "calibratecall", "pdsstudio", "drillmode", "momenttrainer", "certification", "precall", "director", "democanvas", "debrief", "screenmap", "workspace", "modelsettings", "landing", "pricing", "billing", "rehearsal", "trust", "dpa", "retention"];
   if (PDS_VIEWS.includes(view)) {
     // Design-faithful: Perfect screens are full-bleed pages that navigate through
     // their own links (top-nav pills, jump-to chips, back arrows) — no app chrome.
@@ -345,6 +354,7 @@ export function App() {
       <div style={{ height: "100vh", overflow: "hidden", position: "relative" }}>
         {body}
         <button onClick={() => setView("command")} title="Open the ops console" style={{ position: "fixed", left: 12, bottom: 12, zIndex: 3000, height: 26, padding: "0 10px", borderRadius: 9999, border: "1px solid rgba(128,128,160,.25)", background: "rgba(10,10,40,.55)", color: "rgba(255,255,255,.5)", font: "600 10px system-ui, sans-serif", cursor: "pointer", backdropFilter: "blur(8px)", opacity: 0.6 }}>ops</button>
+        <TosGate />
       </div>
     );
   }
@@ -355,6 +365,7 @@ export function App() {
         {body}
       </AppShell>
       {about && <AboutModal onClose={() => setAbout(false)} />}
+      <TosGate />
     </>
   );
 }

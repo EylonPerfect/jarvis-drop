@@ -3,6 +3,7 @@ import type { CSSProperties, ReactElement } from "react";
 import { api, getAccessKey } from "../api/client";
 import PdsNav from "../components/PdsNav";
 import { KpiStrip, TodayCard, EmailCard, SlackCard, GoalsCard, ConnectedCard } from "../components/OperationalHub";
+import ReferralShare from "../components/ReferralShare";
 import PaywallModal, { type PaywallVariant } from "../components/PaywallModal";
 
 // ============================================================
@@ -435,11 +436,12 @@ export default function Readiness() {
                     <EmailCard />
                   </div>
 
-                  {/* RIGHT: goals + connected accounts + Slack */}
+                  {/* RIGHT: goals + connected accounts + Slack + refer-and-earn */}
                   <div>
                     <GoalsCard agentId={agentId} />
                     <ConnectedCard firstName={first} />
                     <SlackCard />
+                    <ReferralShare loop="team" variant="card" style={{ marginTop: 12 }} />
                   </div>
                 </div>
               </>
@@ -454,6 +456,11 @@ export default function Readiness() {
                     {workspacesSection()}
                   </div>
                 </div>
+
+                {/* watched your clone rehearse → invite a colleague (reward-forward) */}
+                {(data?.score ?? 0) > 0 && (
+                  <ReferralShare loop="ava" wowTrigger="watched_clone" variant="inline" style={{ marginTop: 12 }} />
+                )}
 
                 {/* recent activity */}
                 {activitySection(data)}
